@@ -19,7 +19,9 @@ const title = ref('')
 const contentJson = ref('{}')
 const tags = ref<Tag[]>([])
 const shares = ref<NoteShare[]>([])
-const loading = ref(false)
+/** Запрос заметки с API; при переключении не скрываем редактор целиком */
+const fetching = ref(false)
+let loadGen = 0
 const saving = ref(false)
 const error = ref('')
 const autoSaveOk = ref(false)
@@ -156,11 +158,14 @@ async function sendMailFromModal() {
 
 async function load() {
   if (!props.noteId) return
+  const gen = ++loadGen
   autoSaveOk.value = false
-  loading.value = true
+  fetching.value = true
   error.value = ''
+  const requestedId = props.noteId
   try {
-    const [n, allTags] = await Promise.all([notesApi.get(props.noteId), tagsApi.list()])
+    const [n, allTags] = await Promise.all([notesApi.get(requestedId), tagsApi.list()])
+    if (gen !== loadGen || requestedId !== props.noteId) return
     note.value = n
     title.value = n.title
     contentJson.value = n.content_json || '{}'
@@ -168,15 +173,19 @@ async function load() {
     tagQuery.value = ''
     const amOwner = !!(auth.user && n.owner_id === auth.user.id)
     shares.value = amOwner ? await sharesApi.list(n.id) : []
+    if (gen !== loadGen || requestedId !== props.noteId) return
     await loadFoldersOnly()
     folderSelect.value = n.folder_id ?? ''
   } catch (e) {
+    if (gen !== loadGen || requestedId !== props.noteId) return
     error.value = errMessage(e)
     note.value = null
   } finally {
-    loading.value = false
-    await nextTick()
-    autoSaveOk.value = true
+    if (gen === loadGen) {
+      fetching.value = false
+      await nextTick()
+      autoSaveOk.value = true
+    }
   }
 }
 
@@ -354,10 +363,11 @@ watch(
       await flushSave()
     }
     if (!newId) {
+      loadGen++
       note.value = null
       title.value = ''
       contentJson.value = '{}'
-      loading.value = false
+      fetching.value = false
       error.value = ''
       autoSaveOk.value = false
       return
@@ -382,6 +392,7 @@ watch(
       <header class="bar">
         <a href="#" class="back" @click.prevent="closePanel">← Закрыть</a>
         <div class="bar-actions">
+          <span v-if="fetching && note" class="save-indicator muted">Загрузка заметки…</span>
           <span v-if="saving && !isTrashed" class="save-indicator muted">Сохранение…</span>
           <template v-if="isTrashed && isOwner">
             <button type="button" class="btn primary" @click="restoreFromTrash">Восстановить</button>
@@ -399,8 +410,11 @@ watch(
         Заметка в корзине — редактирование отключено. Восстановите или удалите навсегда.
       </div>
       <p v-if="error" class="err">{{ error }}</p>
-      <p v-if="loading">Загрузка…</p>
+      <template v-if="fetching && !note">
+        <p class="muted load-hint-editor">Загрузка…</p>
+      </template>
       <template v-else-if="note">
+        <div class="editor-main" :class="{ 'editor-fetching': fetching }">
         <input
           v-model="title"
           class="title-input"
@@ -500,6 +514,7 @@ watch(
             </li>
           </ul>
         </section>
+        </div>
       </template>
 
       <div v-if="showMailModal" class="modal-backdrop" @click.self="closeMailModal">
@@ -557,6 +572,19 @@ watch(
   margin: 0;
   font-size: 0.78rem;
   max-width: 260px;
+}
+.load-hint-editor {
+  margin: 1rem 0;
+  font-size: 0.88rem;
+}
+.editor-main {
+  min-width: 0;
+}
+.editor-fetching {
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.12s ease;
 }
 .trash-banner {
   background: rgba(185, 28, 28, 0.08);
