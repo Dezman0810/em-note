@@ -1,66 +1,50 @@
-# Note
+# em-note
 
-Веб-приложение: заметки, папки, метки, общий доступ, почта. Стек: **FastAPI** (async SQLAlchemy) + **Vue 3** + **TipTap**.
+Заметки, папки, метки, общий доступ, почта. **FastAPI** + **Vue 3** + **TipTap**. Запуск и dev — через **Docker**; один репозиторий для ПК и для VPS.
 
-## Требования
+## Быстрый старт (разработка)
 
-- Python 3.11+ (рекомендуется)
-- Node.js 20+ и npm
-- Для PostgreSQL — отдельно установленный сервер (опционально; по умолчанию можно **SQLite**)
-
-## Клонирование и первый запуск
+1. Клонируйте репозиторий.
+2. `cp backend/.env.example backend/.env` — задайте `JWT_SECRET_KEY` и при необходимости `DATABASE_URL`, `CORS_ORIGINS`.
+3. В корне проекта:
 
 ```bash
-git clone <URL-вашего-репозитория>.git
-cd Note
+docker compose up --build -d
+docker compose logs -f
 ```
 
-### Бэкенд
+- UI: http://localhost:5173/
+- API: http://localhost:8000/docs  
 
-```powershell
+Фронт в контейнере проксирует `/api` на сервис `api` (`API_PROXY_TARGET` в Compose).
+
+## Продакшен (как на VPS)
+
+Собранный фронт + Nginx и API в одном стеке:
+
+```bash
+export COMPOSE_WEB_PORT=80   # локально по умолчанию 8080, если переменная не задана
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Откройте http://localhost:8080/ (или порт из `COMPOSE_WEB_PORT`). Для SQLite в проде в `backend/.env` используйте `DATABASE_URL=sqlite+aiosqlite:///./data/note.db` — каталог `data` монтируется в постоянный том.
+
+Подробности: [deploy/README.md](deploy/README.md).
+
+## Git → сервер
+
+1. Коммит и `git push` в GitHub.
+2. На VPS: `git pull`, затем команда из раздела «Обновление» в `deploy/README.md`.
+
+В репозиторий не попадают секреты и БД (см. `.gitignore`).
+
+## Тесты (бэкенд)
+
+```bash
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
-# Отредактируйте .env: JWT_SECRET_KEY и при необходимости DATABASE_URL
-.\.venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8000
+python -m venv .venv && . .venv/bin/activate  # или свой способ
+pip install -r requirements-dev.txt
+pytest
 ```
 
-В `.env` для быстрого старта без PostgreSQL оставьте строку из примера:
-
-`DATABASE_URL=sqlite+aiosqlite:///./note.db`
-
-### Фронтенд (другой терминал)
-
-```powershell
-cd frontend
-npm install
-npm run dev -- --host 127.0.0.1 --port 5173
-```
-
-Откройте **http://127.0.0.1:5173/** — запросы к `/api` проксируются на порт 8000 (см. `frontend/vite.config.ts`).
-
-### Скрипты Windows
-
-Из корня проекта:
-
-- `scripts\start-dev.ps1` — два окна: API и Vite  
-- `scripts\restart-dev.ps1` — освобождает порты 8000 и 5173, затем то же самое  
-
-## Публикация на GitHub
-
-1. Создайте **пустой** репозиторий на GitHub (без README, если уже есть в проекте).
-2. В корне `Note`:
-
-```powershell
-git remote add origin https://github.com/<ваш-логин>/<имя-репо>.git
-git branch -M main
-git push -u origin main
-```
-
-Для входа используйте **Personal Access Token** (Settings → Developer settings) или GitHub CLI (`gh auth login`).
-
-## Что не попадает в Git
-
-Секреты и артефакты перечислены в `.gitignore`: `backend/.env`, виртуальное окружение, `node_modules`, локальные БД и т.д. На новом ПК скопируйте `backend/.env` вручную или снова создайте из `.env.example`.
+В Docker-образ API тестовые зависимости не входят — только `requirements.txt`.

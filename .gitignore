@@ -3,6 +3,7 @@ backend/.venv/
 backend/.env
 backend/**/*.db
 backend/note.db
+backend/data/
 backend/__pycache__/
 backend/**/__pycache__/
 backend/.pytest_cache/

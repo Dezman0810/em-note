@@ -1,14 +1,9 @@
 import asyncio
-import sys
 from collections.abc import AsyncGenerator
-from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-
-# Ensure app is importable
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app.models  # noqa: F401 — register metadata
 from app.database import get_db

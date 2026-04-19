@@ -1,0 +1,40 @@
+# Разработка: API с hot-reload + Vite. Нужны Docker и backend/.env (из .env.example).
+#
+#   docker compose up --build -d
+#
+# UI http://localhost:5173/  ·  API http://localhost:8000/docs
+
+name: em-note
+
+services:
+  api:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  web:
+    image: node:20-bookworm-slim
+    working_dir: /app
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - web_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    command: >
+      sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+
+volumes:
+  web_node_modules:

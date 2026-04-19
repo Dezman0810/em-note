@@ -1,0 +1,33 @@
+# Продакшен-стек: Nginx (собранный Vue) + API. Dev — только docker-compose.yml.
+# Локально веб на :8080 по умолчанию; на VPS: COMPOSE_WEB_PORT=80
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# SQLite: в backend/.env укажите DATABASE_URL=sqlite+aiosqlite:///./data/note.db
+# (каталог data монтируется в том, БД переживает пересоздание контейнера).
+
+name: em-note-prod
+
+services:
+  api:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+    expose:
+      - "8000"
+    volumes:
+      - em_note_api_data:/app/data
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    ports:
+      - "${COMPOSE_WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  em_note_api_data:
