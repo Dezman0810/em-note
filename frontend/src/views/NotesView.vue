@@ -602,8 +602,13 @@ onBeforeUnmount(() => {
         </div>
         <div class="list-scroll">
           <p v-if="error" class="err">{{ error }}</p>
-          <p v-if="loading" class="muted load-hint">Загрузка…</p>
-          <ul v-else class="list">
+          <!-- Не скрываем список при обновлении: иначе заметки «мигают» -->
+          <p v-if="loading && sortedNotes.length === 0" class="muted load-hint">Загрузка…</p>
+          <ul
+            v-else
+            class="list"
+            :class="{ 'list--refreshing': loading && sortedNotes.length > 0 }"
+          >
             <li v-for="n in sortedNotes" :key="n.id" :class="{ trashrow: filterFolder === 'trash' }">
               <button
                 type="button"
@@ -1085,6 +1090,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.list--refreshing {
+  opacity: 0.72;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 .list li.trashrow {
   display: flex;
