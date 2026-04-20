@@ -18,7 +18,8 @@ name: em-note-prod
 
 services:
   db:
-    image: postgres:16-alpine
+    # AWS Public ECR — без лимита анонимных pull с Docker Hub на маленьких VPS
+    image: public.ecr.aws/docker/library/postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
