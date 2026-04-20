@@ -63,6 +63,8 @@ jobs:
     permissions:
       packages: write
     steps:
+      - name: Wait for registry metadata
+        run: sleep 25
       - name: Set GHCR packages to public
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -88,4 +90,4 @@ jobs:
               -d '{"visibility":"public"}') || true
             echo "orgs/${O}/container/${PKG} -> ${R2}"
           done
-          echo "Если HTTP не 200/204 — GitHub → Packages → каждый пакет → Package settings → Change visibility → Public"
+          echo "Если HTTP не 200/204 — GitHub → Packages → em-note-web → Package settings → Change visibility → Public"
