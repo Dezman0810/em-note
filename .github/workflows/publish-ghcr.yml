@@ -101,3 +101,17 @@ jobs:
           curl -sS -o /dev/null -w "GHCR manifest em-note-web: HTTP %{http_code}\n" \
             -H "Accept: application/vnd.oci.image.index.v1+json" \
             "https://ghcr.io/v2/${OWNER_LC}/em-note-web/manifests/main" || true
+
+  # Жёсткая проверка: образы можно скачать БЕЗ docker login (как на VPS).
+  verify-anonymous-pull:
+    needs: make-public
+    runs-on: ubuntu-latest
+    steps:
+      - name: Anonymous docker pull (must succeed for VPS)
+        run: |
+          set -euo pipefail
+          O="${{ github.repository_owner }}"
+          OLC=$(echo "$O" | tr '[:upper:]' '[:lower:]')
+          docker pull "ghcr.io/${OLC}/em-note-api:main"
+          docker pull "ghcr.io/${OLC}/em-note-web:main"
+          echo "OK: оба образа доступны анонимно. Если здесь ошибка — откройте Packages на GitHub и сделайте em-note-api / em-note-web Public, либо добавьте secret GH_PACKAGES_PAT (classic, write:packages) и перезапустите workflow."
