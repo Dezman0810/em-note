@@ -14,6 +14,14 @@
 
 **CORS:** добавьте в `CORS_ORIGINS` ваш публичный URL (`https://em-note.ru` и при необходимости `https://www.…`).
 
+### Быстрый деплой через GitHub (без сборки на VPS)
+
+Пуш в ветку **`main`** собирает образы в **GitHub Actions** и публикует их в **GHCR** (workflow `.github/workflows/publish-ghcr.yml`). На слабом VPS не запускаются **npm/vite** — только `docker compose pull` (обычно **1–2 минуты**).
+
+1. Убедитесь, что Actions включены; после первого успешного запуска пакеты `em-note-api` и `em-note-web` появятся в разделе **Packages** репозитория / организации. Для приватного реестра на сервере выполните `docker login ghcr.io` (GitHub username + **PAT** с правом `read:packages`) или сделайте пакеты **public**.
+2. В корне проекта на сервере — `.env` с `POSTGRES_*`, `COMPOSE_WEB_PORT`, при необходимости `GHCR_OWNER` (по умолчанию в `docker-compose.ghcr.yml` — `dezman0810`), `IMAGE_TAG=main`.
+3. Запуск: `docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d`
+
 ## 3. Запуск
 
 ```bash

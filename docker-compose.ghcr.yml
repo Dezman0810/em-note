@@ -1,0 +1,49 @@
+# Тот же прод-стек, но API и WEB берутся из GitHub Container Registry (уже собраны в CI).
+# На VPS после первого логина в ghcr.io:
+#   docker compose -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.ghcr.yml up -d
+#
+# Образы: ghcr.io/<владелец в нижнем регистре>/em-note-api:main и em-note-web:main
+# Переопределение тега: IMAGE_TAG=sha-xxxx docker compose ...
+
+name: em-note-prod
+
+services:
+  db:
+    image: public.ecr.aws/docker/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-note}
+    volumes:
+      - em_note_pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+  api:
+    image: ghcr.io/${GHCR_OWNER:-dezman0810}/em-note-api:${IMAGE_TAG:-main}
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-note}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:-dezman0810}/em-note-web:${IMAGE_TAG:-main}
+    ports:
+      - "${COMPOSE_WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  em_note_pg_data:
