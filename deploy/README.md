@@ -22,6 +22,10 @@
 2. В корне проекта на сервере — `.env` с `POSTGRES_*`, `COMPOSE_WEB_PORT`, при необходимости `GHCR_OWNER` (по умолчанию в `docker-compose.ghcr.yml` — `dezman0810`), `IMAGE_TAG=main`.
 3. Запуск: `docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d`
 
+**Если `docker pull` для `em-note-web` отвечает `denied`:** в GitHub откройте [**Packages**](https://github.com/Dezman0810?tab=packages) → пакет **`em-note-web`** → **Package settings** → **Change package visibility** → **Public** (для `em-note-api` при необходимости то же). Либо в **Settings → Secrets → Actions** добавьте **`GH_PACKAGES_PAT`**: classic PAT с scope **`write:packages`**, затем заново запустите workflow **Publish Docker images**.
+
+Пока `em-note-web` недоступен анонимно, на сервере используйте `docker-compose.ghcr-hybrid.yml` (API из GHCR, фронт собирается локально).
+
 ## 3. Запуск
 
 ```bash
