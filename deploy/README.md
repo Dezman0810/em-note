@@ -24,18 +24,41 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 Проверка: `curl -sS http://127.0.0.1/health` (на сервере с портом 80 — по вашему домену).
 
-## 4. Обновление
+## 4. Полная переустановка (снести проект и БД, развернуть заново)
+
+На **чистом Ubuntu** с Docker/Compose (или после `deploy/remote-bootstrap.sh` один раз установите пакеты как там).
+
+С этой машины без SSH-ключа к VPS автоматически подключиться нельзя — зайдите по SSH в панели Timeweb или вставьте команду в «Консоль» сервера.
+
+На сервере (подставьте свой публичный IP вместо `ВАШ_IP` для CORS):
+
+```bash
+export I_UNDERSTAND_WIPE=yes
+export PUBLIC_IP=ВАШ_IP
+curl -fsSL https://raw.githubusercontent.com/Dezman0810/em-note/main/deploy/vps-fresh-deploy.sh | bash
+```
+
+Либо уже после `git clone`:
+
+```bash
+cd /opt/em-note   # или путь к клону
+sudo I_UNDERSTAND_WIPE=yes PUBLIC_IP=ВАШ_IP bash deploy/vps-fresh-deploy.sh
+```
+
+Скрипт удаляет каталог установки и **том PostgreSQL** (`down -v`), клонирует репозиторий заново, создаёт корневой `.env` с случайным паролем БД и запускает `docker-compose.prod.yml`. Пароль хранится в `/opt/em-note/.env` — сохраните его.
+
+## 5. Обновление (без сноса данных)
 
 ```bash
 git pull --ff-only
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-## 5. HTTPS
+## 6. HTTPS
 
 В `docker-compose.prod.yml` только HTTP. Типичные варианты: отдельный хостовый Nginx/Caddy с Let’s Encrypt перед контейнерами, или облачный прокси с TLS.
 
-## 6. Бэкапы
+## 7. Бэкапы
 
 Регулярно делайте **pg_dump** тома PostgreSQL (`em_note_pg_data`) или снимайте логические дампы, например:
 
