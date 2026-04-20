@@ -56,38 +56,48 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # VPS: docker pull без логина — включаем Public на пакетах GHCR.
+  # Анонимный docker pull на VPS: делаем публичными все container-пакеты em-note-* в GHCR.
+  # Если GITHUB_TOKEN не даст PATCH (редко), добавьте в Secrets репозитория GH_PACKAGES_PAT (classic PAT: write:packages).
   make-public:
     needs: publish
     runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:
-      - name: Wait for registry metadata
-        run: sleep 25
-      - name: Set GHCR packages to public
+      - name: Wait for GHCR metadata
+        run: sleep 35
+      - name: List container packages + PATCH visibility=public
         env:
+          TOKEN: ${{ secrets.GH_PACKAGES_PAT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_PACKAGES_PAT: ${{ secrets.GH_PACKAGES_PAT }}
         run: |
-          set -e
-          TOKEN="${GH_PACKAGES_PAT:-$GITHUB_TOKEN}"
-          for PKG in em-note-api em-note-web; do
-            R=$(curl -sS -o /tmp/body -w "%{http_code}" -X PATCH \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
+          set -euo pipefail
+          AUTH="${TOKEN:-$GITHUB_TOKEN}"
+          api() { curl -sS -H "Authorization: Bearer ${AUTH}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
+          api -o /tmp/pkgs.json "https://api.github.com/user/packages?package_type=container&per_page=100"
+          NAMES="$(jq -r '.[].name' /tmp/pkgs.json | grep -E '^(em-note-api|em-note-web)$' || true)"
+          if [ -z "$NAMES" ]; then
+            echo "WARN: package list empty; using fixed names"
+            NAMES="$(printf '%s\n' 'em-note-api' 'em-note-web')"
+          fi
+          while IFS= read -r PKG; do
+            [ -n "$PKG" ] || continue
+            R=$(api -o /tmp/pbody -w "%{http_code}" -X PATCH \
               "https://api.github.com/user/packages/container/${PKG}" \
               -d '{"visibility":"public"}') || true
-            echo "user/container/${PKG} -> ${R}"
-            if [ "$R" = "200" ] || [ "$R" = "204" ]; then continue; fi
-            O="${{ github.repository_owner }}"
-            R2=$(curl -sS -o /tmp/body2 -w "%{http_code}" -X PATCH \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
+            echo "PATCH user/packages/container/${PKG} -> HTTP ${R}"
+          done <<< "$NAMES"
+          O="${{ github.repository_owner }}"
+          for PKG in em-note-api em-note-web; do
+            R=$(api -o /tmp/obody -w "%{http_code}" -X PATCH \
               "https://api.github.com/orgs/${O}/packages/container/${PKG}" \
               -d '{"visibility":"public"}') || true
-            echo "orgs/${O}/container/${PKG} -> ${R2}"
+            echo "PATCH orgs/${O}/.../${PKG} -> HTTP ${R}"
           done
-          echo "Если HTTP не 200/204 — GitHub → Packages → em-note-web → Package settings → Change visibility → Public"
+          OWNER_LC=$(echo "$O" | tr '[:upper:]' '[:lower:]')
+          curl -sS -o /dev/null -w "GHCR manifest em-note-api: HTTP %{http_code}\n" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://ghcr.io/v2/${OWNER_LC}/em-note-api/manifests/main" || true
+          curl -sS -o /dev/null -w "GHCR manifest em-note-web: HTTP %{http_code}\n" \
+            -H "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://ghcr.io/v2/${OWNER_LC}/em-note-web/manifests/main" || true
