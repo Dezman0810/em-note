@@ -27,7 +27,7 @@ export COMPOSE_WEB_PORT=80   # локально по умолчанию 8080, е
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-Откройте http://localhost:8080/ (или порт из `COMPOSE_WEB_PORT`). Для SQLite в проде в `backend/.env` используйте `DATABASE_URL=sqlite+aiosqlite:///./data/note.db` — каталог `data` монтируется в постоянный том.
+Откройте http://localhost:8080/ (или порт из `COMPOSE_WEB_PORT`). В стеке поднимается **PostgreSQL** (данные в томе `em_note_pg_data`); строка подключения для контейнера API задаётся в `docker-compose.prod.yml` (хост `db`).
 
 Подробности: [deploy/README.md](deploy/README.md).
 
@@ -40,6 +40,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ## Тесты (бэкенд)
 
+Нужен **PostgreSQL** и база **`em_note_test`** (после первого `docker compose up` она создаётся скриптом в `deploy/postgres/docker-entrypoint-initdb.d`). По умолчанию тесты подключаются к `postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/em_note_test`.
+
 ```bash
 cd backend
 python -m venv .venv && . .venv/bin/activate  # или свой способ
@@ -47,4 +49,4 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-В Docker-образ API тестовые зависимости не входят — только `requirements.txt`.
+В Docker-образ API тестовые зависимости не входят — только `requirements.txt`. Запуск тестов в контейнере: `docker compose exec -e TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/em_note_test api sh -c "cd /app && pip install -q -r requirements-dev.txt && pytest"`.

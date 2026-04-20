@@ -2,17 +2,41 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NoteEditorColumn from '../components/NoteEditorColumn.vue'
+import AdminUsersModal from '../components/AdminUsersModal.vue'
+import ReminderCalendar from '../components/ReminderCalendar.vue'
 import { errMessage, foldersApi, notesApi, tagsApi } from '../api/client'
-import type { Folder, Note, Tag } from '../api/types'
+import type { Folder, FolderNoteCounts, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { isStrictDescendantOf, tagsWithChildrenSet, visibleTagsForNav } from '../utils/tagsTree'
 
+const adminUsersOpen = ref(false)
+
 const COL_FOLDER_KEY = 'note-ui-w-folder'
 const TAG_NAV_COLLAPSED_KEY = 'note-ui-tag-collapsed'
 const COL_LIST_KEY = 'note-ui-w-list'
 const FOLDER_NAV_MAIN_H_KEY = 'note-ui-folder-main-h'
+const FOLDERS_LIST_EXPANDED_KEY = 'note-ui-folders-list-expanded'
+const TAGS_LIST_EXPANDED_KEY = 'note-ui-tags-list-expanded'
+
+function readBoolKey(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null) return fallback
+    return raw === '1' || raw === 'true'
+  } catch {
+    return fallback
+  }
+}
+
+function writeBoolKey(key: string, v: boolean) {
+  try {
+    localStorage.setItem(key, v ? '1' : '0')
+  } catch {
+    /* */
+  }
+}
 
 function readColW(key: string, fallback: number, min: number, max: number): number {
   try {
@@ -129,6 +153,11 @@ const filterFolder = ref<string>('all')
 const filterTagId = ref<string | null>(null)
 const tags = ref<Tag[]>([])
 const tagCountById = ref<Record<string, number>>({})
+const folderNoteCounts = ref<FolderNoteCounts | null>(null)
+const foldersListExpanded = ref(readBoolKey(FOLDERS_LIST_EXPANDED_KEY, true))
+const tagsListExpanded = ref(readBoolKey(TAGS_LIST_EXPANDED_KEY, true))
+/** Увеличивается после load — обновляет данные календаря напоминаний. */
+const reminderRefreshSignal = ref(0)
 
 const folderNavMainStyle = computed(() => {
   if (filterFolder.value === 'trash') {
@@ -201,6 +230,41 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
 }
 
 const foldersSorted = computed(() => foldersSortedAlphabetical(folders.value))
+
+function countInFolder(folderId: string): number {
+  const fc = folderNoteCounts.value?.folder_counts ?? []
+  const row = fc.find((x) => x.folder_id === folderId)
+  return row?.count ?? 0
+}
+
+const scopeNoteTotal = computed(() => {
+  if (!folderNoteCounts.value) return 0
+  if (filterFolder.value === 'all') return folderNoteCounts.value.total
+  if (filterFolder.value === 'trash') return 0
+  return countInFolder(filterFolder.value)
+})
+
+async function loadFolderCounts() {
+  try {
+    folderNoteCounts.value = await foldersApi.noteCounts()
+  } catch {
+    /* не сбрасываем — оставляем предыдущие числа */
+  }
+}
+
+function toggleFoldersList(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  foldersListExpanded.value = !foldersListExpanded.value
+  writeBoolKey(FOLDERS_LIST_EXPANDED_KEY, foldersListExpanded.value)
+}
+
+function toggleTagsList(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  tagsListExpanded.value = !tagsListExpanded.value
+  writeBoolKey(TAGS_LIST_EXPANDED_KEY, tagsListExpanded.value)
+}
 
 /** Активная заметка из URL /notes/:id */
 const activeNoteId = computed(() =>
@@ -310,6 +374,10 @@ async function load() {
   } finally {
     loading.value = false
   }
+  if (filterFolder.value !== 'trash') {
+    void loadFolderCounts()
+    reminderRefreshSignal.value++
+  }
 }
 
 async function createFolder() {
@@ -381,6 +449,10 @@ async function purgeNote(n: Note, ev: Event) {
 
 async function createNote() {
   try {
+    if (auth.user && !auth.user.can_create_notes) {
+      error.value = 'Создание заметок отключено. Доступ выдаёт администратор.'
+      return
+    }
     if (filterFolder.value === 'trash') {
       error.value = 'Создайте заметку вне корзины'
       return
@@ -456,6 +528,15 @@ onBeforeUnmount(() => {
         <span class="header-sub">Заметки</span>
       </div>
       <div class="actions">
+        <button
+          v-if="auth.user?.is_admin"
+          type="button"
+          class="btn admin-top-btn"
+          title="Пользователи и доступ к созданию заметок"
+          @click="adminUsersOpen = true"
+        >
+          Админка
+        </button>
         <div class="search-wrap">
           <input
             v-model="q"
@@ -469,7 +550,19 @@ onBeforeUnmount(() => {
         <div class="action-cluster">
           <button type="button" class="btn secondary" @click="load">Найти</button>
           <button type="button" class="btn secondary" @click="router.push('/tags')">Метки</button>
-          <button type="button" class="btn primary" @click="createNote">Новая заметка</button>
+          <button
+            type="button"
+            class="btn primary"
+            :disabled="auth.user != null && !auth.user.can_create_notes"
+            :title="
+              auth.user && !auth.user.can_create_notes
+                ? 'Создание заметок отключено. Обратитесь к администратору.'
+                : ''
+            "
+            @click="createNote"
+          >
+            Новая заметка
+          </button>
         </div>
         <div class="header-user">
           <span class="user" v-if="auth.user">{{ auth.user.email }}</span>
@@ -477,6 +570,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </header>
+
+    <AdminUsersModal v-model:open="adminUsersOpen" />
 
     <div class="workspace-body">
       <aside
@@ -497,31 +592,53 @@ onBeforeUnmount(() => {
         </div>
         <nav ref="folderNavRef" class="folder-nav">
           <div class="folder-nav-main" :style="folderNavMainStyle">
-            <button
-              type="button"
-              class="folder-filter"
-              :class="{ on: filterFolder === 'all' }"
-              @click="filterFolder = 'all'"
-            >
-              Все заметки
-            </button>
-            <div v-for="f in foldersSorted" :key="f.id" class="folder-row">
+            <div class="folder-all-row">
+              <button
+                v-if="foldersSorted.length"
+                type="button"
+                class="section-chevron"
+                :class="{ 'section-chevron--collapsed': !foldersListExpanded }"
+                title="Показать или скрыть список папок"
+                @click="toggleFoldersList"
+              >
+                {{ foldersListExpanded ? '▾' : '▸' }}
+              </button>
+              <span v-else class="section-chevron-spacer" />
               <button
                 type="button"
-                class="folder-filter grow"
-                :class="{ on: filterFolder === f.id }"
-                @click="filterFolder = f.id"
+                class="folder-filter grow folder-filter-all"
+                :class="{ on: filterFolder === 'all' }"
+                @click="filterFolder = 'all'"
               >
-                {{ f.name }}
-              </button>
-              <button type="button" class="btn-rename" title="Переименовать" @click.stop="renameFolder(f)">
-                ✎
-              </button>
-              <button type="button" class="btn-del" title="Удалить папку" @click.stop="deleteFolder(f)">
-                ×
+                <span class="folder-label">Все заметки</span>
+                <span v-if="folderNoteCounts" class="tag-count">({{ folderNoteCounts.total }})</span>
               </button>
             </div>
+            <div v-show="foldersListExpanded" class="folder-rows">
+              <div v-for="f in foldersSorted" :key="f.id" class="folder-row">
+                <button
+                  type="button"
+                  class="folder-filter grow"
+                  :class="{ on: filterFolder === f.id }"
+                  @click="filterFolder = f.id"
+                >
+                  <span class="folder-label">{{ f.name }}</span>
+                  <span class="tag-count">({{ countInFolder(f.id) }})</span>
+                </button>
+                <button type="button" class="btn-rename" title="Переименовать" @click.stop="renameFolder(f)">
+                  ✎
+                </button>
+                <button type="button" class="btn-del" title="Удалить папку" @click.stop="deleteFolder(f)">
+                  ×
+                </button>
+              </div>
+            </div>
           </div>
+          <ReminderCalendar
+            v-if="filterFolder !== 'trash'"
+            :refresh-signal="reminderRefreshSignal"
+            @open-note="openNote"
+          />
           <div
             v-if="filterFolder !== 'trash'"
             class="folder-nav-v-gutter"
@@ -531,16 +648,31 @@ onBeforeUnmount(() => {
           <div class="folder-nav-bottom" :style="folderNavBottomStyle">
             <div v-if="filterFolder !== 'trash'" class="folder-nav-tags">
               <h3 class="tags-aside-title">Метки</h3>
-              <button
-                type="button"
-                class="folder-filter tag-filter"
-                :class="{ on: filterTagId === null }"
-                @click="filterTagId = null"
-              >
-                Все метки
-              </button>
+              <div class="folder-all-row tag-all-wrap">
+                <button
+                  v-if="tags.length"
+                  type="button"
+                  class="section-chevron"
+                  :class="{ 'section-chevron--collapsed': !tagsListExpanded }"
+                  title="Показать или скрыть список меток"
+                  @click="toggleTagsList"
+                >
+                  {{ tagsListExpanded ? '▾' : '▸' }}
+                </button>
+                <span v-else class="section-chevron-spacer" />
+                <button
+                  type="button"
+                  class="folder-filter tag-filter grow folder-filter-all"
+                  :class="{ on: filterTagId === null }"
+                  @click="filterTagId = null"
+                >
+                  <span class="folder-label">Все метки</span>
+                  <span v-if="folderNoteCounts" class="tag-count">({{ scopeNoteTotal }})</span>
+                </button>
+              </div>
               <button
                 v-for="t in tagsVisibleInSidebar"
+                v-show="tagsListExpanded"
                 :key="t.id"
                 type="button"
                 class="folder-filter tag-filter tag-sidebar-row"
@@ -711,6 +843,19 @@ onBeforeUnmount(() => {
   gap: 0.5rem 0.65rem;
   margin-left: auto;
 }
+.admin-top-btn {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
+  cursor: pointer;
+}
+.admin-top-btn:hover {
+  background: rgba(37, 99, 235, 0.14);
+}
 .search-wrap {
   display: flex;
   align-items: center;
@@ -879,6 +1024,54 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 3px;
   padding-bottom: 0.32rem;
+}
+.folder-all-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.tag-all-wrap {
+  margin-bottom: 3px;
+}
+.section-chevron {
+  flex-shrink: 0;
+  width: 1.35rem;
+  min-height: 1.75rem;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.65rem;
+  line-height: 1;
+  color: #64748b;
+  padding: 0;
+}
+.section-chevron:hover {
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--accent);
+}
+.section-chevron-spacer {
+  width: 1.35rem;
+  flex-shrink: 0;
+}
+.folder-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.folder-filter-all,
+.folder-row .folder-filter.grow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+.folder-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 .folder-nav-v-gutter {
   flex-shrink: 0;

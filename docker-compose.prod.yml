@@ -1,23 +1,49 @@
-# Продакшен-стек: Nginx (собранный Vue) + API. Dev — только docker-compose.yml.
+# Продакшен-стек: Nginx (собранный Vue) + API + PostgreSQL. Dev — docker-compose.yml.
+
 # Локально веб на :8080 по умолчанию; на VPS: COMPOSE_WEB_PORT=80
+
+# API при старте применяет миграции Alembic (см. backend/docker-entrypoint.sh).
+
 #
+
 #   docker compose -f docker-compose.prod.yml up -d --build
+
 #
-# SQLite: в backend/.env укажите DATABASE_URL=sqlite+aiosqlite:///./data/note.db
-# (каталог data монтируется в том, БД переживает пересоздание контейнера).
+
+# Пароли и имя БД переопределяются через POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB.
+
+# В backend/.env можно задать JWT и CORS; DATABASE_URL в compose задаётся для хоста db.
 
 name: em-note-prod
 
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-note}
+    volumes:
+      - em_note_pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
   api:
     build: ./backend
     env_file:
       - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-note}
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     expose:
       - "8000"
-    volumes:
-      - em_note_api_data:/app/data
 
   web:
     build:
@@ -30,4 +56,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  em_note_api_data:
+  em_note_pg_data:

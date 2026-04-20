@@ -25,6 +25,10 @@ def plain_text_from_tiptap_json(content_json: str) -> str:
             return
         if node.get("type") == "text" and isinstance(node.get("text"), str):
             parts.append(node["text"])
+        if node.get("type") == "excalidrawBlock":
+            parts.append("[схема]")
+        if node.get("type") == "encryptedInline":
+            parts.append("[зашифровано]")
         for child in node.get("content") or []:
             walk(child)
 

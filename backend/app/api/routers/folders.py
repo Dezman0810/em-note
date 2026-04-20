@@ -2,16 +2,66 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.folder import Folder
+from app.models.note import Note
+from app.models.share import NoteShare
 from app.models.user import User
-from app.schemas.folder import FolderCreate, FolderRead, FolderUpdate
+from app.schemas.folder import (
+    FolderCreate,
+    FolderCountItem,
+    FolderNoteCountsRead,
+    FolderRead,
+    FolderUpdate,
+)
 from app.services.note_access import get_note_for_read
 
 router = APIRouter(prefix="/folders", tags=["folders"])
+
+
+def _accessible_notes_filter(user_id: uuid.UUID):
+    shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
+    return Note.deleted_at.is_(None) & (
+        (Note.owner_id == user_id) | (Note.id.in_(shared_ids))
+    )
+
+
+@router.get("/note-counts", response_model=FolderNoteCountsRead)
+async def folder_note_counts(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> FolderNoteCountsRead:
+    cond = _accessible_notes_filter(user.id)
+    total = (
+        await db.execute(select(func.count()).select_from(Note).where(cond))
+    ).scalar_one()
+    unfoldered = (
+        await db.execute(
+            select(func.count()).select_from(Note).where(cond).where(Note.folder_id.is_(None))
+        )
+    ).scalar_one()
+
+    folders_result = await db.execute(
+        select(Folder).where(Folder.user_id == user.id).order_by(Folder.name)
+    )
+    user_folders = list(folders_result.scalars().all())
+    folder_counts: list[FolderCountItem] = []
+    for folder in user_folders:
+        cnt = (
+            await db.execute(
+                select(func.count(Note.id)).where(cond).where(Note.folder_id == folder.id)
+            )
+        ).scalar_one()
+        folder_counts.append(FolderCountItem(folder_id=folder.id, count=int(cnt)))
+
+    return FolderNoteCountsRead(
+        total=int(total),
+        unfoldered=int(unfoldered),
+        folder_counts=folder_counts,
+    )
 
 
 async def _get_owned_folder(

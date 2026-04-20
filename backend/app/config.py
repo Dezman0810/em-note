@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Email владельца: единственный, кто видит админку и может выдавать can_create_notes новым юзерам
+    admin_email: str = "ramis.idrisov@gmail.com"
+
     # Optional S3 (attachments); leave empty to disable upload endpoint validation only
     s3_bucket: str = ""
     s3_region: str = ""

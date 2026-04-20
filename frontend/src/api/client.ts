@@ -1,5 +1,16 @@
 import axios, { isAxiosError } from 'axios'
-import type { Folder, Note, NoteShare, Tag, TagNoteCount, User } from './types'
+import type {
+  AdminUserRow,
+  Folder,
+  FolderNoteCounts,
+  Note,
+  NotePublicLink,
+  NoteShare,
+  PublicNotePayload,
+  Tag,
+  TagNoteCount,
+  User,
+} from './types'
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '',
@@ -24,6 +35,17 @@ export function errMessage(e: unknown): string {
   return 'Request failed'
 }
 
+export const adminApi = {
+  async listUsers(): Promise<AdminUserRow[]> {
+    const { data } = await api.get<AdminUserRow[]>('/api/admin/users')
+    return data
+  },
+  async setCanCreateNotes(userId: string, can_create_notes: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_create_notes })
+    return data
+  },
+}
+
 export const authApi = {
   async register(body: { email: string; password: string; display_name?: string }): Promise<User> {
     const { data } = await api.post<User>('/api/auth/register', body)
@@ -46,6 +68,10 @@ export type NotesListParams = {
 }
 
 export const notesApi = {
+  async listReminders(params: { from: string; to: string }): Promise<Note[]> {
+    const { data } = await api.get<Note[]>('/api/notes/reminders', { params })
+    return data
+  },
   async list(params?: NotesListParams): Promise<Note[]> {
     const { data } = await api.get<Note[]>('/api/notes', { params })
     return data
@@ -59,14 +85,18 @@ export const notesApi = {
     return data
   },
   async create(
-    body: Partial<Pick<Note, 'title' | 'content_json' | 'content_plain' | 'folder_id'>>
+    body: Partial<
+      Pick<Note, 'title' | 'content_json' | 'content_plain' | 'folder_id' | 'reminder_at'>
+    >
   ): Promise<Note> {
     const { data } = await api.post<Note>('/api/notes', body)
     return data
   },
   async update(
     id: string,
-    body: Partial<Pick<Note, 'title' | 'content_json' | 'content_plain' | 'folder_id'>>
+    body: Partial<
+      Pick<Note, 'title' | 'content_json' | 'content_plain' | 'folder_id' | 'reminder_at'>
+    >
   ): Promise<Note> {
     const { data } = await api.patch<Note>(`/api/notes/${id}`, body)
     return data
@@ -93,6 +123,21 @@ export const notesApi = {
     const { data } = await api.delete<Note>(`/api/notes/${noteId}/tags/${tagId}`)
     return data
   },
+  async getPublicLink(noteId: string): Promise<NotePublicLink> {
+    const { data } = await api.get<NotePublicLink>(`/api/notes/${noteId}/public-link`)
+    return data
+  },
+  async upsertPublicLink(noteId: string, body: { role: string }): Promise<NotePublicLink> {
+    const { data } = await api.put<NotePublicLink>(`/api/notes/${noteId}/public-link`, body)
+    return data
+  },
+  async regeneratePublicLink(noteId: string): Promise<NotePublicLink> {
+    const { data } = await api.post<NotePublicLink>(`/api/notes/${noteId}/public-link/regenerate`)
+    return data
+  },
+  async deletePublicLink(noteId: string): Promise<void> {
+    await api.delete(`/api/notes/${noteId}/public-link`)
+  },
 }
 
 export const foldersApi = {
@@ -100,6 +145,10 @@ export const foldersApi = {
     const { data } = await api.get<Folder[]>('/api/folders', {
       params: forNoteId ? { for_note_id: forNoteId } : {},
     })
+    return data
+  },
+  async noteCounts(): Promise<FolderNoteCounts> {
+    const { data } = await api.get<FolderNoteCounts>('/api/folders/note-counts')
     return data
   },
   async create(body: { name: string }): Promise<Folder> {
@@ -185,6 +234,20 @@ export const sharesApi = {
   },
   async remove(noteId: string, shareId: string): Promise<void> {
     await api.delete(`/api/notes/${noteId}/shares/${shareId}`)
+  },
+}
+
+export const publicNoteApi = {
+  async get(token: string): Promise<PublicNotePayload> {
+    const { data } = await api.get<PublicNotePayload>(`/api/public/notes/${encodeURIComponent(token)}`)
+    return data
+  },
+  async update(
+    token: string,
+    body: Partial<Pick<Note, 'title' | 'content_json' | 'content_plain'>>
+  ): Promise<Note> {
+    const { data } = await api.patch<Note>(`/api/public/notes/${encodeURIComponent(token)}`, body)
+    return data
   },
 }
 

@@ -3,6 +3,18 @@ export interface User {
   email: string
   display_name: string
   created_at: string
+  /** Если false — нельзя создавать новые заметки (выдаёт только админ). */
+  can_create_notes: boolean
+  /** Единственный email из настроек API; видит админку. */
+  is_admin: boolean
+}
+
+export interface AdminUserRow {
+  id: string
+  email: string
+  display_name: string
+  created_at: string
+  can_create_notes: boolean
 }
 
 export interface Note {
@@ -15,6 +27,8 @@ export interface Note {
   updated_at: string
   deleted_at: string | null
   folder_id: string | null
+  accent_color: string
+  reminder_at: string | null
   tag_ids: string[]
 }
 
@@ -40,6 +54,12 @@ export interface TagNoteCount {
   count: number
 }
 
+export interface FolderNoteCounts {
+  total: number
+  unfoldered: number
+  folder_counts: { folder_id: string; count: number }[]
+}
+
 export interface NoteShare {
   id: string
   note_id: string
@@ -47,4 +67,16 @@ export interface NoteShare {
   invite_email: string | null
   role: string
   created_at: string
+}
+
+export interface NotePublicLink {
+  token: string
+  role: string
+  created_at: string
+}
+
+export interface PublicNotePayload {
+  note: Note
+  can_edit: boolean
+  role: string
 }

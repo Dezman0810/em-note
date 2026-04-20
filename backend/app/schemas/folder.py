@@ -20,3 +20,16 @@ class FolderRead(BaseModel):
     created_at: UtcDatetime
 
     model_config = {"from_attributes": True}
+
+
+class FolderCountItem(BaseModel):
+    folder_id: uuid.UUID
+    count: int
+
+
+class FolderNoteCountsRead(BaseModel):
+    """Счётчики доступных не удалённых заметок по папкам и всего."""
+
+    total: int
+    unfoldered: int
+    folder_counts: list[FolderCountItem]

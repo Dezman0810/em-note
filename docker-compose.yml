@@ -1,25 +1,55 @@
+# Основной локальный стек: UI http://localhost:5173/ · API http://localhost:8000/docs
+# (облако / VPS — отдельно через docker-compose.prod.yml после merge в репозиторий).
+#
 # Разработка: API с hot-reload + Vite. Нужны Docker и backend/.env (из .env.example).
+# При старте API выполняется `alembic upgrade head` (миграции БД).
 #
 #   docker compose up --build -d
 #
 # UI http://localhost:5173/  ·  API http://localhost:8000/docs
+# PostgreSQL: localhost:5432 (логин/пароль postgres/postgres, БД note и em_note_test)
 
 name: em-note
 
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: note
+    ports:
+      - "5432:5432"
+    volumes:
+      - em_note_pg_data:/var/lib/postgresql/data
+      - ./deploy/postgres/docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
   api:
     build: ./backend
     env_file:
       - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/note
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - ./backend:/app
     ports:
       - "8000:8000"
-    command: >
-      uvicorn app.main:app
-      --host 0.0.0.0
-      --port 8000
-      --reload
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
 
   web:
     image: node:20-bookworm-slim
@@ -37,4 +67,5 @@ services:
       sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
 
 volumes:
+  em_note_pg_data:
   web_node_modules:

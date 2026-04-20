@@ -43,6 +43,16 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/p/:token',
+      name: 'public-note',
+      component: () => import('../views/PublicNoteView.vue'),
+      beforeEnter: (to) => {
+        const t = String(to.params.token || '').trim()
+        if (!t) return { path: '/' }
+        return true
+      },
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },

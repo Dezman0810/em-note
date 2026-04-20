@@ -28,7 +28,7 @@ if grep -qE 'replace-with-long-random-secret|^JWT_SECRET_KEY=$' backend/.env; th
   sed -i "s|^JWT_SECRET_KEY=.*|JWT_SECRET_KEY=$JWT|" backend/.env
 fi
 
-sed -i 's|^DATABASE_URL=.*|DATABASE_URL=sqlite+aiosqlite:///./data/note.db|' backend/.env
+sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/note|' backend/.env
 
 CORS="http://${PUBLIC_IP},http://127.0.0.1,http://localhost,http://127.0.0.1:8080,https://em-note.ru,https://www.em-note.ru"
 sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${CORS}|" backend/.env

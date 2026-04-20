@@ -4,12 +4,15 @@ import Highlight from '@tiptap/extension-highlight'
 import Image from '@tiptap/extension-image'
 import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
+import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
+import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
 import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
 import { TextStyle } from '@tiptap/extension-text-style'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { encryptText } from '../utils/cryptoSecret'
 
 /** Цвет букв (круги + первая палитра). */
 const TEXT_COLOR_PRESETS = [
@@ -43,6 +46,14 @@ const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
 const toolbarTick = ref(0)
 
+const encryptDlg = ref(false)
+const encryptPass = ref('')
+const encryptErr = ref('')
+const encryptHint = ref('')
+let encryptRangeFrom = 0
+let encryptRangeTo = 0
+let encryptPlain = ''
+
 function parseDoc(raw: string) {
   try {
     const j = JSON.parse(raw || '{}')
@@ -52,8 +63,27 @@ function parseDoc(raw: string) {
   }
 }
 
+function isUndoRedoShortcut(event: KeyboardEvent) {
+  const mod = event.ctrlKey || event.metaKey
+  if (!mod) return false
+  const k = event.key.toLowerCase()
+  if (k === 'z') return true
+  if (k === 'y') return true
+  return false
+}
+
 const editor = useEditor({
   editable: props.editable,
+  editorProps: {
+    handleDOMEvents: {
+      keydown(_view, event) {
+        const ae = document.activeElement
+        if (!ae?.closest('[data-excalidraw-root]')) return false
+        if (!isUndoRedoShortcut(event)) return false
+        return true
+      },
+    },
+  },
   extensions: [
     StarterKit.configure({
       heading: { levels: [2, 3] },
@@ -65,6 +95,8 @@ const editor = useEditor({
     Color,
     Highlight.configure({ multicolor: true }),
     Image.configure({ inline: true, allowBase64: true }),
+    EncryptedInline,
+    ExcalidrawBlock,
   ],
   content: parseDoc(props.contentJson),
   onUpdate: ({ editor: ed }) => {
@@ -163,6 +195,88 @@ function addImageFromUrl() {
   if (url) editor.value?.chain().focus().setImage({ src: url }).run()
 }
 
+function insertExcalidraw() {
+  editor.value?.chain().focus().insertExcalidraw().run()
+}
+
+function selectionInSingleTextblock(): boolean {
+  const ed = editor.value
+  if (!ed) return false
+  const { empty, from, to } = ed.state.selection
+  if (empty || from === to) return false
+  const $from = ed.state.doc.resolve(from)
+  const $to = ed.state.doc.resolve(to)
+  return $from.parent === $to.parent && $from.parent.isTextblock
+}
+
+const canEncryptSelection = computed(() => {
+  void toolbarTick.value
+  const ed = editor.value
+  if (!ed || !ed.isEditable) return false
+  if (!selectionInSingleTextblock()) return false
+  const { from, to, empty } = ed.state.selection
+  if (empty) return false
+  const t = ed.state.doc.textBetween(from, to, '\n').trim()
+  return t.length > 0
+})
+
+function openEncryptDialog() {
+  const ed = editor.value
+  if (!ed) return
+  const { from, to, empty } = ed.state.selection
+  if (empty || !selectionInSingleTextblock()) {
+    encryptHint.value =
+      'Выделите текст в одном абзаце или заголовке (несколько абзацев за раз зашифровать нельзя).'
+    window.setTimeout(() => {
+      encryptHint.value = ''
+    }, 4500)
+    return
+  }
+  const text = ed.state.doc.textBetween(from, to, '\n')
+  if (!text.trim()) return
+  encryptRangeFrom = from
+  encryptRangeTo = to
+  encryptPlain = text
+  encryptPass.value = ''
+  encryptErr.value = ''
+  encryptDlg.value = true
+}
+
+function closeEncryptDialog() {
+  encryptDlg.value = false
+  encryptPlain = ''
+}
+
+async function confirmEncrypt() {
+  const ed = editor.value
+  if (!ed) return
+  const pw = encryptPass.value
+  if (!pw || pw.length < 4) {
+    encryptErr.value = 'Введите ключ не короче 4 символов'
+    return
+  }
+  encryptErr.value = ''
+  try {
+    const payload = await encryptText(encryptPlain, pw)
+    ed.chain()
+      .focus()
+      .deleteRange({ from: encryptRangeFrom, to: encryptRangeTo })
+      .insertContentAt(encryptRangeFrom, {
+        type: 'encryptedInline',
+        attrs: {
+          version: payload.version,
+          salt: payload.salt,
+          iv: payload.iv,
+          ciphertext: payload.ciphertext,
+        },
+      })
+      .run()
+    closeEncryptDialog()
+  } catch {
+    encryptErr.value = 'Не удалось зашифровать. Попробуйте другой ключ.'
+  }
+}
+
 onBeforeUnmount(() => editor.value?.destroy())
 </script>
 
@@ -231,8 +345,47 @@ onBeforeUnmount(() => editor.value?.destroy())
         <button type="button" class="tb tb-compact" @click="unsetHighlightFill">Сброс заливки</button>
       </div>
       <button type="button" class="tb" @click="addImageFromUrl">Картинка</button>
+      <button
+        type="button"
+        class="tb"
+        :disabled="!canEncryptSelection"
+        :title="
+          !canEncryptSelection
+            ? 'Выделите текст в одном абзаце или заголовке'
+            : 'Зашифровать выделенный текст (AES-GCM на вашем устройстве)'
+        "
+        @click="openEncryptDialog"
+      >
+        Зашифровать
+      </button>
+      <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
     </div>
+    <p v-if="encryptHint" class="encrypt-hint">{{ encryptHint }}</p>
     <EditorContent :editor="editor" class="editor-content" />
+    <Teleport to="body">
+      <div v-if="encryptDlg" class="enc-dlg-root" @click.self="closeEncryptDialog">
+        <div class="enc-dlg" role="dialog" aria-labelledby="enc-dlg-title">
+          <h3 id="enc-dlg-title" class="enc-dlg-title">Ключ шифрования</h3>
+          <p class="enc-dlg-lead muted small">
+            Без этого ключа расшифровать нельзя. Ключ не отправляется на сервер — только зашифрованные данные
+            попадают в заметку.
+          </p>
+          <input
+            v-model="encryptPass"
+            type="password"
+            class="enc-dlg-input"
+            autocomplete="off"
+            placeholder="Придумайте ключ или парольную фразу"
+            @keydown.enter.prevent="confirmEncrypt"
+          />
+          <p v-if="encryptErr" class="enc-dlg-err">{{ encryptErr }}</p>
+          <div class="enc-dlg-actions">
+            <button type="button" class="enc-dlg-btn" @click="closeEncryptDialog">Отмена</button>
+            <button type="button" class="enc-dlg-btn enc-dlg-primary" @click="confirmEncrypt">Зашифровать</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -249,6 +402,81 @@ onBeforeUnmount(() => editor.value?.destroy())
   align-items: center;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border);
+}
+.encrypt-hint {
+  margin: 0;
+  padding: 0.25rem 0.75rem 0.45rem;
+  font-size: 0.72rem;
+  color: var(--danger);
+  background: rgba(220, 38, 38, 0.06);
+}
+.enc-dlg-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+.enc-dlg {
+  width: min(400px, 100%);
+  padding: 1rem 1.05rem;
+  border-radius: var(--radius-lg, 14px);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel, 0 8px 40px rgba(15, 23, 42, 0.15));
+}
+.enc-dlg-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+.enc-dlg-lead {
+  margin: 0 0 0.65rem;
+  line-height: 1.4;
+}
+.enc-dlg-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-bottom: 0.45rem;
+}
+.enc-dlg-err {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+.enc-dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+.enc-dlg-btn {
+  padding: 0.38rem 0.75rem;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.enc-dlg-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+  font-weight: 600;
+}
+.tb:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .tb {
   padding: 0.28rem 0.5rem;

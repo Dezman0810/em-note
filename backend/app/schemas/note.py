@@ -27,6 +27,7 @@ class NoteCreate(BaseModel):
     content_plain: str | None = None
     folder_id: uuid.UUID | None = None
     accent_color: str = Field(default="", max_length=16)
+    reminder_at: UtcDatetime | None = None
 
     @field_validator("accent_color")
     @classmethod
@@ -40,6 +41,7 @@ class NoteUpdate(BaseModel):
     content_plain: str | None = None
     folder_id: uuid.UUID | None = None
     accent_color: str | None = None
+    reminder_at: UtcDatetime | None = None
 
     @field_validator("accent_color")
     @classmethod
@@ -60,6 +62,7 @@ class NoteRead(BaseModel):
     deleted_at: UtcDatetime | None
     folder_id: uuid.UUID | None = None
     accent_color: str = ""
+    reminder_at: UtcDatetime | None = None
     tag_ids: list[uuid.UUID] = []
 
     model_config = {"from_attributes": True}
@@ -77,5 +80,12 @@ class NoteRead(BaseModel):
             deleted_at=note.deleted_at,
             folder_id=note.folder_id,
             accent_color=note.accent_color or "",
+            reminder_at=note.reminder_at,
             tag_ids=[t.id for t in note.tags],
         )
+
+    @classmethod
+    def from_note_public(cls, note: "Note") -> "NoteRead":
+        """Для открытой ссылки: без напоминаний и без списка меток."""
+        base = cls.from_note(note)
+        return base.model_copy(update={"reminder_at": None, "tag_ids": []})

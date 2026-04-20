@@ -22,6 +22,7 @@ from app.services.note_access import (
     require_trashed_note_owner,
 )
 from app.services.tag_subtree import subtree_tag_ids
+from app.utils.json_compare import json_doc_equal
 from app.utils.text import plain_text_from_tiptap_json
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -64,6 +65,34 @@ def _accessible_notes_query(user_id: uuid.UUID) -> Select[tuple[Note]]:
         .order_by(Note.updated_at.desc())
         .options(selectinload(Note.tags))
     )
+
+
+@router.get("/reminders", response_model=list[NoteRead])
+async def list_reminders(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+    from_: Annotated[datetime, Query(alias="from")],
+    to: Annotated[datetime, Query()],
+) -> list[NoteRead]:
+    """Заметки с напоминанием в полуинтервале [from, to)."""
+    if to <= from_:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="to must be after from"
+        )
+    shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user.id)
+    q = (
+        select(Note)
+        .where(Note.deleted_at.is_(None))
+        .where((Note.owner_id == user.id) | (Note.id.in_(shared_ids)))
+        .where(Note.reminder_at.is_not(None))
+        .where(Note.reminder_at >= from_)
+        .where(Note.reminder_at < to)
+        .order_by(Note.reminder_at.asc())
+        .options(selectinload(Note.tags))
+    )
+    result = await db.execute(q)
+    notes = result.scalars().unique().all()
+    return [NoteRead.from_note(n) for n in notes]
 
 
 @router.get("", response_model=list[NoteRead])
@@ -152,6 +181,11 @@ async def create_note(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
+    if not user.can_create_notes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Создание заметок отключено. Обратитесь к администратору.",
+        )
     plain = body.content_plain
     if plain is None:
         plain = plain_text_from_tiptap_json(body.content_json)
@@ -163,6 +197,7 @@ async def create_note(
         content_plain=plain,
         folder_id=body.folder_id,
         accent_color=body.accent_color or "",
+        reminder_at=body.reminder_at,
     )
     db.add(note)
     await db.flush()
@@ -193,22 +228,42 @@ async def update_note(
     if not updates:
         loaded = await _note_with_tags(db, note_id)
         return NoteRead.from_note(loaded)
-    if "title" in updates and updates["title"] is not None:
+    changed = False
+    if "title" in updates and updates["title"] is not None and note.title != updates["title"]:
         note.title = updates["title"]
+        changed = True
     if "content_json" in updates:
-        note.content_json = updates["content_json"]
+        new_cj = updates["content_json"]
+        if not json_doc_equal(note.content_json, new_cj):
+            note.content_json = new_cj
+            changed = True
     if "content_plain" in updates:
-        note.content_plain = updates["content_plain"]
+        np = updates["content_plain"]
+        if note.content_plain != np:
+            note.content_plain = np
+            changed = True
     elif "content_json" in updates:
-        note.content_plain = plain_text_from_tiptap_json(note.content_json)
+        derived = plain_text_from_tiptap_json(note.content_json)
+        if note.content_plain != derived:
+            note.content_plain = derived
+            changed = True
     if "folder_id" in updates:
         fid = updates["folder_id"]
-        await _validate_folder_for_owner(db, fid, note.owner_id)
-        note.folder_id = fid
+        if note.folder_id != fid:
+            await _validate_folder_for_owner(db, fid, note.owner_id)
+            note.folder_id = fid
+            changed = True
     if "accent_color" in updates and updates["accent_color"] is not None:
-        note.accent_color = updates["accent_color"] or ""
-    note.updated_at = datetime.now(timezone.utc)
-    await db.flush()
+        ac = updates["accent_color"] or ""
+        if (note.accent_color or "") != ac:
+            note.accent_color = ac
+            changed = True
+    if "reminder_at" in updates and note.reminder_at != updates["reminder_at"]:
+        note.reminder_at = updates["reminder_at"]
+        changed = True
+    if changed:
+        note.updated_at = datetime.now(timezone.utc)
+        await db.flush()
     loaded = await _note_with_tags(db, note_id)
     return NoteRead.from_note(loaded)
 
@@ -262,7 +317,7 @@ async def attach_tag(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
     if tag not in note.tags:
         note.tags.append(tag)
-    note.updated_at = datetime.now(timezone.utc)
+        note.updated_at = datetime.now(timezone.utc)
     await db.flush()
     loaded = await _note_with_tags(db, note_id)
     return NoteRead.from_note(loaded)
@@ -276,8 +331,10 @@ async def detach_tag(
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
     note = await require_note_edit(db, note_id, user.id)
+    before = len(note.tags)
     note.tags = [t for t in note.tags if t.id != tag_id]
-    note.updated_at = datetime.now(timezone.utc)
+    if len(note.tags) < before:
+        note.updated_at = datetime.now(timezone.utc)
     await db.flush()
     loaded = await _note_with_tags(db, note_id)
     return NoteRead.from_note(loaded)

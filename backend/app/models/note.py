@@ -10,6 +10,7 @@ from app.models.note_tag import note_tag
 
 if TYPE_CHECKING:
     from app.models.folder import Folder
+    from app.models.note_public_link import NotePublicLink
     from app.models.share import NoteShare
     from app.models.tag import Tag
     from app.models.user import User
@@ -44,6 +45,9 @@ class Note(Base):
         index=True,
     )
     accent_color: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    reminder_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     owner: Mapped["User"] = relationship("User", back_populates="notes", foreign_keys=[owner_id])
     folder: Mapped["Folder | None"] = relationship("Folder", back_populates="notes")
@@ -52,4 +56,7 @@ class Note(Base):
     )
     shares: Mapped[list["NoteShare"]] = relationship(
         "NoteShare", back_populates="note", cascade="all, delete-orphan"
+    )
+    public_link: Mapped["NotePublicLink | None"] = relationship(
+        "NotePublicLink", back_populates="note", uselist=False, cascade="all, delete-orphan"
     )

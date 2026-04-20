@@ -10,11 +10,7 @@
 
 Установите [Docker Engine](https://docs.docker.com/engine/install/ubuntu/) и Compose (часто уже вместе). Клонируйте репозиторий, в **`backend/.env`** скопируйте значения из `.env.example` и задайте сильный `JWT_SECRET_KEY`.
 
-**SQLite в проде:** чтобы файл БД жил в томе `em_note_api_data`, в `.env` укажите:
-
-```env
-DATABASE_URL=sqlite+aiosqlite:///./data/note.db
-```
+**PostgreSQL:** В `docker-compose.prod.yml` сервис `db` хранит данные в томе `em_note_pg_data`. Строка `DATABASE_URL` для API переопределяется в Compose (хост `db`); в `backend/.env` достаточно `JWT_SECRET_KEY`, `CORS_ORIGINS` и при необходимости `POSTGRES_*` на корне проекта для пароля/имени БД.
 
 **CORS:** добавьте в `CORS_ORIGINS` ваш публичный URL (`https://em-note.ru` и при необходимости `https://www.…`).
 
@@ -41,4 +37,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ## 6. Бэкапы
 
-При SQLite скопируйте том или файл из каталога данных контейнера (`/app/data/note.db` внутри API-контейнера при указанном `DATABASE_URL` выше).
+Регулярно делайте **pg_dump** тома PostgreSQL (`em_note_pg_data`) или снимайте логические дампы, например:
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T db pg_dump -U postgres note > backup.sql
+```

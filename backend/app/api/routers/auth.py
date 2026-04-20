@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.config import settings
 from app.models.user import User
 from app.schemas.user import Token, UserCreate, UserLogin, UserRead
 from app.utils.security import create_access_token, hash_password, verify_password
@@ -20,10 +21,15 @@ async def register(
     exists = await db.execute(select(User).where(User.email == body.email))
     if exists.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+    is_owner = (
+        bool(settings.admin_email)
+        and body.email.strip().lower() == settings.admin_email.strip().lower()
+    )
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
         display_name=body.display_name or body.email.split("@")[0],
+        can_create_notes=is_owner,
     )
     db.add(user)
     await db.flush()

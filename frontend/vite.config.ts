@@ -1,3 +1,4 @@
+import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -5,7 +6,14 @@ import vue from '@vitejs/plugin-vue'
 const apiProxyTarget = process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), react()],
+  optimizeDeps: {
+    include: [
+      '@excalidraw/excalidraw',
+      'react',
+      'react-dom',
+    ],
+  },
   server: {
     host: true,
     port: 5173,

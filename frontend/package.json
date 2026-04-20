@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
     "@tiptap/extension-color": "^3.22.1",
     "@tiptap/extension-highlight": "^3.22.1",
     "@tiptap/extension-image": "^3.22.1",
@@ -21,11 +22,16 @@
     "@tiptap/vue-3": "^3.22.1",
     "axios": "^1.7.0",
     "pinia": "^2.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "vue": "^3.5.0",
     "vue-router": "^4.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "@vue/tsconfig": "^0.7.0",
     "typescript": "~5.6.0",
