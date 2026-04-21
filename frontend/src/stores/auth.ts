@@ -5,6 +5,10 @@ import type { User } from '../api/types'
 
 const TOKEN_KEY = 'note_token'
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase()
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
   const user = ref<User | null>(null)
@@ -22,14 +26,14 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(email: string, password: string) {
-    const data = await authApi.login({ email, password })
+    const data = await authApi.login({ email: normalizeEmail(email), password })
     persistToken(data.access_token)
     user.value = await authApi.me()
     loaded.value = true
   }
 
   async function register(email: string, password: string, display_name?: string) {
-    await authApi.register({ email, password, display_name })
+    await authApi.register({ email: normalizeEmail(email), password, display_name })
     await login(email, password)
   }
 

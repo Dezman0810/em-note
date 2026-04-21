@@ -51,6 +51,8 @@ services:
       - "8000"
       - --reload
 
+  # node_modules в именованном томе: при ошибках «cannot find module» после git pull
+  # выполните: docker compose down && docker volume rm em-note_web_node_modules && docker compose up --build
   web:
     image: node:20-bookworm-slim
     working_dir: /app
@@ -63,8 +65,10 @@ services:
       - "5173:5173"
     environment:
       API_PROXY_TARGET: http://api:8000
+    # npm install (не ci): подтягивает новые пакеты, если lock на диске обновился;
+    # для прод-сборки см. deploy/Dockerfile.web — там по-прежнему npm ci.
     command: >
-      sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+      sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
 
 volumes:
   em_note_pg_data:

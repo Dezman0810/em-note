@@ -27,6 +27,14 @@ def plain_text_from_tiptap_json(content_json: str) -> str:
             parts.append(node["text"])
         if node.get("type") == "excalidrawBlock":
             parts.append("[схема]")
+        if node.get("type") == "audioNote":
+            attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+            raw = attrs.get("label")
+            label = raw.strip() if isinstance(raw, str) else ""
+            if label:
+                parts.append(f"[аудио: {label}]")
+            else:
+                parts.append("[аудио]")
         if node.get("type") == "encryptedInline":
             parts.append("[зашифровано]")
         for child in node.get("content") or []:

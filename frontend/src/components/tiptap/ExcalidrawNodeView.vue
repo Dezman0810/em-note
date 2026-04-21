@@ -318,4 +318,13 @@ function onImportFile(ev: Event) {
   height: auto;
   max-height: none;
 }
+
+/* Скрыть Library в схеме (в @excalidraw/excalidraw 0.18 нет опции в UIOptions). */
+.excal-host :deep(.excalidraw .sidebar-trigger),
+.excal-host :deep(.excalidraw .default-sidebar-trigger) {
+  display: none !important;
+}
+.excal-host :deep(.excalidraw .App-toolbar .App-toolbar__divider:last-of-type) {
+  display: none !important;
+}
 </style>

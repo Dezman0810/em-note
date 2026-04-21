@@ -17,7 +17,10 @@
   --accent-hover: #1d4ed8;
   --text-muted: #5c6370;
   --danger: #dc2626;
-  --sidebar-bg: #f0f2f7;
+  --sidebar-bg: #f2f3f5;
+  --sidebar-edge: #e2e4e9;
+  --sidebar-hover: rgba(15, 23, 42, 0.05);
+  --sidebar-active: #e5e7eb;
   --note-list-title: #475569;
   --note-list-title-active: #0f172a;
   --note-list-meta: #94a3b8;

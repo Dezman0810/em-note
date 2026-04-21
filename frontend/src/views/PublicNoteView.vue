@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import { errMessage, publicNoteApi } from '../api/client'
 import type { Note } from '../api/types'
 import NoteEditor from '../components/NoteEditor.vue'
+import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
 
 const route = useRoute()
@@ -20,6 +21,7 @@ const contentJson = ref('{}')
 const saving = ref(false)
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let titleSkipSaveOnce = false
 const autoSaveOk = ref(false)
 
 const lastSavedTitle = ref('')
@@ -96,7 +98,27 @@ function scheduleSave() {
   saveTimer = setTimeout(() => void save(), 700)
 }
 
-watch([title, contentJson], () => scheduleSave())
+function onTitleFocus() {
+  if (!canEdit.value) return
+  if (title.value.trim() === DEFAULT_NOTE_TITLE) {
+    titleSkipSaveOnce = true
+    title.value = ''
+  }
+}
+
+function onTitleBlur() {
+  if (!canEdit.value) return
+  const t = title.value.trim()
+  title.value = t || DEFAULT_NOTE_TITLE
+}
+
+watch([title, contentJson], () => {
+  if (titleSkipSaveOnce) {
+    titleSkipSaveOnce = false
+    return
+  }
+  scheduleSave()
+})
 
 watch(
   () => route.params.token,
@@ -130,6 +152,8 @@ const bannerText = computed(() => {
         type="text"
         placeholder="Заголовок"
         :readonly="!canEdit"
+        @focus="onTitleFocus"
+        @blur="onTitleBlur"
       />
       <p class="muted small meta-line">
         Режим ссылки: {{ role === 'editor' ? 'редактирование' : 'только чтение' }}

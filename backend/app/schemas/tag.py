@@ -30,3 +30,9 @@ class TagRead(BaseModel):
 class TagNoteCountRead(BaseModel):
     tag_id: uuid.UUID
     count: int
+
+
+class TagAttachByName(BaseModel):
+    """Создать корневую метку у владельца заметки (если нет) и прикрепить к заметке."""
+
+    name: str = Field(..., max_length=120)

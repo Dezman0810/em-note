@@ -1,11 +1,71 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { notesApi } from '../api/client'
 import type { Note } from '../api/types'
 import { fmtCompactMsk } from '../utils/datetime'
+import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 
 const props = defineProps<{ disabled?: boolean; refreshSignal?: number }>()
 const emit = defineEmits<{ openNote: [id: string] }>()
+
+/** Высота прокручиваемой области списка напоминаний (день / колонки недели). */
+const DAY_LIST_H_KEY = 'rem-cal-list-h'
+const DAY_LIST_H_DEFAULT = 220
+const DAY_LIST_H_MIN = 96
+const DAY_LIST_H_MAX = 720
+
+function readListHeight(): number {
+  try {
+    const raw = localStorage.getItem(DAY_LIST_H_KEY)
+    if (!raw) return DAY_LIST_H_DEFAULT
+    const n = parseInt(raw, 10)
+    if (Number.isNaN(n)) return DAY_LIST_H_DEFAULT
+    return Math.min(DAY_LIST_H_MAX, Math.max(DAY_LIST_H_MIN, n))
+  } catch {
+    return DAY_LIST_H_DEFAULT
+  }
+}
+
+function persistListHeight(n: number) {
+  try {
+    localStorage.setItem(DAY_LIST_H_KEY, String(n))
+  } catch {
+    /* */
+  }
+}
+
+const listAreaHeightPx = ref(readListHeight())
+let resizeUnbind: (() => void) | null = null
+
+function onListResizeDown(e: MouseEvent) {
+  e.preventDefault()
+  const startY = e.clientY
+  const startH = listAreaHeightPx.value
+  const onMove = (ev: MouseEvent) => {
+    const dy = ev.clientY - startY
+    listAreaHeightPx.value = Math.min(
+      DAY_LIST_H_MAX,
+      Math.max(DAY_LIST_H_MIN, startH + dy)
+    )
+  }
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    persistListHeight(listAreaHeightPx.value)
+    resizeUnbind = null
+  }
+  resizeUnbind = onUp
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+}
+
+onBeforeUnmount(() => {
+  resizeUnbind?.()
+})
 
 type CalView = 'month' | 'week' | 'day'
 const view = ref<CalView>('month')
@@ -135,6 +195,17 @@ function monthGrid(): { key: string; label: number; inMonth: boolean; d: Date }[
   return out
 }
 
+/** Недели месяца без полностью пустых строк (только «хвост» из чужих месяцев). */
+const monthWeekRows = computed(() => {
+  const flat = monthGrid()
+  const rows: (typeof flat)[] = []
+  for (let r = 0; r < 6; r++) {
+    const row = flat.slice(r * 7, r * 7 + 7)
+    if (row.some((c) => c.inMonth)) rows.push(row)
+  }
+  return rows
+})
+
 const weekDays = computed(() => {
   const { from } = rangeForView()
   const cells: { key: string; label: string; short: number; d: Date }[] = []
@@ -168,13 +239,17 @@ function open(id: string) {
 
 /** Подпись для точки в сетке и для title при наведении (заголовок — дата и время). */
 function reminderDetailTitle(n: Note): string {
-  const t = (n.title || 'Без названия').trim()
+  const t = (n.title || DEFAULT_NOTE_TITLE).trim()
   return `${t} — ${fmtCompactMsk(n.reminder_at!)}`
 }
 </script>
 
 <template>
-  <div class="rem-cal" :class="{ 'rem-cal--disabled': disabled }">
+  <div
+    class="rem-cal"
+    :class="{ 'rem-cal--disabled': disabled, 'rem-cal--resizable': view === 'week' }"
+    :style="{ '--rem-cal-list-h': listAreaHeightPx + 'px' }"
+  >
     <div class="rem-cal-head">
       <span class="rem-cal-title">Календарь</span>
       <div class="rem-cal-views">
@@ -195,26 +270,30 @@ function reminderDetailTitle(n: Note): string {
         <span v-for="w in ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']" :key="w">{{ w }}</span>
       </div>
       <div class="rem-cal-grid">
-        <div
-          v-for="c in monthGrid()"
-          :key="c.key"
-          class="rem-cal-cell"
-          :class="{ 'rem-cal-cell--muted': !c.inMonth, 'rem-cal-cell--dots': (byDay.get(c.key)?.length ?? 0) > 0 }"
-        >
-          <span class="rem-cal-daynum">{{ c.label }}</span>
-          <div v-if="byDay.get(c.key)?.length" class="rem-cal-dots">
-            <span
-              v-for="n in (byDay.get(c.key) ?? []).slice(0, 3)"
-              :key="n.id"
-              class="rem-dot"
-              :title="reminderDetailTitle(n)"
-              @click.stop="open(n.id)"
-            />
-            <span v-if="(byDay.get(c.key) ?? []).length > 3" class="rem-more"
-              >+{{ (byDay.get(c.key) ?? []).length - 3 }}</span
-            >
+        <template v-for="(week, wi) in monthWeekRows" :key="'w' + wi">
+          <div
+            v-for="c in week"
+            :key="c.key"
+            class="rem-cal-cell"
+            :class="{ 'rem-cal-cell--dots': c.inMonth && (byDay.get(c.key)?.length ?? 0) > 0 }"
+          >
+            <template v-if="c.inMonth">
+              <span class="rem-cal-daynum">{{ c.label }}</span>
+              <div v-if="byDay.get(c.key)?.length" class="rem-cal-dots">
+                <span
+                  v-for="n in (byDay.get(c.key) ?? []).slice(0, 6)"
+                  :key="n.id"
+                  class="rem-dot"
+                  :title="reminderDetailTitle(n)"
+                  @click.stop="open(n.id)"
+                />
+                <span v-if="(byDay.get(c.key) ?? []).length > 6" class="rem-more"
+                  >+{{ (byDay.get(c.key) ?? []).length - 6 }}</span
+                >
+              </div>
+            </template>
           </div>
-        </div>
+        </template>
       </div>
     </div>
     <div v-else-if="view === 'week'" class="rem-cal-week">
@@ -248,12 +327,18 @@ function reminderDetailTitle(n: Note): string {
         <li v-for="n in daySlots" :key="n.id">
           <button type="button" class="rem-cal-dayitem" @click="open(n.id)">
             <span class="rem-cal-ntime">{{ fmtCompactMsk(n.reminder_at!) }}</span>
-            <span class="rem-cal-nt">{{ n.title || 'Без названия' }}</span>
+            <span class="rem-cal-nt">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
           </button>
         </li>
       </ul>
       <p v-else class="muted small rem-cal-empty">Нет напоминаний в этот день</p>
     </div>
+    <div
+      v-if="view === 'week'"
+      class="rem-cal-resize"
+      title="Потяните — высота области с точками в колонках недели"
+      @mousedown="onListResizeDown"
+    />
   </div>
 </template>
 
@@ -261,7 +346,7 @@ function reminderDetailTitle(n: Note): string {
 .rem-cal {
   flex-shrink: 0;
   margin-bottom: 0.4rem;
-  padding: 0.55rem 0.5rem 0.6rem;
+  padding: 0.55rem 0.5rem 0.35rem;
   border-radius: var(--radius-md, 10px);
   border: 1px solid var(--border);
   background: var(--panel);
@@ -269,6 +354,10 @@ function reminderDetailTitle(n: Note): string {
   font-family: inherit;
   font-size: 0.8125rem;
   color: #334155;
+  --rem-cal-list-h: 220px;
+}
+.rem-cal--resizable {
+  padding-bottom: 0.15rem;
 }
 .rem-cal--disabled {
   opacity: 0.45;
@@ -396,9 +485,6 @@ function reminderDetailTitle(n: Note): string {
 .rem-cal-cell--dots:hover {
   border-color: rgba(37, 99, 235, 0.25);
 }
-.rem-cal-cell--muted {
-  opacity: 0.4;
-}
 .rem-cal-daynum {
   font-weight: 600;
   color: var(--note-list-title);
@@ -470,7 +556,7 @@ function reminderDetailTitle(n: Note): string {
   align-content: flex-start;
   gap: 4px;
   width: 100%;
-  max-height: 11rem;
+  max-height: var(--rem-cal-list-h, 220px);
   min-height: 0;
   overflow-y: auto;
   box-sizing: border-box;
@@ -491,8 +577,34 @@ function reminderDetailTitle(n: Note): string {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 220px;
+  max-height: var(--rem-cal-list-h, 220px);
+  min-height: 0;
   overflow-y: auto;
+}
+/** День: показываем все напоминания по высоте, без внутреннего скролла (высота по содержимому). */
+.rem-cal-dayview .rem-cal-daylist {
+  max-height: none;
+  overflow-y: visible;
+  min-height: 0;
+}
+.rem-cal-resize {
+  height: 9px;
+  margin: 0.4rem -0.35rem 0;
+  border-radius: 6px;
+  cursor: row-resize;
+  flex-shrink: 0;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid transparent;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.rem-cal-resize:hover {
+  background: rgba(37, 99, 235, 0.14);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+.rem-cal-resize:active {
+  background: rgba(37, 99, 235, 0.2);
 }
 .rem-cal-dayitem {
   width: 100%;

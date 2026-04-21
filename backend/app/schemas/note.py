@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.tag import TagRead
 from app.schemas.utc_types import UtcDatetime
 
 if TYPE_CHECKING:
@@ -89,3 +90,8 @@ class NoteRead(BaseModel):
         """Для открытой ссылки: без напоминаний и без списка меток."""
         base = cls.from_note(note)
         return base.model_copy(update={"reminder_at": None, "tag_ids": []})
+
+
+class TagAttachByNameResult(BaseModel):
+    note: NoteRead
+    tag: TagRead

@@ -6,6 +6,7 @@ import { errMessage, foldersApi, notesApi, tagsApi } from '../api/client'
 import type { Folder, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
+import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import {
   isStrictDescendantOf,
   orderedTree,
@@ -366,7 +367,7 @@ async function createNote() {
   try {
     error.value = ''
     const n = await notesApi.create({
-      title: 'Без названия',
+      title: DEFAULT_NOTE_TITLE,
       content_json: '{}',
       content_plain: '',
     })
@@ -652,7 +653,7 @@ onBeforeUnmount(() => {
                   :title="noteRowTitle(n)"
                   @click="openNote(n.id)"
                 >
-                  <span class="note-title">{{ n.title || 'Без названия' }}</span>
+                  <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                   <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
                   <span class="meta">
                     <span v-if="n.folder_id" class="folder-badge">{{

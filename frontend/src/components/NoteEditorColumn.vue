@@ -7,11 +7,12 @@ import type { Folder, Note, NotePublicLink, NoteShare, Tag } from '../api/types'
 import NoteEditor from './NoteEditor.vue'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
+import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
 import { contentHasExcalidraw } from '../utils/tiptapContent'
 import { foldersSortedAlphabetical } from '../utils/folders'
 
-const props = defineProps<{ noteId: string | null }>()
+const props = defineProps<{ noteId: string | null; editorSyncSignal?: number }>()
 const emit = defineEmits<{ refresh: [] }>()
 
 const router = useRouter()
@@ -45,9 +46,17 @@ const folderSelect = ref('')
 
 const SCHEMA_TAG_NAME = 'Схема'
 
-/** Компактное напоминание: одно поле datetime-local во всплывающем окне. */
+/** Компактный popover у кнопки: дата + время с шагом 15 минут (Teleport + fixed, как anchored popover). */
 const reminderPanelOpen = ref(false)
-const reminderDatetimeLocal = ref('')
+const reminderDraftDate = ref('')
+const reminderDraftTime = ref('00:00')
+const reminderFormError = ref('')
+const reminderButtonRef = ref<HTMLElement | null>(null)
+const reminderPopoverRef = ref<HTMLElement | null>(null)
+const reminderPopoverStyle = ref<Record<string, string>>({})
+
+const REMINDER_POPOVER_WIDTH = 272
+const REMINDER_POPOVER_GAP = 6
 
 const showMailModal = ref(false)
 const modalEmail = ref('')
@@ -75,6 +84,8 @@ const attachedTagObjects = computed(() => {
 })
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+/** После очистки «Без названия» при фокусе — один раз не дергаем автосохранение (пустой title). */
+let titleSkipSaveOnce = false
 
 /** Последнее сохранённое на сервере состояние текста — без изменений не шлём PATCH и не двигаем updated_at. */
 const lastSavedTitle = ref('')
@@ -114,20 +125,50 @@ function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }
 
-function syncReminderFieldsFromIso(iso: string | null | undefined) {
-  if (!iso) {
-    reminderDatetimeLocal.value = ''
-    return
+const quarterTimeOptions: string[] = (() => {
+  const out: string[] = []
+  for (let h = 0; h < 24; h++) {
+    for (const m of [0, 15, 30, 45]) {
+      out.push(`${pad2(h)}:${pad2(m)}`)
+    }
   }
+  return out
+})()
+
+function snapLocalDateToNearestQuarter(d: Date): Date {
+  const y = d.getFullYear()
+  const mo = d.getMonth()
+  const day = d.getDate()
+  const totalMin = d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60 + d.getMilliseconds() / 60000
+  const snapped = Math.round(totalMin / 15) * 15
+  const out = new Date(y, mo, day, 0, 0, 0, 0)
+  out.setMinutes(snapped)
+  return out
+}
+
+function defaultReminderDraftFromNow(): { date: string; time: string } {
+  const ms = Date.now()
+  const q = 15 * 60 * 1000
+  const next = Math.ceil((ms + 1) / q) * q
+  const slot = new Date(next)
+  return {
+    date: `${slot.getFullYear()}-${pad2(slot.getMonth() + 1)}-${pad2(slot.getDate())}`,
+    time: `${pad2(slot.getHours())}:${pad2(slot.getMinutes())}`,
+  }
+}
+
+function isoToReminderDraft(iso: string | null | undefined): { date: string; time: string } {
+  if (!iso) return defaultReminderDraftFromNow()
   const s = iso.trim()
   const hasTz = /([zZ]$)|([+-]\d{2}:\d{2}$)|([+-]\d{2}\d{2}$)/.test(s)
   const normalized = hasTz ? s : `${s}Z`
   const d = new Date(normalized)
-  if (Number.isNaN(d.getTime())) {
-    reminderDatetimeLocal.value = ''
-    return
+  if (Number.isNaN(d.getTime())) return defaultReminderDraftFromNow()
+  const snapped = snapLocalDateToNearestQuarter(d)
+  return {
+    date: `${snapped.getFullYear()}-${pad2(snapped.getMonth() + 1)}-${pad2(snapped.getDate())}`,
+    time: `${pad2(snapped.getHours())}:${pad2(snapped.getMinutes())}`,
   }
-  reminderDatetimeLocal.value = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
 
 const hasReminderSet = computed(() => !!note.value?.reminder_at)
@@ -138,7 +179,6 @@ async function updateReminderAt(iso: string | null) {
   error.value = ''
   try {
     note.value = await notesApi.update(note.value.id, { reminder_at: iso })
-    syncReminderFieldsFromIso(note.value.reminder_at)
     emitRefresh()
   } catch (e) {
     error.value = errMessage(e)
@@ -147,28 +187,136 @@ async function updateReminderAt(iso: string | null) {
   }
 }
 
-async function saveReminderFromForm() {
-  if (!note.value || !editorEditable.value) return
-  const raw = reminderDatetimeLocal.value.trim()
-  if (!raw) {
-    await updateReminderAt(null)
-    reminderPanelOpen.value = false
-    return
+function positionReminderPopover() {
+  if (typeof window === 'undefined') return
+  const btn = reminderButtonRef.value
+  if (!btn) return
+  const r = btn.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let left = r.right - REMINDER_POPOVER_WIDTH
+  if (left < 8) left = 8
+  if (left + REMINDER_POPOVER_WIDTH > vw - 8) {
+    left = Math.max(8, vw - 8 - REMINDER_POPOVER_WIDTH)
   }
-  const d = new Date(raw)
-  if (Number.isNaN(d.getTime())) {
-    error.value = 'Некорректные дата и время'
-    return
+
+  let top = r.bottom + REMINDER_POPOVER_GAP
+  const el = reminderPopoverRef.value
+  const h = el?.offsetHeight ?? 0
+  if (h > 0 && top + h > vh - 8) {
+    top = r.top - REMINDER_POPOVER_GAP - h
   }
-  error.value = ''
-  await updateReminderAt(d.toISOString())
-  reminderPanelOpen.value = false
+  if (top < 8) top = 8
+
+  reminderPopoverStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+    width: `${REMINDER_POPOVER_WIDTH}px`,
+    zIndex: '1100',
+  }
 }
 
-function clearReminder() {
-  reminderDatetimeLocal.value = ''
-  void updateReminderAt(null)
+let reminderPopoverListenersBound = false
+
+function onReminderPopoverReposition() {
+  if (reminderPanelOpen.value) positionReminderPopover()
+}
+
+function onReminderPopoverPointerDown(e: PointerEvent) {
+  if (!reminderPanelOpen.value) return
+  const t = e.target as Node
+  if (reminderButtonRef.value?.contains(t) || reminderPopoverRef.value?.contains(t)) return
+  cancelReminderDialog()
+}
+
+function onReminderPopoverKeydown(e: KeyboardEvent) {
+  if (!reminderPanelOpen.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelReminderDialog()
+  }
+}
+
+function bindReminderPopoverListeners() {
+  if (reminderPopoverListenersBound || typeof window === 'undefined') return
+  reminderPopoverListenersBound = true
+  window.addEventListener('resize', onReminderPopoverReposition)
+  window.addEventListener('scroll', onReminderPopoverReposition, true)
+  document.addEventListener('pointerdown', onReminderPopoverPointerDown, true)
+  document.addEventListener('keydown', onReminderPopoverKeydown)
+}
+
+function unbindReminderPopoverListeners() {
+  if (!reminderPopoverListenersBound || typeof window === 'undefined') return
+  reminderPopoverListenersBound = false
+  window.removeEventListener('resize', onReminderPopoverReposition)
+  window.removeEventListener('scroll', onReminderPopoverReposition, true)
+  document.removeEventListener('pointerdown', onReminderPopoverPointerDown, true)
+  document.removeEventListener('keydown', onReminderPopoverKeydown)
+}
+
+watch(reminderPanelOpen, async (open) => {
+  if (open) {
+    await nextTick()
+    positionReminderPopover()
+    bindReminderPopoverListeners()
+    await nextTick()
+    positionReminderPopover()
+  } else {
+    unbindReminderPopoverListeners()
+  }
+})
+
+function openReminderDialog() {
+  if (!note.value || !editorEditable.value) return
+  if (reminderPanelOpen.value) {
+    cancelReminderDialog()
+    return
+  }
+  reminderFormError.value = ''
+  const draft = isoToReminderDraft(note.value.reminder_at)
+  reminderDraftDate.value = draft.date
+  reminderDraftTime.value = draft.time
+  reminderPanelOpen.value = true
+}
+
+function cancelReminderDialog() {
   reminderPanelOpen.value = false
+  reminderFormError.value = ''
+}
+
+async function confirmReminderDialog() {
+  reminderFormError.value = ''
+  if (!note.value || !editorEditable.value) return
+  const rawDate = reminderDraftDate.value.trim()
+  const rawTime = reminderDraftTime.value.trim()
+  if (!rawDate || !rawTime) {
+    reminderFormError.value = 'Укажите дату и время'
+    return
+  }
+  const d = new Date(`${rawDate}T${rawTime}:00`)
+  if (Number.isNaN(d.getTime())) {
+    reminderFormError.value = 'Некорректные дата и время'
+    return
+  }
+  await updateReminderAt(d.toISOString())
+  if (!error.value) reminderPanelOpen.value = false
+}
+
+async function removeReminderFromDialog() {
+  reminderFormError.value = ''
+  if (!note.value || !editorEditable.value) return
+  await updateReminderAt(null)
+  if (!error.value) reminderPanelOpen.value = false
+}
+
+/** Снять напоминание сразу, без открытия панели (крестик у кнопки). */
+async function clearReminderQuick() {
+  if (!note.value || !editorEditable.value || !hasReminderSet.value) return
+  reminderPanelOpen.value = false
+  reminderFormError.value = ''
+  await updateReminderAt(null)
 }
 
 async function syncSchemaTag() {
@@ -231,9 +379,9 @@ const filteredForAttach = computed(() => {
   }).slice(0, 20)
 })
 
-/** Создать новую метку с таким именем и прикрепить (только владелец; теги в API привязаны к owner_id заметки). */
+/** Новая метка по имени: создаётся у владельца заметки и прикрепляется (см. POST /tags/by-name). */
 const canOfferCreateTag = computed(() => {
-  if (!isOwner.value || !note.value) return false
+  if (!editorEditable.value || !note.value) return false
   const q = tagQuery.value.trim()
   if (!q || q.length > 120) return false
   const ql = q.toLowerCase()
@@ -317,7 +465,6 @@ async function load() {
     emailSharesExpanded.value = false
     await loadFoldersOnly()
     folderSelect.value = n.folder_id ?? ''
-    syncReminderFieldsFromIso(n.reminder_at)
     reminderPanelOpen.value = false
     await syncSchemaTag()
   } catch (e) {
@@ -353,7 +500,6 @@ async function refetchNoteIfRemoteNewer() {
     contentJson.value = remote.content_json || '{}'
     await loadFoldersOnly()
     folderSelect.value = remote.folder_id ?? ''
-    syncReminderFieldsFromIso(remote.reminder_at)
     syncLastSavedFromEditor()
     emitRefresh()
     void syncSchemaTag()
@@ -397,7 +543,6 @@ async function flushSave() {
       contentJson.value = remote.content_json || '{}'
       await loadFoldersOnly()
       folderSelect.value = remote.folder_id ?? ''
-      syncReminderFieldsFromIso(remote.reminder_at)
       syncLastSavedFromEditor()
       emitRefresh()
       void syncSchemaTag()
@@ -416,7 +561,27 @@ function scheduleSave() {
   saveTimer = setTimeout(() => void save(), 700)
 }
 
-watch([title, contentJson], () => scheduleSave())
+function onTitleFocus() {
+  if (isTrashed.value) return
+  if (title.value.trim() === DEFAULT_NOTE_TITLE) {
+    titleSkipSaveOnce = true
+    title.value = ''
+  }
+}
+
+function onTitleBlur() {
+  if (isTrashed.value) return
+  const t = title.value.trim()
+  title.value = t || DEFAULT_NOTE_TITLE
+}
+
+watch([title, contentJson], () => {
+  if (titleSkipSaveOnce) {
+    titleSkipSaveOnce = false
+    return
+  }
+  scheduleSave()
+})
 
 function onTagBlur() {
   setTimeout(() => {
@@ -451,11 +616,13 @@ async function createAndAttachTag() {
   const name = tagQuery.value.trim()
   if (!name) return
   try {
-    const created = await tagsApi.create({ name, parent_id: null })
-    tags.value = [...tags.value, created].sort((a, b) =>
-      a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' })
-    )
-    note.value = await notesApi.attachTag(note.value.id, created.id)
+    const { note: n, tag } = await notesApi.attachTagByName(note.value.id, name)
+    note.value = n
+    if (!tags.value.some((t) => t.id === tag.id)) {
+      tags.value = [...tags.value, tag].sort((a, b) =>
+        a.name.localeCompare(b.name, 'ru', { sensitivity: 'base' })
+      )
+    }
     tagQuery.value = ''
     tagFocus.value = false
     emitRefresh()
@@ -618,6 +785,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(async () => {
+  unbindReminderPopoverListeners()
   document.removeEventListener('visibilitychange', onVisibilityChange)
   await flushSave()
 })
@@ -643,6 +811,16 @@ watch(
     }
   },
   { immediate: true }
+)
+
+/** Список/сайдбар изменили заметку (DnD метки, папки) — перезагрузить открытую заметку. */
+watch(
+  () => props.editorSyncSignal,
+  async (_sig, prev) => {
+    if (prev === undefined) return
+    if (!props.noteId) return
+    await load()
+  }
 )
 </script>
 
@@ -795,6 +973,8 @@ watch(
           type="text"
           placeholder="Заголовок"
           :readonly="isTrashed"
+          @focus="onTitleFocus"
+          @blur="onTitleBlur"
         />
         <div v-if="!isTrashed" class="title-extras tags-block">
           <div v-if="editorEditable" class="tags-inline-row">
@@ -840,15 +1020,6 @@ watch(
               t.name
             }}</span>
           </div>
-          <p
-            v-if="editorEditable && tagFocus && tagQuery.trim() && !tagSuggestionsOpen"
-            class="muted small tag-quick-hint"
-          >
-            <template v-if="isOwner">
-              Нет совпадений: уточните запрос, или создайте новую метку (Enter), если имя свободно.
-            </template>
-            <template v-else>Нет подходящих меток — уточните поиск.</template>
-          </p>
         </div>
         <p class="note-dates muted small">
           Создано: {{ fmtMsk(note.created_at) }} · Изменено: {{ fmtMsk(note.updated_at)
@@ -870,36 +1041,30 @@ watch(
             </select>
           </div>
           <div v-if="editorEditable" class="reminder-compact">
-            <button
-              type="button"
-              class="reminder-compact-btn"
-              :class="{ 'reminder-compact-btn--open': reminderPanelOpen }"
-              title="Напоминание"
-              @click="reminderPanelOpen = !reminderPanelOpen"
-            >
-              <span class="reminder-ico" aria-hidden="true">⏰</span>
-              <span v-if="hasReminderSet" class="reminder-compact-sum">{{ fmtCompactMsk(note.reminder_at) }}</span>
-              <span v-else class="reminder-compact-ph muted">Напоминание</span>
-            </button>
-            <div v-show="reminderPanelOpen" class="reminder-popover">
-              <input
-                v-model="reminderDatetimeLocal"
-                type="datetime-local"
-                class="reminder-dl"
-                step="60"
-              />
-              <div class="reminder-popover-actions">
-                <button type="button" class="btn-rem-save" :disabled="saving" @click="saveReminderFromForm">OK</button>
-                <button
-                  v-if="hasReminderSet"
-                  type="button"
-                  class="btn-rem-clear"
-                  :disabled="saving"
-                  @click="clearReminder"
-                >
-                  Убрать
-                </button>
-              </div>
+            <div class="reminder-compact-inner">
+              <button
+                ref="reminderButtonRef"
+                type="button"
+                class="reminder-compact-btn"
+                :class="{ 'reminder-compact-btn--open': reminderPanelOpen }"
+                title="Напоминание"
+                @click="openReminderDialog"
+              >
+                <span class="reminder-ico" aria-hidden="true">⏰</span>
+                <span v-if="hasReminderSet" class="reminder-compact-sum">{{ fmtCompactMsk(note.reminder_at) }}</span>
+                <span v-else class="reminder-compact-ph muted">Напоминание</span>
+              </button>
+              <button
+                v-if="hasReminderSet"
+                type="button"
+                class="reminder-clear-x"
+                title="Убрать напоминание"
+                aria-label="Убрать напоминание"
+                :disabled="saving"
+                @click.stop="clearReminderQuick"
+              >
+                ×
+              </button>
             </div>
           </div>
         </div>
@@ -907,6 +1072,56 @@ watch(
         <NoteEditor v-model:contentJson="contentJson" :editable="editorEditable" />
         </div>
       </template>
+
+      <Teleport to="body">
+        <div
+          v-show="reminderPanelOpen && editorEditable"
+          ref="reminderPopoverRef"
+          class="reminder-popover-layer"
+          :style="reminderPopoverStyle"
+          role="dialog"
+          aria-labelledby="reminder-dlg-title"
+          aria-modal="true"
+        >
+          <div class="reminder-popover-card">
+            <h2 id="reminder-dlg-title" class="reminder-popover-title">Напоминание</h2>
+            <label class="reminder-popover-label" for="reminder-draft-date">Дата</label>
+            <input
+              id="reminder-draft-date"
+              v-model="reminderDraftDate"
+              type="date"
+              class="reminder-popover-input"
+            />
+            <label class="reminder-popover-label" for="reminder-draft-time">Время</label>
+            <select id="reminder-draft-time" v-model="reminderDraftTime" class="reminder-popover-input reminder-time-select">
+              <option v-for="t in quarterTimeOptions" :key="t" :value="t">{{ t }}</option>
+            </select>
+            <p v-if="reminderFormError" class="err reminder-popover-err">{{ reminderFormError }}</p>
+            <div class="reminder-popover-actions">
+              <button type="button" class="reminder-popover-btn" :disabled="saving" @click="cancelReminderDialog">
+                Отмена
+              </button>
+              <button
+                v-if="hasReminderSet"
+                type="button"
+                class="reminder-popover-btn reminder-popover-btn--danger"
+                :disabled="saving"
+                @click="removeReminderFromDialog"
+              >
+                Удалить
+              </button>
+              <button
+                type="button"
+                class="reminder-popover-btn reminder-popover-btn--primary"
+                :disabled="saving"
+                @click="confirmReminderDialog"
+              >
+                {{ saving ? '…' : 'OK' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
 
       <div v-if="showMailModal" class="modal-backdrop share-modal-backdrop" @click.self="closeMailModal">
         <div class="modal share-modal" role="dialog" aria-labelledby="mail-title">
@@ -1035,6 +1250,40 @@ watch(
   flex: 0 0 auto;
   align-self: center;
 }
+.reminder-compact-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  max-width: 100%;
+}
+.reminder-clear-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+.reminder-clear-x:hover:not(:disabled) {
+  color: var(--danger);
+  background: rgba(220, 38, 38, 0.08);
+}
+.reminder-clear-x:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .reminder-compact-btn {
   display: inline-flex;
   align-items: center;
@@ -1076,74 +1325,103 @@ watch(
 .reminder-compact-ph {
   font-size: 0.65rem;
 }
-.reminder-popover {
-  position: absolute;
-  z-index: 30;
-  right: 0;
-  top: calc(100% + 4px);
-  padding: 0.4rem 0.45rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: var(--shadow-panel, 0 4px 20px rgba(15, 23, 42, 0.1));
-  min-width: 15rem;
-  max-width: min(100vw - 2rem, 18rem);
+.reminder-time-select {
+  font-variant-numeric: tabular-nums;
 }
-.reminder-dl {
+.reminder-popover-layer {
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.reminder-popover-card {
+  pointer-events: auto;
+  box-sizing: border-box;
+  padding: 0.65rem 0.75rem 0.7rem;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.12),
+    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+  backdrop-filter: blur(8px);
+}
+.reminder-popover-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: #1e293b;
+  letter-spacing: -0.01em;
+}
+.reminder-popover-label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #64748b;
+  margin-top: 0.35rem;
+  margin-bottom: 0.18rem;
+}
+.reminder-popover-label:first-of-type {
+  margin-top: 0;
+}
+.reminder-popover-input {
   width: 100%;
   box-sizing: border-box;
-  padding: 0.3rem 0.35rem;
-  border-radius: 6px;
+  padding: 0.38rem 0.45rem;
+  border-radius: 8px;
   border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
   background: #fff;
   color: inherit;
-  margin-bottom: 0.4rem;
 }
-.reminder-dl:focus {
+.reminder-popover-input:focus {
   outline: none;
   border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+.reminder-popover-err {
+  margin: 0.4rem 0 0;
 }
 .reminder-popover-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.35rem;
-  align-items: center;
+  margin-top: 0.65rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
 }
-.btn-rem-save {
-  padding: 0.38rem 0.75rem;
+.reminder-popover-btn {
+  padding: 0.32rem 0.6rem;
   border-radius: 8px;
-  border: none;
-  background: var(--accent);
-  color: #fff;
+  border: 1px solid var(--border);
+  background: var(--panel);
   font: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: #475569;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.25);
 }
-.btn-rem-save:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-.btn-rem-save:disabled {
+.reminder-popover-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
-.btn-rem-clear {
-  padding: 0.38rem 0.65rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: transparent;
-  font: inherit;
-  font-size: 0.76rem;
-  color: var(--text-muted);
-  cursor: pointer;
+.reminder-popover-btn--primary {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
 }
-.btn-rem-clear:hover:not(:disabled) {
-  border-color: var(--danger);
+.reminder-popover-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.reminder-popover-btn--danger {
+  border-color: rgba(220, 38, 38, 0.35);
   color: var(--danger);
+  background: transparent;
+}
+.reminder-popover-btn--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(220, 38, 38, 0.06);
 }
 .bar {
   display: flex;
@@ -1257,9 +1535,6 @@ watch(
 .tag-chip-readonly {
   cursor: default;
   opacity: 0.92;
-}
-.tag-quick-hint {
-  margin: 0.35rem 0 0;
 }
 .panel {
   margin-top: 1.15rem;

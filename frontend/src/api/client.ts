@@ -12,9 +12,24 @@ import type {
   User,
 } from './types'
 
+export type TagAttachByNameResponse = { note: Note; tag: Tag }
+
+const TOKEN_STORAGE_KEY = 'note_token'
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '',
   headers: { 'Content-Type': 'application/json' },
+})
+
+/** Всегда подставлять JWT из localStorage — надёжнее, чем только axios.defaults (админка и т.д.). */
+api.interceptors.request.use((config) => {
+  if (typeof localStorage !== 'undefined') {
+    const t = localStorage.getItem(TOKEN_STORAGE_KEY)
+    if (t) {
+      config.headers.Authorization = `Bearer ${t}`
+    }
+  }
+  return config
 })
 
 export function setAuthToken(token: string | null) {
@@ -119,6 +134,11 @@ export const notesApi = {
     const { data } = await api.post<Note>(`/api/notes/${noteId}/tags/${tagId}`)
     return data
   },
+  /** Создать метку у владельца заметки по имени и прикрепить (устраняет Tag not found при Enter). */
+  async attachTagByName(noteId: string, name: string): Promise<TagAttachByNameResponse> {
+    const { data } = await api.post<TagAttachByNameResponse>(`/api/notes/${noteId}/tags/by-name`, { name })
+    return data
+  },
   async detachTag(noteId: string, tagId: string): Promise<Note> {
     const { data } = await api.delete<Note>(`/api/notes/${noteId}/tags/${tagId}`)
     return data
@@ -143,12 +163,20 @@ export const notesApi = {
 export const foldersApi = {
   async list(forNoteId?: string): Promise<Folder[]> {
     const { data } = await api.get<Folder[]>('/api/folders', {
-      params: forNoteId ? { for_note_id: forNoteId } : {},
+      params: {
+        ...(forNoteId ? { for_note_id: forNoteId } : {}),
+        /* сброс кэша браузера/прокси после DELETE и т.п. */
+        _t: Date.now(),
+      },
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
     })
     return data
   },
   async noteCounts(): Promise<FolderNoteCounts> {
-    const { data } = await api.get<FolderNoteCounts>('/api/folders/note-counts')
+    const { data } = await api.get<FolderNoteCounts>('/api/folders/note-counts', {
+      params: { _t: Date.now() },
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    })
     return data
   },
   async create(body: { name: string }): Promise<Folder> {

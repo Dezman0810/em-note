@@ -14,7 +14,9 @@ from app.models.note_tag import note_tag
 from app.models.share import NoteShare
 from app.models.tag import Tag
 from app.models.user import User
-from app.schemas.note import NoteCreate, NoteRead, NoteUpdate
+from app.schemas.note import NoteCreate, NoteRead, NoteUpdate, TagAttachByNameResult
+from app.schemas.tag import TagAttachByName, TagRead
+from app.services.tag_ops import get_or_create_root_tag
 from app.services.note_access import (
     get_note_for_read,
     require_note_edit,
@@ -299,6 +301,24 @@ async def purge_note(
 ) -> None:
     note = await require_trashed_note_owner(db, note_id, user.id)
     await db.delete(note)
+
+
+@router.post("/{note_id}/tags/by-name", response_model=TagAttachByNameResult)
+async def attach_tag_by_name(
+    note_id: uuid.UUID,
+    body: TagAttachByName,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> TagAttachByNameResult:
+    """Создать метку у владельца заметки по имени и прикрепить (для редактора с общим доступом)."""
+    note = await require_note_edit(db, note_id, user.id)
+    tag = await get_or_create_root_tag(db, note.owner_id, body.name)
+    if tag not in note.tags:
+        note.tags.append(tag)
+        note.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    loaded = await _note_with_tags(db, note_id)
+    return TagAttachByNameResult(note=NoteRead.from_note(loaded), tag=TagRead.model_validate(tag))
 
 
 @router.post("/{note_id}/tags/{tag_id}", response_model=NoteRead)

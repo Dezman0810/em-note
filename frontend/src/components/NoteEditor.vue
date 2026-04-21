@@ -5,6 +5,7 @@ import Image from '@tiptap/extension-image'
 import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
+import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
 import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
@@ -45,6 +46,14 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
 const toolbarTick = ref(0)
+
+const MAX_AUDIO_BYTES = 12 * 1024 * 1024
+
+const recording = ref(false)
+const recordErr = ref('')
+let mediaRecorder: MediaRecorder | null = null
+let recordStream: MediaStream | null = null
+const recordChunks: BlobPart[] = []
 
 const encryptDlg = ref(false)
 const encryptPass = ref('')
@@ -97,6 +106,7 @@ const editor = useEditor({
     Image.configure({ inline: true, allowBase64: true }),
     EncryptedInline,
     ExcalidrawBlock,
+    AudioNoteBlock,
   ],
   content: parseDoc(props.contentJson),
   onUpdate: ({ editor: ed }) => {
@@ -114,6 +124,15 @@ watch(
   () => props.editable,
   (v) => {
     editor.value?.setEditable(!!v)
+    if (!v && recording.value) {
+      try {
+        mediaRecorder?.stop()
+      } catch {
+        /* */
+      }
+      recording.value = false
+      cleanupRecordStream()
+    }
   }
 )
 
@@ -147,6 +166,47 @@ const taskListOn = computed(() => {
   void toolbarTick.value
   return editor.value?.isActive('taskList') ?? false
 })
+
+const boldOn = computed(() => {
+  void toolbarTick.value
+  return editor.value?.isActive('bold') ?? false
+})
+
+const italicOn = computed(() => {
+  void toolbarTick.value
+  return editor.value?.isActive('italic') ?? false
+})
+
+const textColorDd = ref<HTMLDetailsElement | null>(null)
+const highlightDd = ref<HTMLDetailsElement | null>(null)
+
+function pickTextColor(hex: string) {
+  setTextColor(hex)
+  if (textColorDd.value) textColorDd.value.open = false
+}
+
+function clearTextColorFromMenu() {
+  unsetTextColor()
+  if (textColorDd.value) textColorDd.value.open = false
+}
+
+function pickHighlightFill(hex: string) {
+  setHighlightFill(hex)
+  if (highlightDd.value) highlightDd.value.open = false
+}
+
+function clearHighlightFromMenu() {
+  unsetHighlightFill()
+  if (highlightDd.value) highlightDd.value.open = false
+}
+
+function closeTextColorDd() {
+  if (textColorDd.value) textColorDd.value.open = false
+}
+
+function closeHighlightDd() {
+  if (highlightDd.value) highlightDd.value.open = false
+}
 
 /** Несколько абзацев или строк в одном абзаце (переносы) → отдельные пункты чек-листа. */
 function toggleChecklist() {
@@ -190,13 +250,95 @@ function unsetHighlightFill() {
   editor.value?.chain().focus().unsetHighlight().run()
 }
 
-function addImageFromUrl() {
-  const url = window.prompt('URL изображения')
-  if (url) editor.value?.chain().focus().setImage({ src: url }).run()
-}
-
 function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
+}
+
+function pickAudioMime(): string {
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+  for (const c of candidates) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) return c
+  }
+  return ''
+}
+
+function cleanupRecordStream() {
+  if (recordStream) {
+    recordStream.getTracks().forEach((t) => t.stop())
+    recordStream = null
+  }
+  mediaRecorder = null
+  recordChunks.length = 0
+}
+
+async function startRecording() {
+  const ed = editor.value
+  if (!ed || !props.editable || recording.value) return
+  recordErr.value = ''
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    recordErr.value = 'Запись недоступна в этом браузере.'
+    return
+  }
+  try {
+    recordStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const mime = pickAudioMime()
+    const opts = mime ? { mimeType: mime } : undefined
+    mediaRecorder = new MediaRecorder(recordStream, opts)
+    recordChunks.length = 0
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordChunks.push(e.data)
+    }
+    mediaRecorder.onerror = () => {
+      recordErr.value = 'Ошибка записи.'
+      recording.value = false
+      cleanupRecordStream()
+    }
+    mediaRecorder.onstop = () => {
+      recording.value = false
+      const mr = mediaRecorder
+      const chunks = [...recordChunks]
+      const mimeType = mr?.mimeType || 'audio/webm'
+      cleanupRecordStream()
+      if (!mr || !ed) return
+      const blob = new Blob(chunks, { type: mimeType })
+      if (blob.size > MAX_AUDIO_BYTES) {
+        recordErr.value = 'Файл слишком большой (макс. ~12 МБ). Запишите короче.'
+        return
+      }
+      if (blob.size < 256) {
+        recordErr.value = 'Запись слишком короткая.'
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const src = reader.result as string
+        const edNow = editor.value
+        if (!edNow) return
+        edNow.chain().focus().insertAudioNote({ src, mime: blob.type, label: '' }).run()
+      }
+      reader.onerror = () => {
+        recordErr.value = 'Не удалось прочитать запись.'
+      }
+      reader.readAsDataURL(blob)
+    }
+    mediaRecorder.start(400)
+    recording.value = true
+  } catch {
+    recordErr.value = 'Нет доступа к микрофону. Разрешите запись в настройках браузера.'
+    cleanupRecordStream()
+    recording.value = false
+  }
+}
+
+function stopRecording() {
+  if (!recording.value || !mediaRecorder) return
+  try {
+    mediaRecorder.requestData()
+    mediaRecorder.stop()
+  } catch {
+    recording.value = false
+    cleanupRecordStream()
+  }
 }
 
 function selectionInSingleTextblock(): boolean {
@@ -277,14 +419,40 @@ async function confirmEncrypt() {
   }
 }
 
-onBeforeUnmount(() => editor.value?.destroy())
+onBeforeUnmount(() => {
+  if (recording.value && mediaRecorder) {
+    try {
+      mediaRecorder.stop()
+    } catch {
+      /* */
+    }
+  }
+  cleanupRecordStream()
+  editor.value?.destroy()
+})
 </script>
 
 <template>
   <div class="editor-wrap" v-if="editor">
     <div class="toolbar" v-if="editable">
-      <button type="button" class="tb" @click="editor.chain().focus().toggleBold().run()">Жирный</button>
-      <button type="button" class="tb" @click="editor.chain().focus().toggleItalic().run()">Курсив</button>
+      <button
+        type="button"
+        class="tb tb-letter"
+        title="Жирный"
+        :class="{ tbOn: boldOn }"
+        @click="editor.chain().focus().toggleBold().run()"
+      >
+        Ж
+      </button>
+      <button
+        type="button"
+        class="tb tb-letter"
+        title="Курсив"
+        :class="{ tbOn: italicOn }"
+        @click="editor.chain().focus().toggleItalic().run()"
+      >
+        К
+      </button>
       <button type="button" class="tb" @click="editor.chain().focus().toggleBulletList().run()">Список</button>
       <button
         type="button"
@@ -294,57 +462,88 @@ onBeforeUnmount(() => editor.value?.destroy())
       >
         Чек-лист
       </button>
-      <div class="color-group">
-        <span class="color-group-lab">Буквы</span>
-        <div class="color-presets" role="group" aria-label="Цвет букв">
-          <button
-            v-for="hex in TEXT_COLOR_PRESETS"
-            :key="'t-' + hex"
-            type="button"
-            class="color-dot"
-            :title="hex"
-            :style="{ background: hex }"
-            :class="{ on: isTextPresetActive(hex) }"
-            @click="setTextColor(hex)"
-          />
+      <details ref="textColorDd" class="word-dd">
+        <summary class="word-dd-summary" title="Цвет текста">
+          <span class="word-dd-left" aria-hidden="true">
+            <span class="word-dd-icon word-dd-icon--letter">A</span>
+            <span class="word-dd-bar" :style="{ background: colorPickerValue }" />
+          </span>
+          <span class="word-dd-chev-wrap" aria-hidden="true">
+            <span class="word-dd-chev">▼</span>
+          </span>
+        </summary>
+        <div class="word-dd-panel" @click.stop>
+          <div class="word-dd-presets" role="group" aria-label="Цвет букв">
+            <button
+              v-for="hex in TEXT_COLOR_PRESETS"
+              :key="'t-' + hex"
+              type="button"
+              class="word-dd-dot"
+              :title="hex"
+              :style="{ background: hex }"
+              :class="{ on: isTextPresetActive(hex) }"
+              @click="pickTextColor(hex)"
+            />
+          </div>
+          <label class="word-dd-custom">
+            <span class="word-dd-custom-lab">Другой цвет…</span>
+            <input
+              class="word-dd-color-input"
+              type="color"
+              :value="colorPickerValue"
+              @input="setTextColor(($event.target as HTMLInputElement).value)"
+              @change="closeTextColorDd"
+            />
+          </label>
+          <button type="button" class="word-dd-clear" @click="clearTextColorFromMenu">Авто (как в теме)</button>
         </div>
-        <label class="color-picker-wrap" title="Свой цвет букв">
-          <span class="visually-hidden">Палитра цвета букв</span>
-          <input
-            class="color-picker-input"
-            type="color"
-            :value="colorPickerValue"
-            @input="setTextColor(($event.target as HTMLInputElement).value)"
-          />
-        </label>
-        <button type="button" class="tb tb-compact" @click="unsetTextColor">Сброс букв</button>
-      </div>
-      <div class="color-group color-group-extra" role="group" aria-label="Заливка вокруг текста">
-        <span class="color-group-lab">Заливка</span>
-        <div class="color-squares">
-          <button
-            v-for="hex in HIGHLIGHT_FILL_PRESETS"
-            :key="'h-' + hex"
-            type="button"
-            class="color-sq"
-            :title="hex"
-            :style="{ backgroundColor: hex }"
-            :class="{ on: isHighlightFillActive(hex) }"
-            @click="setHighlightFill(hex)"
-          />
+      </details>
+      <details ref="highlightDd" class="word-dd">
+        <summary class="word-dd-summary" title="Цвет выделения">
+          <span class="word-dd-left" aria-hidden="true">
+            <span class="word-dd-icon word-dd-icon--hi">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path
+                  d="M4 20h4l9.5-9.5a2.5 2.5 0 0 0 0-3.5L17 3.5a2.5 2.5 0 0 0-3.5 0L4 13v7z"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linejoin="round"
+                />
+                <path d="M13 6l5 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="word-dd-bar" :style="{ background: highlightPickerValue }" />
+          </span>
+          <span class="word-dd-chev-wrap" aria-hidden="true">
+            <span class="word-dd-chev">▼</span>
+          </span>
+        </summary>
+        <div class="word-dd-panel" @click.stop>
+          <div class="word-dd-presets word-dd-presets--sq" role="group" aria-label="Заливка текста">
+            <button
+              v-for="hex in HIGHLIGHT_FILL_PRESETS"
+              :key="'h-' + hex"
+              type="button"
+              class="word-dd-sq"
+              :title="hex"
+              :style="{ backgroundColor: hex }"
+              :class="{ on: isHighlightFillActive(hex) }"
+              @click="pickHighlightFill(hex)"
+            />
+          </div>
+          <label class="word-dd-custom">
+            <span class="word-dd-custom-lab">Другой цвет…</span>
+            <input
+              class="word-dd-color-input"
+              type="color"
+              :value="highlightPickerValue"
+              @input="setHighlightFill(($event.target as HTMLInputElement).value)"
+              @change="closeHighlightDd"
+            />
+          </label>
+          <button type="button" class="word-dd-clear" @click="clearHighlightFromMenu">Без заливки</button>
         </div>
-        <label class="color-picker-wrap color-picker-square" title="Своя заливка">
-          <span class="visually-hidden">Палитра заливки</span>
-          <input
-            class="color-picker-input"
-            type="color"
-            :value="highlightPickerValue"
-            @input="setHighlightFill(($event.target as HTMLInputElement).value)"
-          />
-        </label>
-        <button type="button" class="tb tb-compact" @click="unsetHighlightFill">Сброс заливки</button>
-      </div>
-      <button type="button" class="tb" @click="addImageFromUrl">Картинка</button>
+      </details>
       <button
         type="button"
         class="tb"
@@ -359,7 +558,18 @@ onBeforeUnmount(() => editor.value?.destroy())
         Зашифровать
       </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
+      <button
+        v-if="editable"
+        type="button"
+        class="tb tb-mic"
+        :class="{ tbOn: recording }"
+        :title="recording ? 'Остановить запись' : 'Записать аудиозаметку (микрофон)'"
+        @click="recording ? stopRecording() : startRecording()"
+      >
+        {{ recording ? '■ Стоп' : '🎤 Аудио' }}
+      </button>
     </div>
+    <p v-if="recordErr" class="record-err">{{ recordErr }}</p>
     <p v-if="encryptHint" class="encrypt-hint">{{ encryptHint }}</p>
     <EditorContent :editor="editor" class="editor-content" />
     <Teleport to="body">
@@ -402,6 +612,18 @@ onBeforeUnmount(() => editor.value?.destroy())
   align-items: center;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border);
+}
+.record-err {
+  margin: 0;
+  padding: 0.25rem 0.75rem 0.45rem;
+  font-size: 0.72rem;
+  color: var(--danger);
+  background: rgba(220, 38, 38, 0.06);
+}
+.tb-mic.tbOn {
+  border-color: #dc2626;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
 }
 .encrypt-hint {
   margin: 0;
@@ -494,89 +716,165 @@ onBeforeUnmount(() => editor.value?.destroy())
   background: rgba(37, 99, 235, 0.08);
   color: var(--accent);
 }
-.tb-compact {
-  font-size: 0.72rem;
+.tb-letter {
+  min-width: 1.65rem;
+  font-weight: 700;
+  font-size: 0.82rem;
 }
-.color-group {
+.word-dd {
+  position: relative;
   display: inline-flex;
-  flex-wrap: wrap;
+  align-items: stretch;
+  vertical-align: middle;
+}
+.word-dd-summary {
+  list-style: none;
+  display: flex;
+  align-items: stretch;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  padding: 0;
+  font: inherit;
+  user-select: none;
+}
+.word-dd-summary::-webkit-details-marker {
+  display: none;
+}
+.word-dd-left {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.35rem 0.45rem;
-  padding: 0.15rem 0.35rem;
+  justify-content: flex-start;
+  padding: 0.22rem 0.4rem 0.25rem;
+  min-width: 1.85rem;
+}
+.word-dd-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #334155;
+  line-height: 1;
+}
+.word-dd-icon--letter {
+  font-weight: 800;
+  font-size: 0.88rem;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+}
+.word-dd-icon--hi svg {
+  display: block;
+}
+.word-dd-bar {
+  display: block;
+  height: 3px;
+  width: 100%;
+  min-width: 1.35rem;
+  margin-top: 3px;
+  border-radius: 1px;
+  box-sizing: border-box;
+}
+.word-dd-chev-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.28rem;
+  border-left: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.06);
+}
+.word-dd-chev {
+  font-size: 0.5rem;
+  line-height: 1;
+  color: #64748b;
+  transform: scaleY(0.85);
+}
+.word-dd:hover .word-dd-summary,
+.word-dd[open] .word-dd-summary {
+  border-color: rgba(37, 99, 235, 0.35);
+}
+.word-dd-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  min-width: 11.5rem;
+  padding: 0.5rem 0.55rem;
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
-.color-group-lab {
-  font-size: 0.68rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-.color-presets {
+.word-dd-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem;
+  gap: 0.35rem;
+  margin-bottom: 0.45rem;
 }
-.color-dot {
+.word-dd-dot {
   width: 1.25rem;
   height: 1.25rem;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.9);
+  border: 2px solid rgba(255, 255, 255, 0.95);
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
 }
-.color-dot:hover {
-  transform: scale(1.06);
-}
-.color-dot.on {
+.word-dd-dot.on {
   box-shadow: 0 0 0 2px var(--accent);
 }
-.color-group-extra {
-  border: 1px dashed rgba(148, 163, 184, 0.45);
-}
-.color-squares {
-  display: flex;
-  flex-wrap: wrap;
+.word-dd-presets--sq {
   gap: 0.28rem;
 }
-.color-sq {
+.word-dd-sq {
   width: 1.25rem;
   height: 1.25rem;
   border-radius: 4px;
-  /* Заливка задаётся inline backgroundColor */
   border: 1px solid rgba(15, 23, 42, 0.28);
-  box-sizing: border-box;
   cursor: pointer;
   padding: 0;
-  flex-shrink: 0;
+  box-sizing: border-box;
 }
-.color-sq:hover {
-  filter: brightness(1.06);
-  border-color: rgba(15, 23, 42, 0.45);
-}
-.color-sq.on {
+.word-dd-sq.on {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-.color-picker-square .color-picker-input {
-  border-radius: 4px;
-}
-.color-picker-wrap {
-  display: inline-flex;
+.word-dd-custom {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
   cursor: pointer;
 }
-.color-picker-input {
-  width: 1.55rem;
-  height: 1.25rem;
+.word-dd-color-input {
+  width: 2rem;
+  height: 1.35rem;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
   background: transparent;
+}
+.word-dd-clear {
+  display: block;
+  width: 100%;
+  margin-top: 0.15rem;
+  padding: 0.22rem 0.35rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-align: left;
+}
+.word-dd-clear:hover {
+  text-decoration: underline;
 }
 .visually-hidden {
   position: absolute;

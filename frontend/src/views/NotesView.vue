@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NoteEditorColumn from '../components/NoteEditorColumn.vue'
 import AdminUsersModal from '../components/AdminUsersModal.vue'
@@ -9,6 +9,7 @@ import type { Folder, FolderNoteCounts, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { foldersSortedAlphabetical } from '../utils/folders'
+import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { isStrictDescendantOf, tagsWithChildrenSet, visibleTagsForNav } from '../utils/tagsTree'
 
 const adminUsersOpen = ref(false)
@@ -17,6 +18,7 @@ const COL_FOLDER_KEY = 'note-ui-w-folder'
 const TAG_NAV_COLLAPSED_KEY = 'note-ui-tag-collapsed'
 const COL_LIST_KEY = 'note-ui-w-list'
 const FOLDER_NAV_MAIN_H_KEY = 'note-ui-folder-main-h'
+const TAGS_PANEL_H_KEY = 'note-ui-tags-panel-h'
 const FOLDERS_LIST_EXPANDED_KEY = 'note-ui-folders-list-expanded'
 const TAGS_LIST_EXPANDED_KEY = 'note-ui-tags-list-expanded'
 
@@ -53,24 +55,28 @@ function readColW(key: string, fallback: number, min: number, max: number): numb
 const colFolderPx = ref(readColW(COL_FOLDER_KEY, 220, 120, 420))
 const colListPx = ref(readColW(COL_LIST_KEY, 300, 160, 640))
 
-type GutterDrag = null | 'folder' | 'list' | 'folderNavV'
+type GutterDrag = null | 'folder' | 'list' | 'folderNavV' | 'tagsCalendar'
 const gutterDrag = ref<GutterDrag>(null)
 let gutterStartX = 0
 let gutterStartFolder = 0
 let gutterStartList = 0
 let gutterStartY = 0
 let gutterStartFolderMainH = 0
+let gutterStartTagsPanelH = 0
 
 const folderNavRef = ref<HTMLElement | null>(null)
 const folderNavMainPx = ref(
   readColW(FOLDER_NAV_MAIN_H_KEY, 200, 72, 560)
 )
+/** Высота блока меток (рамка: фильтры + список); календарь ниже. */
+const tagsPanelHeightPx = ref(readColW(TAGS_PANEL_H_KEY, 200, 96, 520))
 
 function persistColWidths() {
   try {
     localStorage.setItem(COL_FOLDER_KEY, String(colFolderPx.value))
     localStorage.setItem(COL_LIST_KEY, String(colListPx.value))
     localStorage.setItem(FOLDER_NAV_MAIN_H_KEY, String(folderNavMainPx.value))
+    localStorage.setItem(TAGS_PANEL_H_KEY, String(tagsPanelHeightPx.value))
   } catch {
     /* */
   }
@@ -92,8 +98,26 @@ function folderNavMainMax(): number {
   const nav = folderNavRef.value
   if (!nav) return 560
   const GUTTER = 6
-  const minBottom = 112
+  const minBottom = 160
   return Math.max(72, nav.clientHeight - minBottom - GUTTER)
+}
+
+/** Макс. высота блока меток: оставляем место календарю и корзине. */
+function tagsPanelHeightMax(): number {
+  const nav = folderNavRef.value
+  if (!nav) return 520
+  const bottom = nav.querySelector('.folder-nav-bottom') as HTMLElement | null
+  if (!bottom) return 520
+  const footer = bottom.querySelector('.folder-nav-footer') as HTMLElement | null
+  const fh = footer ? footer.offsetHeight + 8 : 48
+  const g = 6
+  const calMin = 100
+  return Math.max(96, bottom.clientHeight - fh - calMin - g - 4)
+}
+
+function clampTagsPanelHeight() {
+  const maxH = tagsPanelHeightMax()
+  tagsPanelHeightPx.value = Math.min(maxH, Math.max(96, tagsPanelHeightPx.value))
 }
 
 function onFolderNavVGutterDown(e: MouseEvent) {
@@ -107,8 +131,25 @@ function onFolderNavVGutterDown(e: MouseEvent) {
   window.addEventListener('mouseup', onGutterUp)
 }
 
+function onTagsCalendarGutterDown(e: MouseEvent) {
+  e.preventDefault()
+  gutterDrag.value = 'tagsCalendar'
+  gutterStartY = e.clientY
+  gutterStartTagsPanelH = tagsPanelHeightPx.value
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onGutterMove)
+  window.addEventListener('mouseup', onGutterUp)
+}
+
 function onGutterMove(e: MouseEvent) {
   if (!gutterDrag.value) return
+  if (gutterDrag.value === 'tagsCalendar') {
+    const dy = e.clientY - gutterStartY
+    const maxH = tagsPanelHeightMax()
+    tagsPanelHeightPx.value = Math.min(maxH, Math.max(96, gutterStartTagsPanelH + dy))
+    return
+  }
   if (gutterDrag.value === 'folderNavV') {
     const dy = e.clientY - gutterStartY
     const maxH = folderNavMainMax()
@@ -135,6 +176,12 @@ function onGutterUp() {
     const maxH = folderNavMainMax()
     folderNavMainPx.value = Math.min(maxH, Math.max(72, folderNavMainPx.value))
     persistColWidths()
+    clampTagsPanelHeight()
+  }
+  if (was === 'tagsCalendar') {
+    const maxH = tagsPanelHeightMax()
+    tagsPanelHeightPx.value = Math.min(maxH, Math.max(96, tagsPanelHeightPx.value))
+    persistColWidths()
   }
 }
 
@@ -158,34 +205,85 @@ const foldersListExpanded = ref(readBoolKey(FOLDERS_LIST_EXPANDED_KEY, true))
 const tagsListExpanded = ref(readBoolKey(TAGS_LIST_EXPANDED_KEY, true))
 /** Увеличивается после load — обновляет данные календаря напоминаний. */
 const reminderRefreshSignal = ref(0)
+/** Синхронизация открытой заметки в редакторе при изменениях из списка (DnD метки, папки и т.д.). */
+const editorSyncSignal = ref(0)
 
-const folderNavMainStyle = computed(() => {
-  if (filterFolder.value === 'trash') {
-    return {
-      flex: '1 1 auto',
-      minHeight: '0',
-      overflowY: 'auto' as const,
-    }
-  }
-  return {
-    flex: '0 0 auto',
-    height: `${folderNavMainPx.value}px`,
-    minHeight: '72px',
-    overflowY: 'auto' as const,
-  }
-})
+const MIME_NOTE_ID = 'application/x-em-note-id'
+const MIME_TAG_ID = 'application/x-em-note-tag-id'
 
-const folderNavBottomStyle = computed(() => {
-  if (filterFolder.value === 'trash') {
-    return { flex: '0 0 auto' as const }
+function onNoteDragStart(e: DragEvent, noteId: string) {
+  if (filterFolder.value === 'trash') return
+  e.dataTransfer?.setData(MIME_NOTE_ID, noteId)
+  e.dataTransfer!.effectAllowed = 'move'
+}
+
+function onFolderDragOver(e: DragEvent) {
+  const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
+  if (!types.includes(MIME_NOTE_ID)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'move'
+}
+
+async function onFolderDrop(e: DragEvent, folderKey: string) {
+  e.preventDefault()
+  const noteId = e.dataTransfer?.getData(MIME_NOTE_ID)
+  if (!noteId) return
+  const targetFolder: string | null = folderKey === 'all' ? null : folderKey
+  const cur = notes.value.find((x) => x.id === noteId)
+  if (cur && (cur.folder_id ?? null) === targetFolder) return
+  try {
+    await notesApi.update(noteId, { folder_id: targetFolder })
+    error.value = ''
+    await loadFolders()
+    await load()
+    bumpEditorSyncIfOpen(noteId)
+  } catch (err) {
+    error.value = errMessage(err)
   }
-  return {
-    flex: '1 1 auto',
-    minHeight: '0',
-    display: 'flex',
-    flexDirection: 'column' as const,
+}
+
+function onTagDragStart(e: DragEvent, tagId: string) {
+  e.dataTransfer?.setData(MIME_TAG_ID, tagId)
+  e.dataTransfer!.effectAllowed = 'copy'
+}
+
+function onNoteRowDragOver(e: DragEvent) {
+  const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
+  if (!types.includes(MIME_TAG_ID)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
+}
+
+async function onNoteRowDrop(e: DragEvent, noteId: string) {
+  e.preventDefault()
+  const tagId = e.dataTransfer?.getData(MIME_TAG_ID)
+  if (!tagId) return
+  try {
+    await notesApi.attachTag(noteId, tagId)
+    error.value = ''
+    await load()
+    reminderRefreshSignal.value++
+    bumpEditorSyncIfOpen(noteId)
+  } catch (err) {
+    error.value = errMessage(err)
   }
-})
+}
+
+const folderNavMainStyle = computed(() => ({
+  flex: '0 0 auto',
+  height: `${folderNavMainPx.value}px`,
+  minHeight: '72px',
+  overflow: 'hidden',
+  display: 'flex',
+  flexDirection: 'column' as const,
+}))
+
+const folderNavBottomStyle = computed(() => ({
+  flex: '1 1 auto',
+  minHeight: '0',
+  display: 'flex',
+  flexDirection: 'column' as const,
+}))
 
 function readTagNavCollapsed(): Record<string, boolean> {
   try {
@@ -239,8 +337,9 @@ function countInFolder(folderId: string): number {
 
 const scopeNoteTotal = computed(() => {
   if (!folderNoteCounts.value) return 0
-  if (filterFolder.value === 'all') return folderNoteCounts.value.total
-  if (filterFolder.value === 'trash') return 0
+  if (filterFolder.value === 'all' || filterFolder.value === 'trash') {
+    return folderNoteCounts.value.total
+  }
   return countInFolder(filterFolder.value)
 })
 
@@ -270,6 +369,10 @@ function toggleTagsList(e: Event) {
 const activeNoteId = computed(() =>
   route.name === 'note' && typeof route.params.id === 'string' ? route.params.id : null
 )
+
+function bumpEditorSyncIfOpen(noteId: string) {
+  if (noteId === activeNoteId.value) editorSyncSignal.value++
+}
 
 type NoteSort =
   | 'updated_desc'
@@ -307,7 +410,8 @@ const sortedNotes = computed(() => {
 
 async function loadFolders() {
   try {
-    folders.value = await foldersApi.list()
+    const list = await foldersApi.list()
+    folders.value = [...list]
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -330,8 +434,27 @@ async function load() {
   try {
     if (filterFolder.value === 'trash') {
       notes.value = await notesApi.listTrash()
-      tags.value = []
-      tagCountById.value = {}
+      try {
+        const [tagList, counts] = await Promise.all([
+          tagsApi.list(),
+          tagsApi.noteCounts(undefined),
+        ])
+        tags.value = tagList
+        const map: Record<string, number> = {}
+        for (const c of counts) {
+          map[String(c.tag_id)] = c.count
+        }
+        tagCountById.value = map
+      } catch {
+        try {
+          tags.value = await tagsApi.list()
+        } catch (e2) {
+          error.value = errMessage(e2)
+          tags.value = []
+        }
+      }
+      void loadFolderCounts()
+      reminderRefreshSignal.value++
       return
     }
     const fParams = folderListParams()
@@ -374,10 +497,8 @@ async function load() {
   } finally {
     loading.value = false
   }
-  if (filterFolder.value !== 'trash') {
-    void loadFolderCounts()
-    reminderRefreshSignal.value++
-  }
+  void loadFolderCounts()
+  reminderRefreshSignal.value++
 }
 
 async function createFolder() {
@@ -398,10 +519,19 @@ async function deleteFolder(f: Folder) {
   try {
     await foldersApi.remove(f.id)
     if (filterFolder.value === f.id) filterFolder.value = 'all'
-    await loadFolders()
+    error.value = ''
+    try {
+      const list = await foldersApi.list()
+      /* если GET закэширован и вернул старую папку — всё равно убираем удалённую */
+      folders.value = list.filter((x) => x.id !== f.id)
+    } catch {
+      folders.value = folders.value.filter((x) => x.id !== f.id)
+    }
+    await nextTick()
     await load()
   } catch (e) {
     error.value = errMessage(e)
+    await loadFolders()
   }
 }
 
@@ -409,9 +539,35 @@ async function renameFolder(f: Folder) {
   const name = prompt('Новое имя папки', f.name)
   if (!name || !name.trim()) return
   try {
-    await foldersApi.update(f.id, { name: name.trim() })
+    const updated = await foldersApi.update(f.id, { name: name.trim() })
     error.value = ''
+    folders.value = folders.value.map((x) => (x.id === updated.id ? updated : x))
+    await nextTick()
+    await load()
+  } catch (e) {
+    error.value = errMessage(e)
     await loadFolders()
+  }
+}
+
+async function renameTag(t: Tag) {
+  const name = prompt('Новое имя метки', t.name)
+  if (!name || !name.trim()) return
+  try {
+    await tagsApi.update(t.id, { name: name.trim() })
+    error.value = ''
+    await load()
+  } catch (e) {
+    error.value = errMessage(e)
+  }
+}
+
+async function removeTag(t: Tag) {
+  if (!confirm(`Удалить метку «${t.name}»? Дочерние станут на ступень выше.`)) return
+  try {
+    await tagsApi.remove(t.id)
+    if (filterTagId.value === t.id) filterTagId.value = null
+    error.value = ''
     await load()
   } catch (e) {
     error.value = errMessage(e)
@@ -434,7 +590,7 @@ async function restoreNote(n: Note, ev: Event) {
 async function purgeNote(n: Note, ev: Event) {
   ev.preventDefault()
   ev.stopPropagation()
-  if (!confirm(`Удалить «${n.title || 'Без названия'}» навсегда?`)) return
+  if (!confirm(`Удалить «${n.title || DEFAULT_NOTE_TITLE}» навсегда?`)) return
   try {
     await notesApi.purge(n.id)
     error.value = ''
@@ -462,7 +618,7 @@ async function createNote() {
         ? filterFolder.value
         : undefined
     const n = await notesApi.create({
-      title: 'Без названия',
+      title: DEFAULT_NOTE_TITLE,
       content_json: '{}',
       folder_id,
     })
@@ -502,6 +658,9 @@ function noteBodyPreview(n: Note): string {
 onMounted(async () => {
   await loadFolders()
   await load()
+  await nextTick()
+  clampTagsPanelHeight()
+  window.addEventListener('resize', clampTagsPanelHeight)
 })
 
 watch(filterFolder, (folder) => {
@@ -509,10 +668,15 @@ watch(filterFolder, (folder) => {
   void load()
 })
 watch(filterTagId, () => {
-  if (filterFolder.value !== 'trash') void load()
+  if (filterFolder.value === 'trash') {
+    if (filterTagId.value !== null) filterFolder.value = 'all'
+    return
+  }
+  void load()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', clampTagsPanelHeight)
   window.removeEventListener('mousemove', onGutterMove)
   window.removeEventListener('mouseup', onGutterUp)
   document.body.style.cursor = ''
@@ -578,125 +742,160 @@ onBeforeUnmount(() => {
         class="folders-aside sidebar-panel"
         :style="{ width: colFolderPx + 'px', flexShrink: 0 }"
       >
-        <div class="aside-block">
-          <h2 class="aside-title">Папки</h2>
-        </div>
-        <div class="folder-actions">
-          <input
-            v-model="newFolderName"
-            type="text"
-            placeholder="Новая папка…"
-            @keyup.enter="createFolder"
-          />
-          <button type="button" class="btn-sm primary" @click="createFolder">+</button>
-        </div>
         <nav ref="folderNavRef" class="folder-nav">
           <div class="folder-nav-main" :style="folderNavMainStyle">
-            <div class="folder-all-row">
-              <button
-                v-if="foldersSorted.length"
-                type="button"
-                class="section-chevron"
-                :class="{ 'section-chevron--collapsed': !foldersListExpanded }"
-                title="Показать или скрыть список папок"
-                @click="toggleFoldersList"
-              >
-                {{ foldersListExpanded ? '▾' : '▸' }}
-              </button>
-              <span v-else class="section-chevron-spacer" />
-              <button
-                type="button"
-                class="folder-filter grow folder-filter-all"
-                :class="{ on: filterFolder === 'all' }"
-                @click="filterFolder = 'all'"
-              >
-                <span class="folder-label">Все заметки</span>
-                <span v-if="folderNoteCounts" class="tag-count">({{ folderNoteCounts.total }})</span>
-              </button>
-            </div>
-            <div v-show="foldersListExpanded" class="folder-rows">
-              <div v-for="f in foldersSorted" :key="f.id" class="folder-row">
-                <button
-                  type="button"
-                  class="folder-filter grow"
-                  :class="{ on: filterFolder === f.id }"
-                  @click="filterFolder = f.id"
-                >
-                  <span class="folder-label">{{ f.name }}</span>
-                  <span class="tag-count">({{ countInFolder(f.id) }})</span>
-                </button>
-                <button type="button" class="btn-rename" title="Переименовать" @click.stop="renameFolder(f)">
-                  ✎
-                </button>
-                <button type="button" class="btn-del" title="Удалить папку" @click.stop="deleteFolder(f)">
-                  ×
-                </button>
+            <div class="folder-nav-folders-panel">
+              <div class="folder-nav-folders-sticky">
+                <div class="folder-new-row">
+                  <input
+                    v-model="newFolderName"
+                    type="text"
+                    placeholder="Новая папка…"
+                    aria-label="Имя новой папки"
+                    @keyup.enter="createFolder"
+                  />
+                  <button type="button" class="btn-sm primary" title="Создать папку" @click="createFolder">+</button>
+                </div>
+                <div class="folder-all-row tag-all-wrap folder-all-row--frame">
+                  <button
+                    v-if="foldersSorted.length"
+                    type="button"
+                    class="section-chevron"
+                    :class="{ 'section-chevron--collapsed': !foldersListExpanded }"
+                    title="Показать или скрыть список папок"
+                    @click="toggleFoldersList"
+                  >
+                    {{ foldersListExpanded ? '▾' : '▸' }}
+                  </button>
+                  <span v-else class="section-chevron-spacer" />
+                  <button
+                    type="button"
+                    class="folder-filter grow folder-filter-all"
+                    :class="{ on: filterFolder === 'all' }"
+                    @click="filterFolder = 'all'"
+                    @dragover="onFolderDragOver"
+                    @drop="onFolderDrop($event, 'all')"
+                  >
+                    <span class="folder-label nav-scope-label">Все заметки</span>
+                    <span v-if="folderNoteCounts" class="tag-count">({{ folderNoteCounts.total }})</span>
+                  </button>
+                </div>
+              </div>
+              <div class="folder-nav-folders-scroll">
+                <div v-show="foldersListExpanded" class="folder-rows">
+                  <div
+                    v-for="f in foldersSorted"
+                    :key="f.id"
+                    class="nav-row"
+                    :class="{ on: filterFolder === f.id }"
+                    @dragover="onFolderDragOver"
+                    @drop="onFolderDrop($event, f.id)"
+                  >
+                    <button type="button" class="nav-row-label" @click="filterFolder = f.id">
+                      <span class="folder-label">{{ f.name }}</span>
+                    </button>
+                    <div class="nav-row-actions">
+                      <button
+                        type="button"
+                        class="btn-rename"
+                        title="Переименовать"
+                        @click.stop="renameFolder(f)"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-del"
+                        title="Удалить папку"
+                        @click.stop="deleteFolder(f)"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <span class="tag-count">({{ countInFolder(f.id) }})</span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-          <ReminderCalendar
-            v-if="filterFolder !== 'trash'"
-            :refresh-signal="reminderRefreshSignal"
-            @open-note="openNote"
-          />
           <div
-            v-if="filterFolder !== 'trash'"
             class="folder-nav-v-gutter"
             title="Потяните: больше места для папок или для меток"
             @mousedown="onFolderNavVGutterDown($event)"
           />
           <div class="folder-nav-bottom" :style="folderNavBottomStyle">
-            <div v-if="filterFolder !== 'trash'" class="folder-nav-tags">
-              <h3 class="tags-aside-title">Метки</h3>
-              <div class="folder-all-row tag-all-wrap">
-                <button
-                  v-if="tags.length"
-                  type="button"
-                  class="section-chevron"
-                  :class="{ 'section-chevron--collapsed': !tagsListExpanded }"
-                  title="Показать или скрыть список меток"
-                  @click="toggleTagsList"
-                >
-                  {{ tagsListExpanded ? '▾' : '▸' }}
-                </button>
-                <span v-else class="section-chevron-spacer" />
-                <button
-                  type="button"
-                  class="folder-filter tag-filter grow folder-filter-all"
-                  :class="{ on: filterTagId === null }"
-                  @click="filterTagId = null"
-                >
-                  <span class="folder-label">Все метки</span>
-                  <span v-if="folderNoteCounts" class="tag-count">({{ scopeNoteTotal }})</span>
-                </button>
+            <div class="folder-nav-tags-panel" :style="{ height: tagsPanelHeightPx + 'px' }">
+                <div class="folder-nav-tags-sticky">
+                  <div class="folder-all-row tag-all-wrap folder-all-row--frame">
+                    <button
+                      v-if="tags.length"
+                      type="button"
+                      class="section-chevron"
+                      :class="{ 'section-chevron--collapsed': !tagsListExpanded }"
+                      title="Показать или скрыть список меток"
+                      @click="toggleTagsList"
+                    >
+                      {{ tagsListExpanded ? '▾' : '▸' }}
+                    </button>
+                    <span v-else class="section-chevron-spacer" />
+                    <button
+                      type="button"
+                      class="folder-filter tag-filter grow folder-filter-all"
+                      :class="{ on: filterTagId === null }"
+                      @click="filterTagId = null"
+                    >
+                      <span class="folder-label nav-scope-label">Все метки</span>
+                      <span v-if="folderNoteCounts" class="tag-count">({{ scopeNoteTotal }})</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="folder-nav-tags-scroll">
+                  <div
+                    v-for="t in tagsVisibleInSidebar"
+                    v-show="tagsListExpanded"
+                    :key="t.id"
+                    class="nav-row tag-sidebar-row"
+                    :class="{ on: filterTagId === t.id }"
+                    :style="{ paddingLeft: (0.35 + Math.max(0, t.depth - 1) * 0.55) + 'rem' }"
+                    draggable="true"
+                    @dragstart="onTagDragStart($event, t.id)"
+                  >
+                    <button type="button" class="nav-row-label nav-row-label--tag" @click="filterTagId = t.id">
+                      <span
+                        v-if="tagsWithKids.has(t.id)"
+                        class="tag-chevron"
+                        title="Свернуть / развернуть вложенные"
+                        role="button"
+                        tabindex="0"
+                        @click="toggleTagNavCollapse(t.id, $event)"
+                        @keydown.enter.prevent="toggleTagNavCollapse(t.id, $event)"
+                        @keydown.space.prevent="toggleTagNavCollapse(t.id, $event)"
+                      >
+                        {{ collapsedTagIds[t.id] ? '▸' : '▾' }}
+                      </span>
+                      <span v-else class="tag-chevron tag-chevron-spacer" aria-hidden="true" />
+                      <span class="tag-sidebar-name">{{ t.name }}</span>
+                    </button>
+                    <div class="nav-row-actions">
+                      <button type="button" class="btn-rename" title="Переименовать" @click.stop="renameTag(t)">
+                        ✎
+                      </button>
+                      <button type="button" class="btn-del" title="Удалить метку" @click.stop="removeTag(t)">
+                        ×
+                      </button>
+                    </div>
+                    <span class="tag-count">({{ tagCountById[t.id] ?? 0 }})</span>
+                  </div>
+                </div>
               </div>
-              <button
-                v-for="t in tagsVisibleInSidebar"
-                v-show="tagsListExpanded"
-                :key="t.id"
-                type="button"
-                class="folder-filter tag-filter tag-sidebar-row"
-                :class="{ on: filterTagId === t.id }"
-                :style="{ paddingLeft: (0.35 + Math.max(0, t.depth - 1) * 0.55) + 'rem' }"
-                @click="filterTagId = t.id"
-              >
-                <span
-                  v-if="tagsWithKids.has(t.id)"
-                  class="tag-chevron"
-                  title="Свернуть / развернуть вложенные"
-                  role="button"
-                  tabindex="0"
-                  @click="toggleTagNavCollapse(t.id, $event)"
-                  @keydown.enter.prevent="toggleTagNavCollapse(t.id, $event)"
-                  @keydown.space.prevent="toggleTagNavCollapse(t.id, $event)"
-                >
-                  {{ collapsedTagIds[t.id] ? '▸' : '▾' }}
-                </span>
-                <span v-else class="tag-chevron tag-chevron-spacer" aria-hidden="true" />
-                <span class="tag-sidebar-name">{{ t.name }}</span>
-                <span class="tag-count">({{ tagCountById[t.id] ?? 0 }})</span>
-              </button>
-            </div>
+              <div
+                class="folder-nav-tags-cal-gutter"
+                title="Потяните вниз — меньше меток и больше календарь; вверх — больше меток"
+                @mousedown="onTagsCalendarGutterDown($event)"
+              />
+              <div class="folder-nav-calendar-wrap">
+                <ReminderCalendar :refresh-signal="reminderRefreshSignal" @open-note="openNote" />
+              </div>
             <div class="folder-nav-footer">
               <button
                 type="button"
@@ -747,9 +946,13 @@ onBeforeUnmount(() => {
                 class="note-item"
                 :class="{ current: n.id === activeNoteId }"
                 :title="noteRowTitle(n)"
+                :draggable="filterFolder !== 'trash'"
+                @dragstart="onNoteDragStart($event, n.id)"
+                @dragover="onNoteRowDragOver"
+                @drop="onNoteRowDrop($event, n.id)"
                 @click="openNote(n.id)"
               >
-                <span class="note-title">{{ n.title || 'Без названия' }}</span>
+                <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                 <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
                 <span class="meta">
                   <span v-if="n.folder_id && filterFolder !== 'trash'" class="folder-badge">{{
@@ -791,7 +994,11 @@ onBeforeUnmount(() => {
       />
 
       <div class="editor-shell">
-        <NoteEditorColumn :note-id="activeNoteId" @refresh="load" />
+        <NoteEditorColumn
+          :note-id="activeNoteId"
+          :editor-sync-signal="editorSyncSignal"
+          @refresh="load"
+        />
       </div>
     </div>
   </div>
@@ -962,11 +1169,11 @@ onBeforeUnmount(() => {
   z-index: 2;
 }
 .col-gutter:hover {
-  background: rgba(37, 99, 235, 0.12);
+  background: rgba(15, 23, 42, 0.06);
 }
 .folders-aside {
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
-  background: linear-gradient(190deg, #f1f5f9 0%, #eef2f7 100%);
+  border-right: 1px solid var(--sidebar-edge);
+  background: var(--sidebar-bg);
   padding: 0.65rem 0.55rem;
   display: flex;
   flex-direction: column;
@@ -974,31 +1181,28 @@ onBeforeUnmount(() => {
   min-height: 0;
   max-height: calc(100vh - 52px);
   overflow: hidden;
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Inter', Roboto, sans-serif;
+  color: #1f2937;
 }
 .sidebar-panel {
-  box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.06);
+  box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.04);
 }
-.aside-title {
-  margin: 0;
-  font-size: 0.6875rem;
-  font-weight: 650;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #64748b;
-}
-.folder-actions {
+.folder-new-row {
   display: flex;
   gap: 0.32rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
 }
-.folder-actions input {
+.folder-new-row input {
   flex: 1;
   min-width: 0;
-  padding: 0.3rem 0.42rem;
+  padding: 0.28rem 0.4rem;
   border-radius: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid #d1d5db;
   font: inherit;
-  font-size: 0.72rem;
-  background: var(--panel);
+  font-size: 0.7rem;
+  background: #fff;
+  color: #1f2937;
 }
 .btn-sm {
   padding: 0.28rem 0.44rem;
@@ -1022,16 +1226,86 @@ onBeforeUnmount(() => {
 .folder-nav-main {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding-bottom: 0.32rem;
+  gap: 0;
+  padding-bottom: 0;
+  min-height: 0;
 }
 .folder-all-row {
   display: flex;
   align-items: stretch;
   gap: 2px;
 }
+.folder-all-row--frame {
+  border: 1px solid var(--sidebar-edge);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  align-items: stretch;
+}
+.folder-all-row--frame .section-chevron {
+  border-radius: 0;
+  align-self: stretch;
+}
+.folder-all-row--frame .folder-filter-all {
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+.folder-all-row--frame .folder-filter-all.on {
+  border-radius: 0;
+}
+.nav-scope-label {
+  font-weight: 600;
+  font-size: 0.76rem;
+  letter-spacing: -0.02em;
+  color: #111827;
+}
+.folder-filter-all.on .nav-scope-label {
+  color: #111827;
+}
 .tag-all-wrap {
   margin-bottom: 3px;
+}
+.folder-nav-tags-cal-gutter {
+  flex-shrink: 0;
+  height: 6px;
+  margin: 0 -0.15rem;
+  border-radius: 3px;
+  cursor: row-resize;
+  background: transparent;
+}
+.folder-nav-calendar-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-top: 2px;
+}
+.folder-nav-tags-panel,
+.folder-nav-folders-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafbfc;
+  box-shadow: none;
+}
+.folder-nav-tags-panel {
+  flex: 0 0 auto;
+}
+.folder-nav-folders-panel {
+  flex: 1 1 auto;
+}
+.folder-nav-tags-sticky,
+.folder-nav-folders-sticky {
+  flex-shrink: 0;
+  padding: 0.35rem 0.4rem 0.25rem;
+  border-bottom: 1px solid #eceef2;
+  background: transparent;
+  border-radius: 8px 8px 0 0;
 }
 .section-chevron {
   flex-shrink: 0;
@@ -1047,20 +1321,27 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 .section-chevron:hover {
-  background: rgba(37, 99, 235, 0.1);
-  color: var(--accent);
+  background: var(--sidebar-hover);
+  color: #374151;
 }
 .section-chevron-spacer {
   width: 1.35rem;
   flex-shrink: 0;
+}
+.folder-nav-folders-panel .folder-filter {
+  font-size: 0.78rem;
+}
+.folder-nav-folders-panel .folder-filter .tag-count {
+  font-size: 0.62rem;
+  font-weight: 500;
+  line-height: 1.2;
 }
 .folder-rows {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
-.folder-filter-all,
-.folder-row .folder-filter.grow {
+.folder-filter-all {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1081,29 +1362,26 @@ onBeforeUnmount(() => {
   cursor: row-resize;
   background: transparent;
 }
-.folder-nav-v-gutter:hover {
-  background: rgba(37, 99, 235, 0.14);
-}
 .folder-nav-bottom {
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
-.folder-nav-tags {
+.folder-nav-tags-scroll,
+.folder-nav-folders-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.35rem 0 0.4rem;
-  border-top: 1px solid var(--border);
+  overflow-x: hidden;
+  padding: 0.25rem 0.35rem 0.3rem;
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
-.tags-aside-title {
-  margin: 0 0 0.2rem;
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
+.folder-nav-tags-panel .folder-filter .tag-count {
+  font-size: 0.62rem;
+  font-weight: 500;
+  line-height: 1.2;
 }
 .tag-filter {
   display: flex;
@@ -1111,9 +1389,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 0.35rem;
 }
-.folder-filter.tag-filter.tag-sidebar-row {
-  display: flex;
-  justify-content: flex-start;
+.nav-row.tag-sidebar-row .nav-row-label--tag {
   gap: 0.25rem;
 }
 .tag-sidebar-name {
@@ -1135,24 +1411,25 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 .tag-chevron:hover {
-  background: rgba(37, 99, 235, 0.12);
-  color: var(--accent);
+  background: var(--sidebar-hover);
+  color: #374151;
 }
 .tag-chevron-spacer {
   visibility: hidden;
   pointer-events: none;
 }
-.tag-filter .tag-count {
+.nav-row .tag-count {
+  font-size: 0.62rem;
   font-weight: 500;
   opacity: 0.72;
   flex-shrink: 0;
-  margin-left: auto;
+  line-height: 1.2;
 }
 .folder-nav-footer {
   flex-shrink: 0;
-  margin-top: 0;
+  margin-top: auto;
   padding-top: 0.4rem;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid #e5e7eb;
 }
 .folder-filter {
   display: block;
@@ -1160,34 +1437,35 @@ onBeforeUnmount(() => {
   text-align: left;
   padding: 0.36rem 0.5rem;
   border: 1px solid transparent;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
+  border-radius: 8px;
+  background: transparent;
   cursor: pointer;
   font: inherit;
   font-size: 0.72rem;
-  color: #475569;
+  color: #374151;
   transition:
     background 0.12s ease,
     border-color 0.12s ease,
     color 0.12s ease;
 }
 .folder-filter:hover:not(.on) {
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(148, 163, 184, 0.35);
+  background: var(--sidebar-hover);
+  border-color: transparent;
 }
 .folder-filter.grow {
   flex: 1;
 }
 .folder-filter.on {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: transparent;
+  color: #111827;
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.1);
+  box-shadow: none;
 }
 .trash-filter {
   font-size: 0.7rem;
-  background: rgba(255, 255, 255, 0.4);
+  background: transparent;
+  color: #4b5563;
 }
 .trash-filter.on {
   color: var(--danger);
@@ -1209,12 +1487,82 @@ onBeforeUnmount(() => {
 }
 .btn-rename:hover {
   color: var(--accent);
-  background: var(--bg);
+  background: var(--sidebar-hover);
 }
-.folder-row {
+.nav-row {
   display: flex;
   align-items: center;
+  gap: 0.2rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.32rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: default;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.nav-row:hover:not(.on) {
+  background: var(--sidebar-hover);
+  border-color: transparent;
+}
+.nav-row.on {
+  background: var(--sidebar-active);
+  border-color: transparent;
+  box-shadow: none;
+}
+.nav-row.on .tag-count {
+  color: #6b7280;
+  font-weight: 600;
+  font-size: 0.62rem;
+  opacity: 1;
+}
+.nav-row.on .folder-label,
+.nav-row.on .tag-sidebar-name {
+  color: #111827;
+  font-weight: 600;
+}
+.nav-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 0.72rem;
+  color: #374151;
+  text-align: left;
+}
+/* Папки: чуть крупнее текст строки (+~1 pt к базовому 0.72rem) */
+.nav-row:not(.tag-sidebar-row) .nav-row-label {
+  font-size: 0.78rem;
+}
+.nav-row-label:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.nav-row-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   gap: 2px;
+}
+@media (hover: hover) {
+  .nav-row .nav-row-actions {
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .nav-row:hover .nav-row-actions,
+  .nav-row:focus-within .nav-row-actions {
+    opacity: 1;
+  }
 }
 .btn-del {
   flex-shrink: 0;
@@ -1230,7 +1578,7 @@ onBeforeUnmount(() => {
 }
 .btn-del:hover {
   color: var(--danger);
-  background: var(--bg);
+  background: var(--sidebar-hover);
 }
 
 .notes-list-col {

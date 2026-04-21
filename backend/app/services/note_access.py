@@ -66,7 +66,14 @@ async def get_note_access(
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
 
+    # Владелец по-прежнему «видит» заметку в корзине (как в get_note_for_read).
+    # Редактирование отключаем в require_note_edit.
+
     if note.deleted_at is not None:
+
+        if note.owner_id == user_id:
+
+            return note, Access.owner
 
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
 
@@ -177,6 +184,14 @@ async def require_note_edit(
     if access not in (Access.owner, Access.edit):
 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Edit not allowed")
+
+    if note.deleted_at is not None:
+
+        raise HTTPException(
+
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot edit trashed note"
+
+        )
 
     return note
 
