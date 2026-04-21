@@ -13,7 +13,7 @@ import { TextStyle } from '@tiptap/extension-text-style'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { encryptText } from '../utils/cryptoSecret'
+import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 
 /** Цвет букв (круги + первая палитра). */
 const TEXT_COLOR_PRESETS = [
@@ -275,6 +275,11 @@ async function startRecording() {
   const ed = editor.value
   if (!ed || !props.editable || recording.value) return
   recordErr.value = ''
+  if (typeof window !== 'undefined' && !isSecureBrowserContext()) {
+    recordErr.value =
+      'Запись с микрофона доступна только по HTTPS или на localhost. В Chrome по http://IP микрофон отключён политикой безопасности.'
+    return
+  }
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     recordErr.value = 'Запись недоступна в этом браузере.'
     return
@@ -397,6 +402,10 @@ async function confirmEncrypt() {
     encryptErr.value = 'Введите ключ не короче 4 символов'
     return
   }
+  if (typeof window !== 'undefined' && !isSecureBrowserContext()) {
+    encryptErr.value = HTTPS_REQUIRED_MSG
+    return
+  }
   encryptErr.value = ''
   try {
     const payload = await encryptText(encryptPlain, pw)
@@ -415,7 +424,10 @@ async function confirmEncrypt() {
       .run()
     closeEncryptDialog()
   } catch {
-    encryptErr.value = 'Не удалось зашифровать. Попробуйте другой ключ.'
+    encryptErr.value =
+      typeof window !== 'undefined' && !isSecureBrowserContext()
+        ? HTTPS_REQUIRED_MSG
+        : 'Не удалось зашифровать. Попробуйте другой ключ.'
   }
 }
 

@@ -3,6 +3,15 @@
  * Сервер хранит только salt / iv / ciphertext в JSON — без ключа расшифровать нельзя.
  */
 
+/** Web Crypto (crypto.subtle) в Chromium доступен только в secure context: HTTPS или localhost. */
+export function isSecureBrowserContext(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.isSecureContext
+}
+
+export const HTTPS_REQUIRED_MSG =
+  'Шифрование в браузере доступно только по HTTPS или на localhost. Откройте сайт с доменом и сертификатом (Let’s Encrypt и т.п.), не по голому http://IP.'
+
 const VERSION = 1
 const PBKDF2_ITERATIONS = 210_000
 const SALT_BYTES = 16
