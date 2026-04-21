@@ -7,8 +7,8 @@ COPY frontend/ ./
 # Пустой base — запросы на тот же origin, Nginx проксирует /api
 ARG VITE_API_BASE=
 ENV VITE_API_BASE=$VITE_API_BASE
-# VPS 1 ГБ RAM: дефолтный лимит heap Node (~512 MiB) не хватает на vite build + tsc
-ENV NODE_OPTIONS="--max-old-space-size=896"
+# Сборка фронта жирная (vue-tsc + vite); при малом RAM на хосте добавьте swap и/или GHCR-образы
+ENV NODE_OPTIONS="--max-old-space-size=1536"
 RUN npm run build
 
 FROM public.ecr.aws/docker/library/nginx:1.27-alpine
