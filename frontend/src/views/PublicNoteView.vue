@@ -159,7 +159,12 @@ const bannerText = computed(() => {
         Режим ссылки: {{ role === 'editor' ? 'редактирование' : 'только чтение' }}
         <span v-if="saving"> · Сохранение…</span>
       </p>
-      <NoteEditor v-model:contentJson="contentJson" :editable="canEdit" />
+      <NoteEditor
+        v-model:contentJson="contentJson"
+        :editable="canEdit"
+        :note-id="note?.id ?? null"
+        :public-token="token"
+      />
     </template>
   </div>
 </template>

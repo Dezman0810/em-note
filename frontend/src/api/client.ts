@@ -1,6 +1,7 @@
 import axios, { isAxiosError } from 'axios'
 import type {
   AdminUserRow,
+  AttachmentMeta,
   Folder,
   FolderNoteCounts,
   Note,
@@ -265,6 +266,21 @@ export const sharesApi = {
   },
 }
 
+export const attachmentsApi = {
+  async upload(noteId: string, file: File): Promise<AttachmentMeta> {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await api.post<AttachmentMeta>(`/api/notes/${noteId}/attachments`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return data
+  },
+  async downloadBlob(attachmentId: string): Promise<Blob> {
+    const { data } = await api.get(`/api/attachments/${attachmentId}/file`, { responseType: 'blob' })
+    return data
+  },
+}
+
 export const publicNoteApi = {
   async get(token: string): Promise<PublicNotePayload> {
     const { data } = await api.get<PublicNotePayload>(`/api/public/notes/${encodeURIComponent(token)}`)
@@ -275,6 +291,23 @@ export const publicNoteApi = {
     body: Partial<Pick<Note, 'title' | 'content_json' | 'content_plain'>>
   ): Promise<Note> {
     const { data } = await api.patch<Note>(`/api/public/notes/${encodeURIComponent(token)}`, body)
+    return data
+  },
+  async uploadAttachment(token: string, file: File): Promise<AttachmentMeta> {
+    const form = new FormData()
+    form.append('file', file)
+    const { data } = await api.post<AttachmentMeta>(
+      `/api/public/notes/${encodeURIComponent(token)}/attachments`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    return data
+  },
+  async downloadAttachmentBlob(token: string, attachmentId: string): Promise<Blob> {
+    const { data } = await api.get(
+      `/api/public/notes/${encodeURIComponent(token)}/attachments/${attachmentId}/file`,
+      { responseType: 'blob' }
+    )
     return data
   },
 }

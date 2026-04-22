@@ -17,6 +17,15 @@ export interface AdminUserRow {
   can_create_notes: boolean
 }
 
+/** Ответ POST /api/notes/.../attachments */
+export interface AttachmentMeta {
+  id: string
+  original_filename: string
+  content_type: string
+  size_bytes: number
+  is_image: boolean
+}
+
 export interface Note {
   id: string
   owner_id: string

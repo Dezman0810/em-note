@@ -1069,7 +1069,11 @@ watch(
           </div>
         </div>
 
-        <NoteEditor v-model:contentJson="contentJson" :editable="editorEditable" />
+        <NoteEditor
+          v-model:contentJson="contentJson"
+          :editable="editorEditable"
+          :note-id="note?.id ?? null"
+        />
         </div>
       </template>
 

@@ -37,6 +37,11 @@ def plain_text_from_tiptap_json(content_json: str) -> str:
                 parts.append("[аудио]")
         if node.get("type") == "encryptedInline":
             parts.append("[зашифровано]")
+        if node.get("type") == "uploadedFile":
+            attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+            raw = attrs.get("filename")
+            name = raw.strip() if isinstance(raw, str) else ""
+            parts.append(f"[файл: {name}]" if name else "[файл]")
         for child in node.get("content") or []:
             walk(child)
 

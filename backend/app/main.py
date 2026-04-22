@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import admin, auth, folders, mail, note_public_links, notes, public_notes, shares, tags, user_settings
+from app.api.routers import admin, attachments, auth, folders, mail, note_public_links, notes, public_notes, shares, tags, user_settings
 from app.config import settings
 
 
@@ -27,6 +27,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(attachments.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(tags.router, prefix="/api")
 app.include_router(shares.router, prefix="/api")

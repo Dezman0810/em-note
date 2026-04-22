@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
 
+    # Локальные вложения (файлы на диске; в Docker смонтируйте том в этот каталог)
+    attachments_dir: str = "/app/data/attachments"
+    max_attachment_bytes: int = 25 * 1024 * 1024
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

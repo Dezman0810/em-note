@@ -10,6 +10,7 @@ from app.models.note_tag import note_tag
 
 if TYPE_CHECKING:
     from app.models.folder import Folder
+    from app.models.note_attachment import NoteAttachment
     from app.models.note_public_link import NotePublicLink
     from app.models.share import NoteShare
     from app.models.tag import Tag
@@ -59,4 +60,7 @@ class Note(Base):
     )
     public_link: Mapped["NotePublicLink | None"] = relationship(
         "NotePublicLink", back_populates="note", uselist=False, cascade="all, delete-orphan"
+    )
+    attachments: Mapped[list["NoteAttachment"]] = relationship(
+        "NoteAttachment", back_populates="note", cascade="all, delete-orphan"
     )

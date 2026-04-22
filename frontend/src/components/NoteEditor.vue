@@ -13,7 +13,10 @@ import { TextStyle } from '@tiptap/extension-text-style'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { attachmentsApi, errMessage, publicNoteApi } from '../api/client'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
+import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
+import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 
 /** Цвет букв (круги + первая палитра). */
 const TEXT_COLOR_PRESETS = [
@@ -40,14 +43,39 @@ const HIGHLIGHT_FILL_PRESETS = [
 ] as const
 
 const props = withDefaults(
-  defineProps<{ contentJson: string; editable?: boolean }>(),
-  { editable: true }
+  defineProps<{
+    contentJson: string
+    editable?: boolean
+    /** Нужен для загрузки вложений (после первого сохранения заметки). */
+    noteId?: string | null
+    /** Публичная ссылка: загрузка/скачивание через /api/public/... */
+    publicToken?: string | null
+  }>(),
+  { editable: true, noteId: null, publicToken: null }
 )
 const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
 const toolbarTick = ref(0)
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024
+
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const fileUploadErr = ref('')
+
+watch(
+  () => [props.noteId, props.publicToken] as const,
+  () => {
+    const tok = props.publicToken?.trim()
+    if (tok) {
+      registerAttachmentBlobResolver((id) => publicNoteApi.downloadAttachmentBlob(tok, id))
+    } else if (props.noteId) {
+      registerAttachmentBlobResolver((id) => attachmentsApi.downloadBlob(id))
+    } else {
+      registerAttachmentBlobResolver(null)
+    }
+  },
+  { immediate: true }
+)
 
 const recording = ref(false)
 const recordErr = ref('')
@@ -107,6 +135,7 @@ const editor = useEditor({
     EncryptedInline,
     ExcalidrawBlock,
     AudioNoteBlock,
+    UploadedFileBlock,
   ],
   content: parseDoc(props.contentJson),
   onUpdate: ({ editor: ed }) => {
@@ -252,6 +281,42 @@ function unsetHighlightFill() {
 
 function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
+}
+
+function triggerFilePick() {
+  fileUploadErr.value = ''
+  fileInputRef.value?.click()
+}
+
+async function onFilePicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const ed = editor.value
+  if (!ed || !props.editable) return
+  if (!props.noteId) {
+    fileUploadErr.value = 'Сначала сохраните заметку — без id файлы не прикрепить.'
+    return
+  }
+  fileUploadErr.value = ''
+  try {
+    const tok = props.publicToken?.trim()
+    const meta = tok
+      ? await publicNoteApi.uploadAttachment(tok, file)
+      : await attachmentsApi.upload(props.noteId, file)
+    ed.chain()
+      .focus()
+      .insertUploadedFile({
+        attachmentId: meta.id,
+        filename: meta.original_filename,
+        mimeType: meta.content_type,
+        isImage: meta.is_image,
+      })
+      .run()
+  } catch (e) {
+    fileUploadErr.value = errMessage(e)
+  }
 }
 
 function pickAudioMime(): string {
@@ -432,6 +497,7 @@ async function confirmEncrypt() {
 }
 
 onBeforeUnmount(() => {
+  registerAttachmentBlobResolver(null)
   if (recording.value && mediaRecorder) {
     try {
       mediaRecorder.stop()
@@ -570,6 +636,22 @@ onBeforeUnmount(() => {
         Зашифровать
       </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
+      <input
+        ref="fileInputRef"
+        type="file"
+        class="visually-hidden"
+        aria-hidden="true"
+        @change="onFilePicked"
+      />
+      <button
+        v-if="editable"
+        type="button"
+        class="tb"
+        title="Загрузить файл или изображение на сервер (до ~25 МБ)"
+        @click="triggerFilePick"
+      >
+        Файл
+      </button>
       <button
         v-if="editable"
         type="button"
@@ -581,6 +663,7 @@ onBeforeUnmount(() => {
         {{ recording ? '■ Стоп' : '🎤 Аудио' }}
       </button>
     </div>
+    <p v-if="fileUploadErr" class="record-err">{{ fileUploadErr }}</p>
     <p v-if="recordErr" class="record-err">{{ recordErr }}</p>
     <p v-if="encryptHint" class="encrypt-hint">{{ encryptHint }}</p>
     <EditorContent :editor="editor" class="editor-content" />

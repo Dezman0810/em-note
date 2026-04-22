@@ -35,11 +35,13 @@ services:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/note
+      ATTACHMENTS_DIR: /app/data/attachments
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - em_note_attachments:/app/data/attachments
     ports:
       - "8000:8000"
     command:
@@ -72,4 +74,5 @@ services:
 
 volumes:
   em_note_pg_data:
+  em_note_attachments:
   web_node_modules:

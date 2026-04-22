@@ -24,12 +24,15 @@ services:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-note}
+      ATTACHMENTS_DIR: /app/data/attachments
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     expose:
       - "8000"
+    volumes:
+      - em_note_attachments:/app/data/attachments
 
   web:
     build:
@@ -43,3 +46,4 @@ services:
 
 volumes:
   em_note_pg_data:
+  em_note_attachments:

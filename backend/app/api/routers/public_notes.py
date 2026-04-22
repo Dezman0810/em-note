@@ -1,15 +1,22 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
+from app.config import settings
 from app.models.note import Note
+from app.models.note_attachment import NoteAttachment
 from app.models.note_public_link import NotePublicLink
 from app.models.share import ShareRole
+from app.schemas.attachment import AttachmentRead
+from app.services.attachment_ops import create_attachment_for_note
 from app.schemas.note import NoteRead, NoteUpdate
 from app.schemas.public_link import PublicNotePayload
 from app.utils.json_compare import json_doc_equal
@@ -97,3 +104,36 @@ async def patch_public_note(
     )
     assert loaded is not None
     return NoteRead.from_note_public(loaded)
+
+
+@router.post("/notes/{token}/attachments", response_model=AttachmentRead)
+async def public_upload_attachment(
+    token: str,
+    file: Annotated[UploadFile, File()],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AttachmentRead:
+    note, link = await _note_by_public_token(db, token)
+    if link.role != ShareRole.editor.value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Edit not allowed for this link")
+    row = await create_attachment_for_note(db, note.id, file)
+    return AttachmentRead.from_row(row)
+
+
+@router.get("/notes/{token}/attachments/{attachment_id}/file")
+async def public_download_attachment(
+    token: str,
+    attachment_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    note, _link = await _note_by_public_token(db, token)
+    row = await db.get(NoteAttachment, attachment_id)
+    if row is None or row.note_id != note.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    path = Path(settings.attachments_dir) / row.storage_key
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
+    return FileResponse(
+        path,
+        media_type=row.content_type or "application/octet-stream",
+        filename=row.original_filename or "download",
+    )
