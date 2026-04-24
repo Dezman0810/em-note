@@ -4,6 +4,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createRoot } from 'react-dom/client'
 import * as React from 'react'
 import { ExcalidrawApp } from './ExcalidrawApp'
+import { excalidrawBarCopy, excalidrawBarCut, excalidrawBarPaste } from './excalidrawBarClipboard'
+import { excalidrawGetApiForPasteRoot } from './excalidrawApiRegistry'
 
 const props = defineProps(nodeViewProps)
 
@@ -169,6 +171,43 @@ function toggle() {
   expanded.value = !expanded.value
 }
 
+function excalPasteRootEl(): HTMLDivElement | null {
+  return hostRef.value?.querySelector('[data-excalidraw-paste-root]') ?? null
+}
+
+async function onBarCut() {
+  const root = excalPasteRootEl()
+  const api = root ? excalidrawGetApiForPasteRoot(root) : null
+  if (!root || !api) return
+  try {
+    await excalidrawBarCut(api, root)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+async function onBarCopy() {
+  const root = excalPasteRootEl()
+  const api = root ? excalidrawGetApiForPasteRoot(root) : null
+  if (!root || !api) return
+  try {
+    await excalidrawBarCopy(api, root)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
+async function onBarPaste() {
+  const root = excalPasteRootEl()
+  const api = root ? excalidrawGetApiForPasteRoot(root) : null
+  if (!root || !api) return
+  try {
+    await excalidrawBarPaste(api, root)
+  } catch (e) {
+    console.error(e)
+  }
+}
+
 function onImportFile(ev: Event) {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
@@ -211,6 +250,33 @@ function onImportFile(ev: Event) {
       :class="{ 'excal-fullscreen-shell--fallback': fullscreenFallback }"
     >
       <div class="excal-innerbar">
+        <div v-if="editor.isEditable" class="excal-innerbar-clip">
+          <button
+            type="button"
+            class="excal-fs-btn excal-clip-btn"
+            title="Вырезать выделенные элементы (в буфер схемы, не в текст заметки)"
+            @click="onBarCut"
+          >
+            Вырезать
+          </button>
+          <button
+            type="button"
+            class="excal-fs-btn excal-clip-btn"
+            title="Копировать выделение в буфер формата Excalidraw"
+            @click="onBarCopy"
+          >
+            Копировать
+          </button>
+          <button
+            type="button"
+            class="excal-fs-btn excal-clip-btn"
+            title="Вставить из буфера у курсора (рамка/несколько объектов — удобнее, чем Ctrl+V)"
+            @click="onBarPaste"
+          >
+            Вставить
+          </button>
+        </div>
+        <div class="excal-innerbar-spacer" />
         <button type="button" class="excal-fs-btn" @click="toggleFullscreen">
           {{ isFullscreenUi() ? 'Выйти из полноэкранного' : 'На весь экран' }}
         </button>
@@ -274,6 +340,19 @@ function onImportFile(ev: Event) {
   border-bottom: 1px solid var(--border);
   gap: 0.5rem;
   flex-shrink: 0;
+}
+.excal-innerbar-clip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.excal-innerbar-spacer {
+  flex: 1;
+  min-width: 0.5rem;
+}
+.excal-clip-btn {
+  font-weight: 500;
 }
 .excal-fs-btn {
   padding: 0.28rem 0.55rem;

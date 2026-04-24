@@ -20,6 +20,7 @@ import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 import {
   excalidrawInnerHasFocusedTextField,
+  resolveExcalidrawInnerForCutCopy,
   resolveExcalidrawInnerForUndoRedo,
 } from './tiptap/excalidrawPointerBridge'
 
@@ -119,8 +120,32 @@ const editor = useEditor({
           const k = event.key.toLowerCase()
           const undo = k === 'z' && !event.shiftKey
           const redo = k === 'y' || (k === 'z' && event.shiftKey)
+          const cutOrCopy = k === 'x' || k === 'c'
           if (undo || redo) {
             const inner = resolveExcalidrawInnerForUndoRedo()
+            if (inner) {
+              if (excalidrawInnerHasFocusedTextField(inner)) return false
+              if (inner.contains(document.activeElement)) return true
+              event.preventDefault()
+              inner.focus({ preventScroll: true })
+              queueMicrotask(() => {
+                inner.dispatchEvent(
+                  new KeyboardEvent('keydown', {
+                    key: event.key,
+                    code: event.code,
+                    ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey,
+                    shiftKey: event.shiftKey,
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                )
+              })
+              return true
+            }
+          }
+          if (cutOrCopy) {
+            const inner = resolveExcalidrawInnerForCutCopy()
             if (inner) {
               if (excalidrawInnerHasFocusedTextField(inner)) return false
               if (inner.contains(document.activeElement)) return true

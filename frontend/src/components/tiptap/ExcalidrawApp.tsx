@@ -1,23 +1,22 @@
-import {
-  CaptureUpdateAction,
-  convertToExcalidrawElements,
-  Excalidraw,
-  getCommonBounds,
-  MainMenu,
-  newElementWith,
-  restore,
-  serializeAsJSON,
-  viewportCoordsToSceneCoords,
-} from '@excalidraw/excalidraw'
+import { CaptureUpdateAction, Excalidraw, MainMenu, restore, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
+import { excalidrawRegisterApi } from './excalidrawApiRegistry'
+import {
+  applyExcalidrawClipboardJson,
+  excalidrawClipboardPayloadLooksLikeJson,
+} from './excalidrawClipboardApply'
 import {
   excalidrawGetLastPasteHost,
+  excalidrawInnerHasFocusedTextField,
+  excalidrawIsLikelyCanvasPointerTarget,
   excalidrawPasteRootInActiveFullscreen,
   excalidrawPasteRootUnderLastPointer,
   excalidrawSetLastPasteHost,
+  excalidrawSyntheticModKeys,
   excalidrawTrackPointerClient,
+  resolveExcalidrawInnerForCutCopy,
+  resolveExcalidrawInnerForUndoRedo,
 } from './excalidrawPointerBridge'
 import {
   createElement,
@@ -94,12 +93,6 @@ function isWritableFormElement(el: Element | null): boolean {
   return false
 }
 
-function stringLooksLikeExcalidrawClipboardPayload(s: string): boolean {
-  return (
-    s.includes('excalidraw/clipboard') || s.includes('excalidraw-api/clipboard')
-  )
-}
-
 function clipboardLooksLikeFileOrImagePaste(cd: DataTransfer | null): boolean {
   if (!cd) return false
   if (cd.files && cd.files.length > 0) return true
@@ -108,80 +101,14 @@ function clipboardLooksLikeFileOrImagePaste(cd: DataTransfer | null): boolean {
   )
 }
 
-function scenePointAtClient(
-  api: ExcalidrawImperativeAPI,
-  clientX: number,
-  clientY: number
-): { x: number; y: number } {
-  const { zoom, offsetLeft, offsetTop, scrollX, scrollY } = api.getAppState()
-  return viewportCoordsToSceneCoords(
-    { clientX, clientY },
-    { zoom, offsetLeft, offsetTop, scrollX, scrollY }
-  )
-}
-
-/** Смещает вставку: левый верхний угол общего bbox группы совпадает с точкой под курсором (или с центром видимой области). */
-function applyExcalidrawClipboardText(
-  api: ExcalidrawImperativeAPI,
-  text: string,
-  pasteRootHost: HTMLDivElement | null
-): void {
-  const trimmed = text.trim()
-  if (!stringLooksLikeExcalidrawClipboardPayload(trimmed)) return
-  let raw: { type?: unknown; elements?: unknown; files?: unknown }
-  try {
-    raw = JSON.parse(trimmed) as { type?: unknown; elements?: unknown; files?: unknown }
-  } catch {
-    return
-  }
-  const okType =
-    raw.type === 'excalidraw/clipboard' || raw.type === 'excalidraw-api/clipboard'
-  if (!okType || !Array.isArray(raw.elements)) return
-  try {
-    const restored = restore(
-      {
-        elements: raw.elements as never,
-        appState: {} as never,
-        files: (raw.files && typeof raw.files === 'object' ? raw.files : {}) as never,
-      },
-      null,
-      null
-    )
-    const pastedRaw = convertToExcalidrawElements(restored.elements as never, { regenerateIds: true })
-    const pasted = pastedRaw as readonly ExcalidrawElement[]
-    if (pasted.length === 0) return
-
-    const [minX, minY] = getCommonBounds(pasted)
-
-    const app = api.getAppState()
-    const client = pasteRootHost ? lastPastePointerClient.get(pasteRootHost) : undefined
-    const targetScene = client
-      ? scenePointAtClient(api, client.clientX, client.clientY)
-      : scenePointAtClient(api, app.offsetLeft + app.width / 2, app.offsetTop + app.height / 2)
-
-    const dx = targetScene.x - minX
-    const dy = targetScene.y - minY
-    const shifted = pasted.map((el) => newElementWith(el, { x: el.x + dx, y: el.y + dy }))
-
-    const cur = api.getSceneElements()
-    api.updateScene({
-      elements: [...cur, ...shifted],
-      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-    })
-    if (restored.files && Object.keys(restored.files).length > 0) {
-      api.addFiles(Object.values(restored.files))
-    }
-  } catch (err) {
-    console.error('Excalidraw paste bridge failed', err)
-  }
-}
-
 export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced }: ExcalidrawAppProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
-  /** Снимок выделения до Ctrl/Cmd+клика — Excalidraw сам по Cmd не добавляет в выделение. */
-  const prevSelOnCtrlPointerRef = useRef<Record<string, boolean> | null>(null)
+  /** Ctrl/Cmd+клик: снимок выделения на pointerdown; hadModOnDown — иначе при отпускании Ctrl до mouseup merge не срабатывает. */
+  const ctrlAdditiveRef = useRef<{ prevSel: Readonly<Record<string, true>>; hadModOnDown: boolean } | null>(
+    null
+  )
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -221,8 +148,17 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
 
   const excalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     apiRef.current = api
+    const hr = hostRef.current
+    if (hr) excalidrawRegisterApi(hr, api)
     queueMicrotask(() => markExcalidrawRootEl(hostRef.current))
   }, [])
+
+  useEffect(() => {
+    return () => {
+      const hr = hostRef.current
+      if (hr) excalidrawRegisterApi(hr, null)
+    }
+  }, [sceneKey])
 
   useLayoutEffect(() => {
     markExcalidrawRootEl(hostRef.current)
@@ -238,35 +174,33 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
         focusExcalidrawContainer(hostRef.current)
       }
       if (activeTool.type !== 'selection') {
-        prevSelOnCtrlPointerRef.current = null
+        ctrlAdditiveRef.current = null
         return
       }
       if (!(event.ctrlKey || event.metaKey)) {
-        prevSelOnCtrlPointerRef.current = null
+        ctrlAdditiveRef.current = null
         return
       }
-      const t = event.target
-      if (!(t instanceof HTMLElement) || !hostRef.current?.contains(t)) {
-        prevSelOnCtrlPointerRef.current = null
+      if (!excalidrawIsLikelyCanvasPointerTarget(event.target, hostRef.current)) {
+        ctrlAdditiveRef.current = null
         return
       }
-      if (!(t instanceof HTMLCanvasElement)) {
-        prevSelOnCtrlPointerRef.current = null
-        return
+      ctrlAdditiveRef.current = {
+        prevSel: { ...api.getAppState().selectedElementIds },
+        hadModOnDown: true,
       }
-      prevSelOnCtrlPointerRef.current = { ...api.getAppState().selectedElementIds }
     })
     const unsubUp = api.onPointerUp((activeTool, pds, _ev) => {
-      const snap = prevSelOnCtrlPointerRef.current
-      prevSelOnCtrlPointerRef.current = null
-      if (!snap) return
+      const gesture = ctrlAdditiveRef.current
+      ctrlAdditiveRef.current = null
+      if (!gesture?.hadModOnDown) return
       if (activeTool.type !== 'selection') return
-      if (!pds.withCmdOrCtrl) return
       if (pds.boxSelection.hasOccurred) return
       if (pds.drag.hasOccurred) return
       if (pds.resize.isResizing) return
       if (!pds.hit.element) return
 
+      const snap = gesture.prevSel
       const st = api.getAppState()
       const next = st.selectedElementIds
       const prevKeys = Object.keys(snap).filter((k) => snap[k])
@@ -337,12 +271,12 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const cd = ev.clipboardData
       if (!cd) return null
       const plain = cd.getData('text/plain')
-      if (plain && stringLooksLikeExcalidrawClipboardPayload(plain)) return plain
+      if (plain && excalidrawClipboardPayloadLooksLikeJson(plain)) return plain
       for (const type of cd.types ?? []) {
         if (type === 'text/plain') continue
         try {
           const s = cd.getData(type)
-          if (s && stringLooksLikeExcalidrawClipboardPayload(s)) return s
+          if (s && excalidrawClipboardPayloadLooksLikeJson(s)) return s
         } catch {
           /* */
         }
@@ -361,6 +295,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const fullscreenRoot = excalidrawPasteRootInActiveFullscreen()
       const underPointer = excalidrawPasteRootUnderLastPointer()
       const forThisInstance =
+        resolveExcalidrawInnerForCutCopy() === inner ||
         fullscreenRoot === hr ||
         underPointer === hr ||
         excalidrawGetLastPasteHost() === hr ||
@@ -373,11 +308,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const syncRaw = readExcalidrawClipboardText(ev)
       const syncText = syncRaw?.trim() ?? ''
 
-      if (stringLooksLikeExcalidrawClipboardPayload(syncText)) {
+      if (excalidrawClipboardPayloadLooksLikeJson(syncText)) {
         ev.preventDefault()
         ev.stopImmediatePropagation()
         inner.focus({ preventScroll: true })
-        applyExcalidrawClipboardText(api, syncText, hr)
+        applyExcalidrawClipboardJson(api, syncText, lastPastePointerClient.get(hr) ?? null)
         return
       }
 
@@ -398,8 +333,8 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       ev.stopImmediatePropagation()
       inner.focus({ preventScroll: true })
       void navigator.clipboard.readText().then((t) => {
-        if (t && stringLooksLikeExcalidrawClipboardPayload(t)) {
-          applyExcalidrawClipboardText(api, t, hr)
+        if (t && excalidrawClipboardPayloadLooksLikeJson(t)) {
+          applyExcalidrawClipboardJson(api, t, lastPastePointerClient.get(hr) ?? null)
         }
       })
     }
@@ -415,14 +350,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!hr || !inner) return
 
-      const fullscreenRoot = excalidrawPasteRootInActiveFullscreen()
-      const underPointer = excalidrawPasteRootUnderLastPointer()
-      const forThisInstance =
-        fullscreenRoot === hr ||
-        underPointer === hr ||
-        excalidrawGetLastPasteHost() === hr ||
-        inner.contains(document.activeElement)
-      if (!forThisInstance) return
+      const undoInner = resolveExcalidrawInnerForUndoRedo()
+      const cutInner = resolveExcalidrawInnerForCutCopy()
+      const iAmUndo = undoInner === inner
+      const iAmCut = cutInner === inner
+      if (!iAmUndo && !iAmCut) return
 
       const ae = document.activeElement
       const focusInInner = !!(ae && inner.contains(ae))
@@ -435,6 +367,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const isRedo = k === 'y' || (k === 'z' && ke.shiftKey)
 
       if (isUndo || isRedo) {
+        if (!iAmUndo) return
         if (inWritable) return
         if (!focusInInner) {
           ke.preventDefault()
@@ -457,16 +390,84 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
         return
       }
 
-      if (focusInInner) return
-      if (
-        fullscreenRoot !== hr &&
-        underPointer !== hr &&
-        excalidrawGetLastPasteHost() !== hr
-      )
-        return
       if (k === 'c' || k === 'v' || k === 'x' || (k === 'a' && !ke.shiftKey)) {
+        if (!iAmCut) return
+        if (inWritable) return
+        if (!focusInInner) {
+          ke.preventDefault()
+          ke.stopImmediatePropagation()
+          inner.focus({ preventScroll: true })
+          queueMicrotask(() => {
+            inner.dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: ke.key,
+                code: ke.code,
+                ctrlKey: ke.ctrlKey,
+                metaKey: ke.metaKey,
+                shiftKey: ke.shiftKey,
+                bubbles: true,
+                cancelable: true,
+              })
+            )
+          })
+          return
+        }
         inner.focus({ preventScroll: true })
       }
+    }
+
+    const onCutCapture = (e: Event) => {
+      const ev = e as ClipboardEvent
+      if (!ev.isTrusted) return
+      const hr = hostRef.current
+      const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+      if (!inner || resolveExcalidrawInnerForCutCopy() !== inner) return
+      if (inner.contains(document.activeElement)) return
+      if (excalidrawInnerHasFocusedTextField(inner)) return
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      inner.focus({ preventScroll: true })
+      const m = excalidrawSyntheticModKeys()
+      queueMicrotask(() => {
+        inner.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'x',
+            code: 'KeyX',
+            ctrlKey: m.ctrlKey,
+            metaKey: m.metaKey,
+            shiftKey: false,
+            bubbles: true,
+            cancelable: true,
+          })
+        )
+      })
+    }
+
+    const onCopyCapture = (e: Event) => {
+      const ev = e as ClipboardEvent
+      if (!ev.isTrusted) return
+      const hr = hostRef.current
+      const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+      if (!inner || resolveExcalidrawInnerForCutCopy() !== inner) return
+      if (inner.contains(document.activeElement)) return
+      if (excalidrawInnerHasFocusedTextField(inner)) return
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      inner.focus({ preventScroll: true })
+      const m = excalidrawSyntheticModKeys()
+      queueMicrotask(() => {
+        inner.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'c',
+            code: 'KeyC',
+            ctrlKey: m.ctrlKey,
+            metaKey: m.metaKey,
+            shiftKey: false,
+            bubbles: true,
+            cancelable: true,
+          })
+        )
+      })
     }
 
     document.addEventListener('pointerover', onPointerOverDoc, true)
@@ -474,12 +475,16 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     document.addEventListener('pointermove', onPointerMoveDoc, true)
     document.addEventListener('keydown', onKeyDownCapture, true)
     document.addEventListener('paste', onPasteCapture, true)
+    document.addEventListener('cut', onCutCapture, true)
+    document.addEventListener('copy', onCopyCapture, true)
     return () => {
       document.removeEventListener('pointerover', onPointerOverDoc, true)
       document.removeEventListener('pointerdown', onPointerDownDoc, true)
       document.removeEventListener('pointermove', onPointerMoveDoc, true)
       document.removeEventListener('keydown', onKeyDownCapture, true)
       document.removeEventListener('paste', onPasteCapture, true)
+      document.removeEventListener('cut', onCutCapture, true)
+      document.removeEventListener('copy', onCopyCapture, true)
     }
   }, [readOnly, sceneKey])
 

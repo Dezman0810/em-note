@@ -9,6 +9,10 @@ export function excalidrawTrackPointerClient(e: Pick<PointerEvent, 'clientX' | '
   lastPointerClient = { clientX: e.clientX, clientY: e.clientY }
 }
 
+export function excalidrawGetLastPointerClientCoords(): { clientX: number; clientY: number } | null {
+  return lastPointerClient
+}
+
 export function excalidrawSetLastPasteHost(host: HTMLDivElement | null) {
   lastExcalidrawPasteHost = host
 }
@@ -51,8 +55,10 @@ function pointerClientInsideElement(el: HTMLElement): boolean {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
 }
 
-/** Куда слать undo/redo, если фокус остался в ProseMirror. Порядок: полноэкран → точка → :hover → последний host. */
-export function resolveExcalidrawInnerForUndoRedo(): HTMLElement | null {
+type ResolveMode = 'strict' | 'loose'
+
+/** strict: последний host только если курсор ещё внутри (чтобы Ctrl+Z в тексте не уезжал в схему). loose: для Cut/Copy после рамки курсор может быть вне блока. */
+function resolveExcalidrawInner(mode: ResolveMode): HTMLElement | null {
   let inner = queryInner(excalidrawPasteRootInActiveFullscreen())
   if (inner) return inner
 
@@ -67,9 +73,19 @@ export function resolveExcalidrawInnerForUndoRedo(): HTMLElement | null {
 
   const last = excalidrawGetLastPasteHost()
   inner = queryInner(last)
-  if (inner && document.contains(inner) && last && pointerClientInsideElement(last)) return inner
-
+  if (!inner || !document.contains(inner) || !last) return null
+  if (mode === 'loose') return inner
+  if (pointerClientInsideElement(last)) return inner
   return null
+}
+
+export function resolveExcalidrawInnerForUndoRedo(): HTMLElement | null {
+  return resolveExcalidrawInner('strict')
+}
+
+/** Cut / Copy / Ctrl+X / Ctrl+C: не требовать курсор внутри rect (после drag-select курсор часто снаружи). */
+export function resolveExcalidrawInnerForCutCopy(): HTMLElement | null {
+  return resolveExcalidrawInner('loose')
 }
 
 export function excalidrawInnerHasFocusedTextField(inner: HTMLElement): boolean {
@@ -77,5 +93,31 @@ export function excalidrawInnerHasFocusedTextField(inner: HTMLElement): boolean 
   if (!ae || !inner.contains(ae)) return false
   if (ae instanceof HTMLTextAreaElement || ae instanceof HTMLInputElement) return true
   if (ae instanceof HTMLElement && ae.isContentEditable) return true
+  return false
+}
+
+/** Синтетические keydown для Excalidraw (фокус часто в ProseMirror). */
+export function excalidrawSyntheticModKeys(): { ctrlKey: boolean; metaKey: boolean } {
+  if (typeof navigator === 'undefined') return { ctrlKey: true, metaKey: false }
+  const mac = /Mac|iPhone|iPod|iPad/i.test(navigator.userAgent)
+  return mac ? { ctrlKey: false, metaKey: true } : { ctrlKey: true, metaKey: false }
+}
+
+/** Клик по холсту (canvas/svg), не по тулбару/полям — для Ctrl+добавления в выделение. */
+export function excalidrawIsLikelyCanvasPointerTarget(
+  target: EventTarget | null,
+  host: HTMLDivElement | null
+): boolean {
+  if (!(target instanceof Element) || !host?.contains(target)) return false
+  if (
+    target.closest(
+      'button, input, textarea, select, a[href], [role="button"], .App-toolbar, .App-bottom-bar, .mobile-misc-buttons, .main-menu, .dropdown-menu, .context-menu, .popover, .Modal, .Dialog'
+    )
+  ) {
+    return false
+  }
+  /* Интерактивный слой: canvas; подписи/фигуры могут быть в SVG вне кнопок. */
+  if (target instanceof HTMLCanvasElement) return true
+  if (target instanceof SVGElement) return !target.closest('button')
   return false
 }
