@@ -22,7 +22,10 @@ import {
   type PointerEvent,
 } from 'react'
 
-/** По умолчанию выделение: так можно кликать/Shift+кликать объекты; панорама — инструмент «рука» или клавиша H в Excalidraw. */
+/**
+ * По умолчанию выделение. Несколько объектов — штатно: Shift+клик или рамка на пустом месте;
+ * в Excalidraw Ctrl/Cmd используется для других жестов — не дублируем это своим кодом.
+ */
 const DEFAULT_ACTIVE_TOOL = {
   type: 'selection' as const,
   customType: null as null,
@@ -174,8 +177,6 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
-  /** Снимок выделения до Ctrl/Cmd+клика — Excalidraw сам по себе часто заменяет выделение, а не добавляет. */
-  const ctrlMultiSelectPrevRef = useRef<Readonly<Record<string, true>> | null>(null)
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -227,40 +228,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   useEffect(() => {
     const api = apiRef.current
     if (!api || readOnly) return
-
-    const unsubDown = api.onPointerDown((activeTool, _pds, event) => {
+    return api.onPointerDown((_tool, _pds, event) => {
       if (event.target instanceof HTMLCanvasElement) {
         focusExcalidrawContainer(hostRef.current)
       }
-      if (activeTool.type === 'selection' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
-        ctrlMultiSelectPrevRef.current = { ...api.getAppState().selectedElementIds }
-      } else {
-        ctrlMultiSelectPrevRef.current = null
-      }
     })
-
-    const unsubUp = api.onPointerUp((activeTool, pds, event) => {
-      const prev = ctrlMultiSelectPrevRef.current
-      ctrlMultiSelectPrevRef.current = null
-      if (!prev) return
-      if (activeTool.type !== 'selection') return
-      if (!(event.ctrlKey || event.metaKey) || event.shiftKey) return
-      if (pds.drag.hasOccurred) return
-      if (pds.boxSelection.hasOccurred) return
-      const el = pds.hit.element
-      if (!el) return
-      api.updateScene({
-        appState: {
-          selectedElementIds: { ...prev, [el.id]: true },
-        },
-        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-      })
-    })
-
-    return () => {
-      unsubDown()
-      unsubUp()
-    }
   }, [readOnly, sceneKey])
 
   /** Paste в capture: иначе ProseMirror раньше обрабатывает вставку, пока activeElement не в схеме (типично в полноэкране). */
@@ -423,11 +395,10 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
 
   const onHostPointerDownCapture = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (readOnly) return
-    const host = hostRef.current
-    lastExcalidrawPointerHost = host
-    /* Рамочное выделение и прочие жесты должны идти с фокусом в .excalidraw-container, иначе hotkeys/selection ломаются. */
-    if (host?.contains(e.target as Node)) {
-      focusExcalidrawContainer(host)
+    lastExcalidrawPointerHost = hostRef.current
+    /* Фокус только с canvas: фокус на каждый клик по UI Excalidraw ломал множественное выделение и рамку. */
+    if (e.target instanceof HTMLCanvasElement) {
+      focusExcalidrawContainer(hostRef.current)
     }
   }, [readOnly])
 
