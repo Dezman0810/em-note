@@ -1,7 +1,21 @@
-import { Excalidraw, MainMenu, restore, serializeAsJSON } from '@excalidraw/excalidraw'
+import {
+  convertToExcalidrawElements,
+  Excalidraw,
+  MainMenu,
+  restore,
+  serializeAsJSON,
+} from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
-import { createElement, useCallback, useMemo, useRef } from 'react'
+import {
+  createElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type PointerEvent,
+} from 'react'
 
 /** ЛКМ = панорама (как «рука» на excalidraw.com), а не рамка выделения. */
 const DEFAULT_ACTIVE_TOOL = {
@@ -41,9 +55,82 @@ function parseScene(sceneJson: string) {
   }
 }
 
+function focusExcalidrawContainer(host: HTMLDivElement | null) {
+  const inner = host?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+  inner?.focus({ preventScroll: true })
+}
+
+/** data-excalidraw-root должен быть на узле внутри excalidrawContainerRef — иначе paste/copy не срабатывают. */
+function markExcalidrawRootEl(host: HTMLDivElement | null) {
+  if (!host) return
+  host.querySelectorAll('[data-excalidraw-root]').forEach((el) => {
+    if (host.contains(el)) el.removeAttribute('data-excalidraw-root')
+  })
+  const inner = host.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+  if (inner) inner.setAttribute('data-excalidraw-root', '')
+}
+
+/** Последний экземпляр схемы, куда кликнули (нужно для paste в fullscreen, когда фокус остаётся в TipTap). */
+let lastExcalidrawPointerHost: HTMLDivElement | null = null
+
+function isWritableFormElement(el: Element | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return true
+  if (el.isContentEditable) return true
+  return false
+}
+
+function stringLooksLikeExcalidrawClipboardPayload(s: string): boolean {
+  return (
+    s.includes('excalidraw/clipboard') || s.includes('excalidraw-api/clipboard')
+  )
+}
+
+function clipboardLooksLikeFileOrImagePaste(cd: DataTransfer | null): boolean {
+  if (!cd) return false
+  if (cd.files && cd.files.length > 0) return true
+  return Array.from(cd.types ?? []).some(
+    (t) => t === 'Files' || t.startsWith('image/')
+  )
+}
+
+function applyExcalidrawClipboardText(api: ExcalidrawImperativeAPI, text: string): void {
+  const trimmed = text.trim()
+  if (!stringLooksLikeExcalidrawClipboardPayload(trimmed)) return
+  let raw: { type?: unknown; elements?: unknown; files?: unknown }
+  try {
+    raw = JSON.parse(trimmed) as { type?: unknown; elements?: unknown; files?: unknown }
+  } catch {
+    return
+  }
+  const okType =
+    raw.type === 'excalidraw/clipboard' || raw.type === 'excalidraw-api/clipboard'
+  if (!okType || !Array.isArray(raw.elements)) return
+  try {
+    const restored = restore(
+      {
+        elements: raw.elements as never,
+        appState: {} as never,
+        files: (raw.files && typeof raw.files === 'object' ? raw.files : {}) as never,
+      },
+      null,
+      null
+    )
+    const pasted = convertToExcalidrawElements(restored.elements as never, { regenerateIds: true })
+    const cur = api.getSceneElements()
+    api.updateScene({ elements: [...cur, ...pasted] })
+    if (restored.files && Object.keys(restored.files).length > 0) {
+      api.addFiles(Object.values(restored.files))
+    }
+  } catch (err) {
+    console.error('Excalidraw paste bridge failed', err)
+  }
+}
+
 export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced }: ExcalidrawAppProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
+  const hostRef = useRef<HTMLDivElement | null>(null)
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -83,16 +170,138 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
 
   const excalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     apiRef.current = api
+    queueMicrotask(() => markExcalidrawRootEl(hostRef.current))
   }, [])
 
-  const stopUndoBubbleToEditor = useCallback((e: React.KeyboardEvent) => {
-    const mod = e.ctrlKey || e.metaKey
-    if (!mod) return
-    const k = e.key.toLowerCase()
-    if (k === 'z' || k === 'y') {
-      e.stopPropagation()
+  useLayoutEffect(() => {
+    markExcalidrawRootEl(hostRef.current)
+    const id = requestAnimationFrame(() => markExcalidrawRootEl(hostRef.current))
+    return () => cancelAnimationFrame(id)
+  }, [sceneKey])
+
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || readOnly) return
+    return api.onPointerDown((_tool, _pds, event) => {
+      if (event.target instanceof HTMLCanvasElement) {
+        focusExcalidrawContainer(hostRef.current)
+      }
+    })
+  }, [readOnly, sceneKey])
+
+  /** Paste в capture: иначе ProseMirror раньше обрабатывает вставку, пока activeElement не в схеме (типично в полноэкране). */
+  useEffect(() => {
+    if (readOnly) return
+
+    const onPointerDownDoc = (e: Event) => {
+      const t = e.target
+      if (!(t instanceof Element)) {
+        lastExcalidrawPointerHost = null
+        return
+      }
+      const h = t.closest('[data-excalidraw-paste-root]')
+      lastExcalidrawPointerHost = h instanceof HTMLDivElement ? h : null
     }
-  }, [])
+
+    const readExcalidrawClipboardText = (ev: ClipboardEvent): string | null => {
+      const cd = ev.clipboardData
+      if (!cd) return null
+      const plain = cd.getData('text/plain')
+      if (plain && stringLooksLikeExcalidrawClipboardPayload(plain)) return plain
+      for (const type of cd.types ?? []) {
+        if (type === 'text/plain') continue
+        try {
+          const s = cd.getData(type)
+          if (s && stringLooksLikeExcalidrawClipboardPayload(s)) return s
+        } catch {
+          /* */
+        }
+      }
+      return plain || null
+    }
+
+    const onPasteCapture = (e: Event) => {
+      const ev = e as ClipboardEvent
+      const api = apiRef.current
+      const hr = hostRef.current
+      if (!api || !hr) return
+      const inner = hr.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+      if (!inner) return
+
+      const forThisInstance =
+        lastExcalidrawPointerHost === hr || inner.contains(document.activeElement)
+      if (!forThisInstance) return
+
+      const ae = document.activeElement
+      if (ae && inner.contains(ae) && isWritableFormElement(ae)) return
+
+      const syncRaw = readExcalidrawClipboardText(ev)
+      const syncText = syncRaw?.trim() ?? ''
+
+      if (stringLooksLikeExcalidrawClipboardPayload(syncText)) {
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        inner.focus({ preventScroll: true })
+        applyExcalidrawClipboardText(api, syncText)
+        return
+      }
+
+      if (syncText.length > 0) {
+        return
+      }
+
+      if (clipboardLooksLikeFileOrImagePaste(ev.clipboardData)) return
+
+      /*
+       * readText() требует secure context (HTTPS или localhost). На http://<LAN-IP> без TLS
+       * Clipboard API часто падает — если вызвать preventDefault, вставка «молчит».
+       */
+      if (!window.isSecureContext || !navigator.clipboard?.readText) return
+
+      /* Ctrl+V: иногда getData в paste пустой, а readText() всё ещё видит JSON. */
+      ev.preventDefault()
+      ev.stopImmediatePropagation()
+      inner.focus({ preventScroll: true })
+      void navigator.clipboard.readText().then((t) => {
+        if (t && stringLooksLikeExcalidrawClipboardPayload(t)) {
+          applyExcalidrawClipboardText(api, t)
+        }
+      })
+    }
+
+    /** Excalidraw onCopy / pasteFromClipboard требуют activeElement в .excalidraw-container; клик по canvas не всегда снимает фокус с ProseMirror. */
+    const onKeyDownCapture = (e: Event) => {
+      const ke = e as KeyboardEvent
+      const hr = hostRef.current
+      const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
+      if (!hr || !inner) return
+      if (inner.contains(document.activeElement)) return
+      if (lastExcalidrawPointerHost !== hr) return
+      const mod = ke.ctrlKey || ke.metaKey
+      if (!mod) return
+      const k = ke.key.toLowerCase()
+      if (k === 'c' || k === 'v' || k === 'x' || k === 'z' || k === 'y' || (k === 'a' && !ke.shiftKey)) {
+        inner.focus({ preventScroll: true })
+      }
+    }
+
+    document.addEventListener('pointerdown', onPointerDownDoc, true)
+    document.addEventListener('keydown', onKeyDownCapture, true)
+    document.addEventListener('paste', onPasteCapture, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDownDoc, true)
+      document.removeEventListener('keydown', onKeyDownCapture, true)
+      document.removeEventListener('paste', onPasteCapture, true)
+    }
+  }, [readOnly, sceneKey])
+
+  const onHostPointerDownCapture = useCallback((e: PointerEvent<HTMLDivElement>) => {
+    if (readOnly) return
+    lastExcalidrawPointerHost = hostRef.current
+    if (e.target instanceof HTMLCanvasElement) {
+      focusExcalidrawContainer(hostRef.current)
+    }
+  }, [readOnly])
 
   /** Свой MainMenu скрывает дефолтный fallback и пункты Open/Save/Export/Поиск/Help/Reset/Socials. */
   const customMainMenu = createElement(
@@ -120,9 +329,10 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   return createElement(
     'div',
     {
-      'data-excalidraw-root': '',
+      ref: hostRef,
+      'data-excalidraw-paste-root': '',
       style: { height: '100%', width: '100%' },
-      onKeyDown: stopUndoBubbleToEditor,
+      onPointerDownCapture: onHostPointerDownCapture,
     },
     createElement(Excalidraw, {
       key: sceneKey,

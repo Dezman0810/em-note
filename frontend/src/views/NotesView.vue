@@ -196,8 +196,16 @@ const q = ref('')
 const loading = ref(true)
 const error = ref('')
 
-const filterFolder = ref<string>('all')
-const filterTagId = ref<string | null>(null)
+/** Корзина — отдельный режим; иначе смотрим filterFolderIds. */
+const folderViewTrash = ref(false)
+/** Пустой список при folderViewTrash === false — все папки. Ctrl/Cmd+клик — несколько папок (ИЛИ). */
+const filterFolderIds = ref<string[]>([])
+/** Пустой список — без фильтра по меткам. Ctrl/Cmd+клик добавляет метку к фильтру (ИЛИ). */
+const filterTagIds = ref<string[]>([])
+
+const isAllFoldersScope = computed(
+  () => !folderViewTrash.value && filterFolderIds.value.length === 0
+)
 const tags = ref<Tag[]>([])
 const tagCountById = ref<Record<string, number>>({})
 const folderNoteCounts = ref<FolderNoteCounts | null>(null)
@@ -212,7 +220,7 @@ const MIME_NOTE_ID = 'application/x-em-note-id'
 const MIME_TAG_ID = 'application/x-em-note-tag-id'
 
 function onNoteDragStart(e: DragEvent, noteId: string) {
-  if (filterFolder.value === 'trash') return
+  if (folderViewTrash.value) return
   e.dataTransfer?.setData(MIME_NOTE_ID, noteId)
   e.dataTransfer!.effectAllowed = 'move'
 }
@@ -321,9 +329,27 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
     [tagId]: willCollapse,
   }
   persistTagNavCollapsed()
-  const fid = filterTagId.value
-  if (willCollapse && fid && isStrictDescendantOf(tags.value, tagId, fid)) {
-    filterTagId.value = null
+  if (willCollapse && filterTagIds.value.length) {
+    filterTagIds.value = filterTagIds.value.filter(
+      (id) => !isStrictDescendantOf(tags.value, tagId, id)
+    )
+  }
+}
+
+function clearTagFilter() {
+  filterTagIds.value = []
+}
+
+function onSidebarTagClick(t: Tag, e: MouseEvent) {
+  const id = t.id
+  if (e.ctrlKey || e.metaKey) {
+    const cur = [...filterTagIds.value]
+    const i = cur.indexOf(id)
+    if (i >= 0) cur.splice(i, 1)
+    else cur.push(id)
+    filterTagIds.value = cur
+  } else {
+    filterTagIds.value = [id]
   }
 }
 
@@ -337,10 +363,12 @@ function countInFolder(folderId: string): number {
 
 const scopeNoteTotal = computed(() => {
   if (!folderNoteCounts.value) return 0
-  if (filterFolder.value === 'all' || filterFolder.value === 'trash') {
+  if (folderViewTrash.value || isAllFoldersScope.value) {
     return folderNoteCounts.value.total
   }
-  return countInFolder(filterFolder.value)
+  const ids = filterFolderIds.value
+  if (ids.length === 1) return countInFolder(ids[0]!)
+  return ids.reduce((s, id) => s + countInFolder(id), 0)
 })
 
 async function loadFolderCounts() {
@@ -417,29 +445,55 @@ async function loadFolders() {
   }
 }
 
-function folderListParams(): { folder_id?: string } {
-  if (filterFolder.value !== 'all' && filterFolder.value !== 'trash') {
-    return { folder_id: filterFolder.value }
-  }
-  return {}
+function folderListParams(): { folder_id?: string | string[] } {
+  if (folderViewTrash.value) return {}
+  const ids = filterFolderIds.value
+  if (!ids.length) return {}
+  return ids.length === 1 ? { folder_id: ids[0]! } : { folder_id: [...ids] }
 }
 
-function tagFilterParams(): { tag_id?: string } {
-  return filterTagId.value ? { tag_id: filterTagId.value } : {}
+function clearFolderPicker() {
+  folderViewTrash.value = false
+  filterFolderIds.value = []
+}
+
+function openTrashFolder() {
+  folderViewTrash.value = true
+  filterFolderIds.value = []
+}
+
+function onSidebarFolderClick(f: Folder, e: MouseEvent) {
+  if (folderViewTrash.value) folderViewTrash.value = false
+  const id = f.id
+  if (e.ctrlKey || e.metaKey) {
+    const cur = [...filterFolderIds.value]
+    const i = cur.indexOf(id)
+    if (i >= 0) cur.splice(i, 1)
+    else cur.push(id)
+    filterFolderIds.value = cur
+  } else {
+    filterFolderIds.value = [id]
+  }
+}
+
+function tagFilterParams(): { tag_id?: string | string[] } {
+  const ids = filterTagIds.value
+  if (!ids.length) return {}
+  return ids.length === 1 ? { tag_id: ids[0]! } : { tag_id: [...ids] }
 }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    if (filterFolder.value === 'trash') {
+    if (folderViewTrash.value) {
       notes.value = await notesApi.listTrash()
       try {
         const [tagList, counts] = await Promise.all([
           tagsApi.list(),
           tagsApi.noteCounts(undefined),
         ])
-        tags.value = tagList
+        tags.value = Array.isArray(tagList) ? [...tagList] : []
         const map: Record<string, number> = {}
         for (const c of counts) {
           map[String(c.tag_id)] = c.count
@@ -466,15 +520,17 @@ async function load() {
     notes.value = noteList
 
     const countsParams =
-      filterFolder.value !== 'all' && filterFolder.value !== 'trash'
-        ? { folder_id: filterFolder.value }
+      !folderViewTrash.value && filterFolderIds.value.length
+        ? filterFolderIds.value.length === 1
+          ? { folder_id: filterFolderIds.value[0]! }
+          : { folder_id: [...filterFolderIds.value] }
         : undefined
     try {
       const [tagList, counts] = await Promise.all([
         tagsApi.list(),
         tagsApi.noteCounts(countsParams),
       ])
-      tags.value = tagList
+      tags.value = Array.isArray(tagList) ? [...tagList] : []
       const map: Record<string, number> = {}
       for (const c of counts) {
         map[String(c.tag_id)] = c.count
@@ -491,7 +547,7 @@ async function load() {
     }
   } catch (e) {
     error.value = errMessage(e)
-    if (filterFolder.value === 'trash') {
+    if (folderViewTrash.value) {
       notes.value = []
     }
   } finally {
@@ -518,7 +574,7 @@ async function deleteFolder(f: Folder) {
   if (!confirm(`Удалить папку «${f.name}»? Заметки снова попадут в общий список «Все заметки».`)) return
   try {
     await foldersApi.remove(f.id)
-    if (filterFolder.value === f.id) filterFolder.value = 'all'
+    filterFolderIds.value = filterFolderIds.value.filter((x) => x !== f.id)
     error.value = ''
     try {
       const list = await foldersApi.list()
@@ -550,27 +606,50 @@ async function renameFolder(f: Folder) {
   }
 }
 
+function tagRenameTakenByOther(raw: string, excludeTagId: string): boolean {
+  const n = raw.trim().toLowerCase()
+  if (!n) return false
+  return tags.value.some(
+    (x) => x.id !== excludeTagId && x.name.trim().toLowerCase() === n
+  )
+}
+
 async function renameTag(t: Tag) {
   const name = prompt('Новое имя метки', t.name)
-  if (!name || !name.trim()) return
+  if (name == null) return
+  const trimmed = name.trim()
+  if (!trimmed) return
+  if (trimmed === t.name) return
+  if (tagRenameTakenByOther(trimmed, t.id)) {
+    error.value = 'Метка с таким именем уже существует'
+    return
+  }
   try {
-    await tagsApi.update(t.id, { name: name.trim() })
     error.value = ''
+    const updated = await tagsApi.update(t.id, { name: trimmed })
+    tags.value = tags.value.map((x) => (x.id === updated.id ? updated : x))
     await load()
   } catch (e) {
     error.value = errMessage(e)
+    await load()
   }
 }
 
 async function removeTag(t: Tag) {
   if (!confirm(`Удалить метку «${t.name}»? Дочерние станут на ступень выше.`)) return
+  const removedId = t.id
+  const promoteTo = t.parent_id
   try {
-    await tagsApi.remove(t.id)
-    if (filterTagId.value === t.id) filterTagId.value = null
+    await tagsApi.remove(removedId)
+    filterTagIds.value = filterTagIds.value.filter((x) => x !== removedId)
     error.value = ''
+    tags.value = tags.value
+      .filter((x) => x.id !== removedId)
+      .map((x) => (x.parent_id === removedId ? { ...x, parent_id: promoteTo } : x))
     await load()
   } catch (e) {
     error.value = errMessage(e)
+    await load()
   }
 }
 
@@ -609,14 +688,12 @@ async function createNote() {
       error.value = 'Создание заметок отключено. Доступ выдаёт администратор.'
       return
     }
-    if (filterFolder.value === 'trash') {
+    if (folderViewTrash.value) {
       error.value = 'Создайте заметку вне корзины'
       return
     }
     const folder_id =
-      filterFolder.value !== 'all' && filterFolder.value !== 'trash'
-        ? filterFolder.value
-        : undefined
+      filterFolderIds.value.length === 1 ? filterFolderIds.value[0]! : undefined
     const n = await notesApi.create({
       title: DEFAULT_NOTE_TITLE,
       content_json: '{}',
@@ -663,17 +740,35 @@ onMounted(async () => {
   window.addEventListener('resize', clampTagsPanelHeight)
 })
 
-watch(filterFolder, (folder) => {
-  if (folder === 'trash') filterTagId.value = null
+watch(folderViewTrash, (trash) => {
+  if (trash) filterTagIds.value = []
   void load()
 })
-watch(filterTagId, () => {
-  if (filterFolder.value === 'trash') {
-    if (filterTagId.value !== null) filterFolder.value = 'all'
-    return
-  }
-  void load()
-})
+watch(
+  filterFolderIds,
+  () => {
+    if (folderViewTrash.value && filterFolderIds.value.length) {
+      folderViewTrash.value = false
+    }
+    void load()
+  },
+  { deep: true }
+)
+watch(
+  filterTagIds,
+  () => {
+    if (folderViewTrash.value) {
+      if (filterTagIds.value.length) {
+        folderViewTrash.value = false
+        filterFolderIds.value = []
+        void load()
+      }
+      return
+    }
+    void load()
+  },
+  { deep: true }
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', clampTagsPanelHeight)
@@ -771,8 +866,8 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="folder-filter grow folder-filter-all"
-                    :class="{ on: filterFolder === 'all' }"
-                    @click="filterFolder = 'all'"
+                    :class="{ on: isAllFoldersScope }"
+                    @click="clearFolderPicker"
                     @dragover="onFolderDragOver"
                     @drop="onFolderDrop($event, 'all')"
                   >
@@ -787,11 +882,16 @@ onBeforeUnmount(() => {
                     v-for="f in foldersSorted"
                     :key="f.id"
                     class="nav-row"
-                    :class="{ on: filterFolder === f.id }"
+                    :class="{ on: filterFolderIds.includes(f.id) }"
                     @dragover="onFolderDragOver"
                     @drop="onFolderDrop($event, f.id)"
                   >
-                    <button type="button" class="nav-row-label" @click="filterFolder = f.id">
+                    <button
+                      type="button"
+                      class="nav-row-label"
+                      title="Ctrl или ⌘ + клик — выбрать несколько папок"
+                      @click="onSidebarFolderClick(f, $event)"
+                    >
                       <span class="folder-label">{{ f.name }}</span>
                     </button>
                     <div class="nav-row-actions">
@@ -841,8 +941,8 @@ onBeforeUnmount(() => {
                     <button
                       type="button"
                       class="folder-filter tag-filter grow folder-filter-all"
-                      :class="{ on: filterTagId === null }"
-                      @click="filterTagId = null"
+                      :class="{ on: !filterTagIds.length }"
+                      @click="clearTagFilter"
                     >
                       <span class="folder-label nav-scope-label">Все метки</span>
                       <span v-if="folderNoteCounts" class="tag-count">({{ scopeNoteTotal }})</span>
@@ -855,12 +955,17 @@ onBeforeUnmount(() => {
                     v-show="tagsListExpanded"
                     :key="t.id"
                     class="nav-row tag-sidebar-row"
-                    :class="{ on: filterTagId === t.id }"
+                    :class="{ on: filterTagIds.includes(t.id) }"
                     :style="{ paddingLeft: (0.35 + Math.max(0, t.depth - 1) * 0.55) + 'rem' }"
                     draggable="true"
                     @dragstart="onTagDragStart($event, t.id)"
                   >
-                    <button type="button" class="nav-row-label nav-row-label--tag" @click="filterTagId = t.id">
+                    <button
+                      type="button"
+                      class="nav-row-label nav-row-label--tag"
+                      title="Ctrl или ⌘ + клик — выбрать несколько меток"
+                      @click="onSidebarTagClick(t, $event)"
+                    >
                       <span
                         v-if="tagsWithKids.has(t.id)"
                         class="tag-chevron"
@@ -900,8 +1005,8 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="folder-filter trash-filter"
-                :class="{ on: filterFolder === 'trash' }"
-                @click="filterFolder = 'trash'"
+                :class="{ on: folderViewTrash }"
+                @click="openTrashFolder"
               >
                 Корзина
               </button>
@@ -940,13 +1045,13 @@ onBeforeUnmount(() => {
             class="list"
             :class="{ 'list--refreshing': loading && sortedNotes.length > 0 }"
           >
-            <li v-for="n in sortedNotes" :key="n.id" :class="{ trashrow: filterFolder === 'trash' }">
+            <li v-for="n in sortedNotes" :key="n.id" :class="{ trashrow: folderViewTrash }">
               <button
                 type="button"
                 class="note-item"
                 :class="{ current: n.id === activeNoteId }"
                 :title="noteRowTitle(n)"
-                :draggable="filterFolder !== 'trash'"
+                :draggable="!folderViewTrash"
                 @dragstart="onNoteDragStart($event, n.id)"
                 @dragover="onNoteRowDragOver"
                 @drop="onNoteRowDrop($event, n.id)"
@@ -955,11 +1060,11 @@ onBeforeUnmount(() => {
                 <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                 <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
                 <span class="meta">
-                  <span v-if="n.folder_id && filterFolder !== 'trash'" class="folder-badge">{{
+                  <span v-if="n.folder_id && !folderViewTrash" class="folder-badge">{{
                     folders.find((x) => x.id === n.folder_id)?.name
                   }}</span>
                   <span class="dates dates-compact">
-                    <template v-if="filterFolder === 'trash' && n.deleted_at">
+                    <template v-if="folderViewTrash && n.deleted_at">
                       <span class="meta-prefix">Удал.</span>
                       {{ fmtCompactMsk(n.deleted_at) }}
                     </template>
@@ -975,7 +1080,7 @@ onBeforeUnmount(() => {
                   </span>
                 </span>
               </button>
-              <div v-if="filterFolder === 'trash'" class="trash-actions">
+              <div v-if="folderViewTrash" class="trash-actions">
                 <button type="button" class="btn-mini" @click="restoreNote(n, $event)">Восстановить</button>
                 <button type="button" class="btn-mini danger" @click="purgeNote(n, $event)">
                   Удалить навсегда

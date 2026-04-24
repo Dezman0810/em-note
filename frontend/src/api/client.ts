@@ -78,9 +78,32 @@ export const authApi = {
 }
 
 export type NotesListParams = {
-  folder_id?: string
+  /** Одна папка или несколько; повтор `folder_id` в query. */
+  folder_id?: string | string[]
   unfoldered?: boolean
-  tag_id?: string
+  /** Одна метка или несколько; на сервер уходит повторяющийся query `tag_id`. */
+  tag_id?: string | string[]
+}
+
+const REPEAT_QUERY_KEYS = new Set(['tag_id', 'folder_id'])
+
+function serializeRepeatKeyQuery(params: Record<string, unknown>): string {
+  const usp = new URLSearchParams()
+  for (const [key, val] of Object.entries(params)) {
+    if (val === undefined || val === null) continue
+    if (REPEAT_QUERY_KEYS.has(key) && Array.isArray(val)) {
+      for (const id of val) {
+        if (id !== undefined && id !== null) usp.append(key, String(id))
+      }
+      continue
+    }
+    if (typeof val === 'boolean') {
+      if (val) usp.append(key, 'true')
+      continue
+    }
+    usp.append(key, String(val))
+  }
+  return usp.toString()
 }
 
 export const notesApi = {
@@ -89,11 +112,17 @@ export const notesApi = {
     return data
   },
   async list(params?: NotesListParams): Promise<Note[]> {
-    const { data } = await api.get<Note[]>('/api/notes', { params })
+    const { data } = await api.get<Note[]>('/api/notes', {
+      params: { ...params, _ts: Date.now() },
+      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    })
     return data
   },
   async search(q: string, params?: NotesListParams): Promise<Note[]> {
-    const { data } = await api.get<Note[]>('/api/notes/search', { params: { q, ...params } })
+    const { data } = await api.get<Note[]>('/api/notes/search', {
+      params: { q, ...params, _ts: Date.now() },
+      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    })
     return data
   },
   async get(id: string): Promise<Note> {
@@ -194,7 +223,7 @@ export const foldersApi = {
 }
 
 export type TagsNoteCountsParams = {
-  folder_id?: string
+  folder_id?: string | string[]
   unfoldered?: boolean
 }
 
@@ -217,11 +246,16 @@ export function tagCountsResponseToMap(data: unknown): Record<string, number> {
 
 export const tagsApi = {
   async list(): Promise<Tag[]> {
-    const { data } = await api.get<Tag[]>('/api/tags')
+    const { data } = await api.get<Tag[]>('/api/tags', {
+      params: { _ts: Date.now() },
+    })
     return data
   },
   async noteCounts(params?: TagsNoteCountsParams): Promise<TagNoteCount[]> {
-    const { data } = await api.get<unknown>('/api/tags/counts', { params: params ?? {} })
+    const { data } = await api.get<unknown>('/api/tags/counts', {
+      params: { ...(params ?? {}), _ts: Date.now() },
+      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    })
     if (!Array.isArray(data)) return []
     const out: TagNoteCount[] = []
     for (const row of data) {

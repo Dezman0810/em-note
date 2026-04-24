@@ -61,3 +61,36 @@ async def test_tag_counts_and_list_filter_subtree(client: AsyncClient) -> None:
     assert filtered_parent.status_code == 200, filtered_parent.text
     ids_p = {n["id"] for n in filtered_parent.json()}
     assert note_id in ids_p
+
+
+async def test_notes_filter_multiple_tags_or_union(client: AsyncClient) -> None:
+    """Несколько tag_id в запросе: заметки с любой из меток (объединение поддеревьев)."""
+    h = await _auth_headers(client, email="multitag@example.com", password="password99")
+
+    a = await client.post("/api/tags", json={"name": "TagA"}, headers=h)
+    assert a.status_code == 201, a.text
+    a_id = a.json()["id"]
+    b = await client.post("/api/tags", json={"name": "TagB"}, headers=h)
+    assert b.status_code == 201, b.text
+    b_id = b.json()["id"]
+
+    n1 = await client.post("/api/notes", json={"title": "One", "content_json": "{}"}, headers=h)
+    assert n1.status_code == 201, n1.text
+    n1_id = n1.json()["id"]
+    n2 = await client.post("/api/notes", json={"title": "Two", "content_json": "{}"}, headers=h)
+    assert n2.status_code == 201, n2.text
+    n2_id = n2.json()["id"]
+
+    r1 = await client.post(f"/api/notes/{n1_id}/tags/{a_id}", headers=h)
+    assert r1.status_code == 200, r1.text
+    r2 = await client.post(f"/api/notes/{n2_id}/tags/{b_id}", headers=h)
+    assert r2.status_code == 200, r2.text
+
+    both = await client.get(
+        "/api/notes",
+        params=[("tag_id", a_id), ("tag_id", b_id)],
+        headers=h,
+    )
+    assert both.status_code == 200, both.text
+    got = {n["id"] for n in both.json()}
+    assert got == {n1_id, n2_id}

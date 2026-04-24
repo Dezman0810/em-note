@@ -47,6 +47,15 @@ async def _validate_folder_for_owner(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
 
 
+async def _validate_folders_for_owner(
+    db: AsyncSession, folder_ids: list[uuid.UUID], owner_id: uuid.UUID
+) -> None:
+    for fid in folder_ids:
+        folder = await db.get(Folder, fid)
+        if folder is None or folder.user_id != owner_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+
+
 async def _validate_user_tag(db: AsyncSession, tag_id: uuid.UUID, user_id: uuid.UUID) -> None:
     tag = await db.get(Tag, tag_id)
     if tag is None or tag.user_id != user_id:
@@ -56,6 +65,18 @@ async def _validate_user_tag(db: AsyncSession, tag_id: uuid.UUID, user_id: uuid.
 async def _user_tags_all(db: AsyncSession, user_id: uuid.UUID) -> list[Tag]:
     result = await db.execute(select(Tag).where(Tag.user_id == user_id))
     return list(result.scalars().all())
+
+
+async def _tree_ids_for_tag_roots(
+    db: AsyncSession, user_id: uuid.UUID, tag_roots: list[uuid.UUID]
+) -> list[uuid.UUID]:
+    """Объединение поддеревьев выбранных меток (для фильтра: заметка с любой из меток)."""
+    user_tags = await _user_tags_all(db, user_id)
+    seen: set[uuid.UUID] = set()
+    for tid in tag_roots:
+        await _validate_user_tag(db, tid, user_id)
+        seen.update(subtree_tag_ids(tid, user_tags))
+    return list(seen)
 
 
 def _accessible_notes_query(user_id: uuid.UUID) -> Select[tuple[Note]]:
@@ -101,10 +122,10 @@ async def list_reminders(
 async def list_notes(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
-    folder_id: Annotated[uuid.UUID | None, Query()] = None,
+    folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
     trash_only: Annotated[bool, Query()] = False,
-    tag_id: Annotated[uuid.UUID | None, Query()] = None,
+    tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
 ) -> list[NoteRead]:
     if trash_only:
         result = await db.execute(
@@ -116,20 +137,17 @@ async def list_notes(
         trash_notes = result.scalars().unique().all()
         return [NoteRead.from_note(n) for n in trash_notes]
 
-    if tag_id is not None:
-        await _validate_user_tag(db, tag_id, user.id)
+    tag_roots = tag_id or []
+    folder_ids = folder_id or []
 
     q = _accessible_notes_query(user.id)
     if unfoldered:
         q = q.where(Note.folder_id.is_(None))
-    elif folder_id is not None:
-        folder = await db.get(Folder, folder_id)
-        if folder is None or folder.user_id != user.id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
-        q = q.where(Note.folder_id == folder_id)
-    if tag_id is not None:
-        user_tags = await _user_tags_all(db, user.id)
-        tree_ids = subtree_tag_ids(tag_id, user_tags)
+    elif folder_ids:
+        await _validate_folders_for_owner(db, folder_ids, user.id)
+        q = q.where(Note.folder_id.in_(folder_ids))
+    if tag_roots:
+        tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
         q = q.where(
             Note.id.in_(select(note_tag.c.note_id).where(note_tag.c.tag_id.in_(tree_ids)))
         )
@@ -148,12 +166,12 @@ async def search_notes(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
     q: Annotated[str, Query(min_length=1, max_length=200)],
-    folder_id: Annotated[uuid.UUID | None, Query()] = None,
+    folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
-    tag_id: Annotated[uuid.UUID | None, Query()] = None,
+    tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
 ) -> list[NoteRead]:
-    if tag_id is not None:
-        await _validate_user_tag(db, tag_id, user.id)
+    tag_roots = tag_id or []
+    folder_ids = folder_id or []
 
     pattern = _ilike_pattern(q)
     base = _accessible_notes_query(user.id).where(
@@ -161,14 +179,11 @@ async def search_notes(
     )
     if unfoldered:
         base = base.where(Note.folder_id.is_(None))
-    elif folder_id is not None:
-        folder = await db.get(Folder, folder_id)
-        if folder is None or folder.user_id != user.id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
-        base = base.where(Note.folder_id == folder_id)
-    if tag_id is not None:
-        user_tags = await _user_tags_all(db, user.id)
-        tree_ids = subtree_tag_ids(tag_id, user_tags)
+    elif folder_ids:
+        await _validate_folders_for_owner(db, folder_ids, user.id)
+        base = base.where(Note.folder_id.in_(folder_ids))
+    if tag_roots:
+        tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
         base = base.where(
             Note.id.in_(select(note_tag.c.note_id).where(note_tag.c.tag_id.in_(tree_ids)))
         )

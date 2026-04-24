@@ -27,6 +27,26 @@ async def _assert_tag_ownership(db: AsyncSession, tag_id: uuid.UUID, user_id: uu
     return tag
 
 
+async def _tag_name_taken(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    name: str,
+    *,
+    exclude_tag_id: uuid.UUID | None,
+) -> bool:
+    """Дубликат имени среди всех меток пользователя (без учёта регистра)."""
+    norm = name.strip()
+    if not norm:
+        return False
+    stmt = select(Tag.id).where(
+        Tag.user_id == user_id,
+        func.lower(Tag.name) == norm.lower(),
+    )
+    if exclude_tag_id is not None:
+        stmt = stmt.where(Tag.id != exclude_tag_id)
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def _unique_slug(
     db: AsyncSession, user_id: uuid.UUID, parent_id: uuid.UUID | None, base_slug: str
 ) -> str:
@@ -73,7 +93,7 @@ async def _would_create_cycle(db: AsyncSession, tag: Tag, new_parent_id: uuid.UU
 
 
 def _accessible_note_ids_stmt(
-    user_id: uuid.UUID, folder_id: uuid.UUID | None, unfoldered: bool
+    user_id: uuid.UUID, folder_ids: list[uuid.UUID] | None, unfoldered: bool
 ) -> Select[tuple[uuid.UUID]]:
     shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
     stmt = (
@@ -83,8 +103,8 @@ def _accessible_note_ids_stmt(
     )
     if unfoldered:
         stmt = stmt.where(Note.folder_id.is_(None))
-    elif folder_id is not None:
-        stmt = stmt.where(Note.folder_id == folder_id)
+    elif folder_ids:
+        stmt = stmt.where(Note.folder_id.in_(folder_ids))
     return stmt
 
 
@@ -93,17 +113,22 @@ def _accessible_note_ids_stmt(
 async def tag_note_counts(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
-    folder_id: Annotated[uuid.UUID | None, Query()] = None,
+    folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
 ) -> list[TagNoteCountRead]:
+    raw = folder_id or []
     if unfoldered:
-        folder_id = None
-    if folder_id is not None:
-        folder = await db.get(Folder, folder_id)
-        if folder is None or folder.user_id != user.id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        scope_folder_ids: list[uuid.UUID] | None = None
+    elif raw:
+        for fid in raw:
+            folder = await db.get(Folder, fid)
+            if folder is None or folder.user_id != user.id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        scope_folder_ids = raw
+    else:
+        scope_folder_ids = None
 
-    scope = _accessible_note_ids_stmt(user.id, folder_id, unfoldered)
+    scope = _accessible_note_ids_stmt(user.id, scope_folder_ids, unfoldered)
     tags_result = await db.execute(select(Tag).where(Tag.user_id == user.id))
     user_tags = list(tags_result.scalars().all())
     user_tags.sort(key=lambda t: (t.depth, t.name))
@@ -144,10 +169,23 @@ async def create_tag(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> Tag:
+    name_stripped = body.name.strip()
+    if not name_stripped or len(name_stripped) > 120:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректное имя метки",
+        )
+    if body.parent_id is not None:
+        await _assert_tag_ownership(db, body.parent_id, user.id)
+    if await _tag_name_taken(db, user.id, name_stripped, exclude_tag_id=None):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Метка с таким именем уже существует",
+        )
     tag = Tag(
         user_id=user.id,
         parent_id=body.parent_id,
-        name=body.name.strip(),
+        name=name_stripped,
         slug="",
         depth=1,
     )
@@ -181,7 +219,20 @@ async def update_tag(
         await _recompute_depths(db, tag)
 
     if "name" in updates and updates["name"] is not None:
-        tag.name = updates["name"].strip()
+        nm = updates["name"].strip()
+        if not nm or len(nm) > 120:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Некорректное имя метки",
+            )
+        tag.name = nm
+
+    if "parent_id" in updates or ("name" in updates and updates["name"] is not None):
+        if await _tag_name_taken(db, user.id, tag.name, exclude_tag_id=tag.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Метка с таким именем уже существует",
+            )
         tag.slug = await _unique_slug(db, user.id, tag.parent_id, slugify(tag.name))
 
     await db.flush()
@@ -201,6 +252,11 @@ async def delete_tag(
     for child in children_result.scalars().all():
         child.parent_id = promote_to
         await _recompute_depths(db, child)
+        if await _tag_name_taken(db, user.id, child.name, exclude_tag_id=child.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Нельзя удалить: метка с таким именем уже есть. Переименуйте потомка.",
+            )
         child.slug = await _unique_slug(db, user.id, child.parent_id, slugify(child.name))
     await db.flush()
     await db.delete(tag)

@@ -100,24 +100,16 @@ function parseDoc(raw: string) {
   }
 }
 
-function isUndoRedoShortcut(event: KeyboardEvent) {
-  const mod = event.ctrlKey || event.metaKey
-  if (!mod) return false
-  const k = event.key.toLowerCase()
-  if (k === 'z') return true
-  if (k === 'y') return true
-  return false
-}
-
 const editor = useEditor({
   editable: props.editable,
   editorProps: {
     handleDOMEvents: {
+      /** Пока фокус внутри Excalidraw — не отдаём клавиши TipTap (в т.ч. после capture-фокуса перед Ctrl+C/V). */
       keydown(_view, event) {
-        const ae = document.activeElement
-        if (!ae?.closest('[data-excalidraw-root]')) return false
-        if (!isUndoRedoShortcut(event)) return false
-        return true
+        if (document.activeElement?.closest('[data-excalidraw-root]')) return true
+        const t = event.target
+        if (t instanceof Element && t.closest('[data-excalidraw-root]')) return true
+        return false
       },
     },
   },
