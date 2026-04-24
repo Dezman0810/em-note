@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 import * as React from 'react'
 import { ExcalidrawApp } from './ExcalidrawApp'
 import { excalidrawBarCopy, excalidrawBarCut, excalidrawBarPaste } from './excalidrawBarClipboard'
+import { excalidrawBarRedo, excalidrawBarUndo } from './excalidrawBarHistory'
 import { excalidrawGetApiForPasteRoot } from './excalidrawApiRegistry'
 
 const props = defineProps(nodeViewProps)
@@ -208,6 +209,18 @@ async function onBarPaste() {
   }
 }
 
+function onBarUndo() {
+  const root = excalPasteRootEl()
+  if (!root) return
+  excalidrawBarUndo(root)
+}
+
+function onBarRedo() {
+  const root = excalPasteRootEl()
+  if (!root) return
+  excalidrawBarRedo(root)
+}
+
 function onImportFile(ev: Event) {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
@@ -251,6 +264,22 @@ function onImportFile(ev: Event) {
     >
       <div class="excal-innerbar">
         <div v-if="editor.isEditable" class="excal-innerbar-clip">
+          <button
+            type="button"
+            class="excal-fs-btn excal-clip-btn"
+            title="Назад: отменить последнее действие на схеме (как Ctrl+Z)"
+            @click="onBarUndo"
+          >
+            Назад
+          </button>
+          <button
+            type="button"
+            class="excal-fs-btn excal-clip-btn"
+            title="Вперёд: повторить отменённое (как Ctrl+Shift+Z)"
+            @click="onBarRedo"
+          >
+            Вперёд
+          </button>
           <button
             type="button"
             class="excal-fs-btn excal-clip-btn"
