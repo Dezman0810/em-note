@@ -30,12 +30,12 @@ fi
 
 sed -i 's|^DATABASE_URL=.*|DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/note|' backend/.env
 
-CORS="http://${PUBLIC_IP},http://127.0.0.1,http://localhost,http://127.0.0.1:8080,https://em-note.ru,https://www.em-note.ru"
+CORS="http://${PUBLIC_IP},http://${PUBLIC_IP}:8080,http://127.0.0.1,http://127.0.0.1:8080,http://localhost,https://em-note.ru,https://www.em-note.ru"
 sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${CORS}|" backend/.env
 
-export COMPOSE_WEB_PORT=80
+export COMPOSE_WEB_PORT="${COMPOSE_WEB_PORT:-8080}"
 docker compose -f docker-compose.prod.yml up -d --build
 
 echo "--- health ---"
-curl -sS http://127.0.0.1/health
+curl -sS "http://127.0.0.1:${COMPOSE_WEB_PORT}/health"
 echo ""

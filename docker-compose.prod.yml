@@ -1,6 +1,6 @@
 # Продакшен-стек: Nginx (собранный Vue) + API + PostgreSQL. Dev — docker-compose.yml.
 
-# Локально веб на :8080 по умолчанию; на VPS: COMPOSE_WEB_PORT=80
+# Веб снаружи: ${COMPOSE_WEB_PORT:-8080}->80 в контейнере. Для порта 80 на хосте задайте COMPOSE_WEB_PORT=80 (часто за reverse-proxy).
 
 # API при старте применяет миграции Alembic (см. backend/docker-entrypoint.sh).
 

@@ -10,7 +10,7 @@
 #   INSTALL_DIR=/opt/em-note
 #   REPO_URL=https://github.com/Dezman0810/em-note.git
 #   PUBLIC_IP=1.2.3.4        — для CORS в backend/.env (опционально)
-#   COMPOSE_WEB_PORT=80
+#   COMPOSE_WEB_PORT=8080  (или 80 за reverse-proxy)
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ fi
 
 REPO_URL="${REPO_URL:-https://github.com/Dezman0810/em-note.git}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/em-note}"
-COMPOSE_WEB_PORT="${COMPOSE_WEB_PORT:-80}"
+COMPOSE_WEB_PORT="${COMPOSE_WEB_PORT:-8080}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 
 PARENT="$(dirname "$INSTALL_DIR")"
@@ -55,7 +55,7 @@ sed -i "s|^JWT_SECRET_KEY=.*|JWT_SECRET_KEY=${JWT}|" backend/.env
 # Строка подключения API к Postgres задаётся в docker-compose.prod.yml (пароль из корневого .env).
 
 if [[ -n "$PUBLIC_IP" ]]; then
-  CORS="http://${PUBLIC_IP},http://127.0.0.1,http://localhost,http://127.0.0.1:8080,https://em-note.ru,https://www.em-note.ru"
+  CORS="http://${PUBLIC_IP},http://${PUBLIC_IP}:8080,http://127.0.0.1,http://127.0.0.1:8080,http://localhost,https://em-note.ru,https://www.em-note.ru"
   sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${CORS}|" backend/.env
 else
   echo "PUBLIC_IP not set; leaving CORS from .env.example — edit backend/.env if needed." >&2

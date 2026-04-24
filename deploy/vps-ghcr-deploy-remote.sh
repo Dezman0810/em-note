@@ -33,7 +33,7 @@ if [ ! -f .env ]; then
     echo "POSTGRES_USER=postgres"
     echo "POSTGRES_PASSWORD=${PG_PASS}"
     echo "POSTGRES_DB=note"
-    echo "COMPOSE_WEB_PORT=80"
+    echo "COMPOSE_WEB_PORT=8080"
     echo "GHCR_OWNER=dezman0810"
     echo "IMAGE_TAG=main"
   } > .env
@@ -50,7 +50,7 @@ if [ ! -f backend/.env ]; then
   sed -i "s|^JWT_SECRET_KEY=.*|JWT_SECRET_KEY=${JWT}|" backend/.env
 fi
 
-CORS="http://${PUBLIC_IP},http://127.0.0.1,http://localhost,https://em-note.ru,https://www.em-note.ru"
+CORS="http://${PUBLIC_IP},http://${PUBLIC_IP}:8080,http://127.0.0.1,http://127.0.0.1:8080,http://localhost,https://em-note.ru,https://www.em-note.ru"
 if grep -q '^CORS_ORIGINS=' backend/.env; then
   sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=${CORS}|" backend/.env
 else
@@ -65,9 +65,9 @@ docker compose -f docker-compose.ghcr.yml --env-file .env up -d
 
 echo "=== wait for API ==="
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if curl -fsS -m 2 "http://127.0.0.1:${COMPOSE_WEB_PORT:-80}/health" >/dev/null 2>&1; then
+  if curl -fsS -m 2 "http://127.0.0.1:${COMPOSE_WEB_PORT:-8080}/health" >/dev/null 2>&1; then
     echo "health OK"
-    curl -fsS "http://127.0.0.1:${COMPOSE_WEB_PORT:-80}/health" || true
+    curl -fsS "http://127.0.0.1:${COMPOSE_WEB_PORT:-8080}/health" || true
     echo ""
     break
   fi

@@ -23,11 +23,11 @@ docker compose logs -f
 Собранный фронт + Nginx и API в одном стеке:
 
 ```bash
-export COMPOSE_WEB_PORT=80   # локально по умолчанию 8080, если переменная не задана
+# Порт хоста по умолчанию 8080 (см. docker-compose.prod.yml). Нужен 80 на хосте: export COMPOSE_WEB_PORT=80
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-Откройте http://localhost:8080/ (или порт из `COMPOSE_WEB_PORT`). В стеке поднимается **PostgreSQL** (данные в томе `em_note_pg_data`); строка подключения для контейнера API задаётся в `docker-compose.prod.yml` (хост `db`).
+Откройте http://localhost:8080/ (или `http://localhost:${COMPOSE_WEB_PORT}/`, если задали переменную). В стеке поднимается **PostgreSQL** (данные в томе `em_note_pg_data`); строка подключения для контейнера API задаётся в `docker-compose.prod.yml` (хост `db`).
 
 Подробности: [deploy/README.md](deploy/README.md).
 
