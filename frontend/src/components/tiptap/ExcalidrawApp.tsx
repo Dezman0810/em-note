@@ -1,4 +1,5 @@
 import {
+  CaptureUpdateAction,
   convertToExcalidrawElements,
   Excalidraw,
   getCommonBounds,
@@ -157,7 +158,10 @@ function applyExcalidrawClipboardText(
     const shifted = pasted.map((el) => newElementWith(el, { x: el.x + dx, y: el.y + dy }))
 
     const cur = api.getSceneElements()
-    api.updateScene({ elements: [...cur, ...shifted] })
+    api.updateScene({
+      elements: [...cur, ...shifted],
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    })
     if (restored.files && Object.keys(restored.files).length > 0) {
       api.addFiles(Object.values(restored.files))
     }
@@ -249,6 +253,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
         appState: {
           selectedElementIds: { ...prev, [el.id]: true },
         },
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
       })
     })
 
@@ -349,18 +354,57 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       })
     }
 
-    /** Excalidraw onCopy / pasteFromClipboard требуют activeElement в .excalidraw-container; клик по canvas не всегда снимает фокус с ProseMirror. */
+    /**
+     * Копирование/вставка/undo: фокус часто остаётся в ProseMirror — событие не доходит до Excalidraw.
+     * Для undo/redo отменяем исходное keydown и шлём синтетическое на контейнер (только доверенные события).
+     */
     const onKeyDownCapture = (e: Event) => {
       const ke = e as KeyboardEvent
+      if (!ke.isTrusted) return
       const hr = hostRef.current
       const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!hr || !inner) return
-      if (inner.contains(document.activeElement)) return
-      if (lastExcalidrawPointerHost !== hr) return
+
+      const forThisInstance =
+        lastExcalidrawPointerHost === hr || inner.contains(document.activeElement)
+      if (!forThisInstance) return
+
+      const ae = document.activeElement
+      const focusInInner = !!(ae && inner.contains(ae))
+      const inWritable = focusInInner && isWritableFormElement(ae)
+
       const mod = ke.ctrlKey || ke.metaKey
       if (!mod) return
       const k = ke.key.toLowerCase()
-      if (k === 'c' || k === 'v' || k === 'x' || k === 'z' || k === 'y' || (k === 'a' && !ke.shiftKey)) {
+      const isUndo = k === 'z' && !ke.shiftKey
+      const isRedo = k === 'y' || (k === 'z' && ke.shiftKey)
+
+      if (isUndo || isRedo) {
+        if (inWritable) return
+        if (!focusInInner) {
+          ke.preventDefault()
+          ke.stopImmediatePropagation()
+          inner.focus({ preventScroll: true })
+          queueMicrotask(() => {
+            inner.dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: ke.key,
+                code: ke.code,
+                ctrlKey: ke.ctrlKey,
+                metaKey: ke.metaKey,
+                shiftKey: ke.shiftKey,
+                bubbles: true,
+                cancelable: true,
+              })
+            )
+          })
+        }
+        return
+      }
+
+      if (focusInInner) return
+      if (lastExcalidrawPointerHost !== hr) return
+      if (k === 'c' || k === 'v' || k === 'x' || (k === 'a' && !ke.shiftKey)) {
         inner.focus({ preventScroll: true })
       }
     }
@@ -379,9 +423,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
 
   const onHostPointerDownCapture = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (readOnly) return
-    lastExcalidrawPointerHost = hostRef.current
-    if (e.target instanceof HTMLCanvasElement) {
-      focusExcalidrawContainer(hostRef.current)
+    const host = hostRef.current
+    lastExcalidrawPointerHost = host
+    /* Рамочное выделение и прочие жесты должны идти с фокусом в .excalidraw-container, иначе hotkeys/selection ломаются. */
+    if (host?.contains(e.target as Node)) {
+      focusExcalidrawContainer(host)
     }
   }, [readOnly])
 

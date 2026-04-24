@@ -109,6 +109,38 @@ const editor = useEditor({
         if (document.activeElement?.closest('[data-excalidraw-root]')) return true
         const t = event.target
         if (t instanceof Element && t.closest('[data-excalidraw-root]')) return true
+        /* Ctrl+Z/Y над схемой, но фокус ещё в тексте заметки — отдаём undo/redo в Excalidraw. */
+        if (event.isTrusted && (event.ctrlKey || event.metaKey)) {
+          const k = event.key.toLowerCase()
+          const undo = k === 'z' && !event.shiftKey
+          const redo = k === 'y' || (k === 'z' && event.shiftKey)
+          if (undo || redo) {
+            const roots = document.querySelectorAll('[data-excalidraw-paste-root]')
+            for (let i = 0; i < roots.length; i++) {
+              const r = roots[i]
+              if (!(r instanceof HTMLElement) || !r.matches(':hover')) continue
+              const inner = r.querySelector('.excalidraw.excalidraw-container')
+              if (!(inner instanceof HTMLElement)) continue
+              if (inner.contains(document.activeElement)) return true
+              event.preventDefault()
+              inner.focus({ preventScroll: true })
+              queueMicrotask(() => {
+                inner.dispatchEvent(
+                  new KeyboardEvent('keydown', {
+                    key: event.key,
+                    code: event.code,
+                    ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey,
+                    shiftKey: event.shiftKey,
+                    bubbles: true,
+                    cancelable: true,
+                  })
+                )
+              })
+              return true
+            }
+          }
+        }
         return false
       },
     },
