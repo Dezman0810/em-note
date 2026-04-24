@@ -62,10 +62,28 @@ sudo I_UNDERSTAND_WIPE=yes PUBLIC_IP=ВАШ_IP bash deploy/vps-fresh-deploy.sh
 
 ## 5. Обновление (без сноса данных)
 
+### Сборка на сервере (`docker-compose.prod.yml`)
+
 ```bash
 git pull --ff-only
 docker compose -f docker-compose.prod.yml up -d --build
 ```
+
+### Образы из GHCR (`docker-compose.ghcr.yml`)
+
+После **`git push`** в `main` GitHub Actions **пересобирает** `em-note-api` и `em-note-web` и обновляет тег **`main`** (обычно **5–15 минут**). Если на VPS сразу сделать только `docker compose pull`, можно скачать **ещё старый** `web`, пока workflow не закончился — новый UI (таблицы и т.д.) не появится.
+
+1. Убедитесь в репозитории: **Actions** → последний run **Publish Docker images** — **успешно**.
+2. На сервере:
+
+```bash
+cd /opt/em-note   # или ваш путь
+git pull --ff-only
+docker compose -p em-note-prod -f docker-compose.ghcr.yml --env-file .env pull
+docker compose -p em-note-prod -f docker-compose.ghcr.yml --env-file .env up -d
+```
+
+При сомнениях повторите `pull` + `up -d` для сервиса `web` через несколько минут. В браузере при проверке сделайте **жёсткое обновление** (Ctrl+F5), чтобы не кешировался старый JS.
 
 ## 6. HTTPS
 
