@@ -13,6 +13,10 @@ import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
 import {
+  excalidrawPasteRootUnderLastPointer,
+  excalidrawTrackPointerClient,
+} from './excalidrawPointerBridge'
+import {
   createElement,
   useCallback,
   useEffect,
@@ -240,6 +244,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     if (readOnly) return
 
     const onPointerDownDoc = (e: Event) => {
+      if (e instanceof PointerEvent) excalidrawTrackPointerClient(e)
       const t = e.target
       if (!(t instanceof Element)) {
         lastExcalidrawPointerHost = null
@@ -252,6 +257,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     const onPointerMoveDoc = (e: Event) => {
       if (!(e instanceof PointerEvent)) return
       const pe = e
+      excalidrawTrackPointerClient(pe)
       const t = pe.target
       if (!(t instanceof Element)) return
       const h = t.closest('[data-excalidraw-paste-root]')
@@ -285,8 +291,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const inner = hr.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!inner) return
 
+      const underPointer = excalidrawPasteRootUnderLastPointer()
       const forThisInstance =
-        lastExcalidrawPointerHost === hr || inner.contains(document.activeElement)
+        underPointer === hr ||
+        lastExcalidrawPointerHost === hr ||
+        inner.contains(document.activeElement)
       if (!forThisInstance) return
 
       const ae = document.activeElement
@@ -337,8 +346,11 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!hr || !inner) return
 
+      const underPointer = excalidrawPasteRootUnderLastPointer()
       const forThisInstance =
-        lastExcalidrawPointerHost === hr || inner.contains(document.activeElement)
+        underPointer === hr ||
+        lastExcalidrawPointerHost === hr ||
+        inner.contains(document.activeElement)
       if (!forThisInstance) return
 
       const ae = document.activeElement
@@ -375,7 +387,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       }
 
       if (focusInInner) return
-      if (lastExcalidrawPointerHost !== hr) return
+      if (underPointer !== hr && lastExcalidrawPointerHost !== hr) return
       if (k === 'c' || k === 'v' || k === 'x' || (k === 'a' && !ke.shiftKey)) {
         inner.focus({ preventScroll: true })
       }
