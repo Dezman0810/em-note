@@ -28,7 +28,10 @@ function getSelectedElementsForBar(api: ExcalidrawImperativeAPI): ExcalidrawElem
   return out
 }
 
-async function writeExcalidrawClipboard(api: ExcalidrawImperativeAPI, elements: ExcalidrawElement[]): Promise<void> {
+function buildExcalidrawClipboardString(
+  api: ExcalidrawImperativeAPI,
+  elements: ExcalidrawElement[]
+): string {
   const files = api.getFiles()
   const fileIds = new Set<string>()
   for (const el of elements) {
@@ -39,67 +42,129 @@ async function writeExcalidrawClipboard(api: ExcalidrawImperativeAPI, elements: 
     const f = files[id]
     if (f) filesOut[id] = f
   }
-  const clip = JSON.stringify({
+  return JSON.stringify({
     type: 'excalidraw/clipboard',
     elements: JSON.parse(JSON.stringify(elements)) as unknown[],
     files: filesOut,
   })
-  if (!navigator.clipboard?.writeText) {
-    throw new Error('Clipboard API недоступен')
+}
+
+/**
+ * Запасной путь без navigator.clipboard (http, старые WebView, часть планшетов).
+ * Должен вызываться в том же «жесте пользователя», что и клик по кнопке.
+ */
+function copyTextViaExecCommand(text: string): boolean {
+  if (typeof document === 'undefined') return false
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
   }
-  await navigator.clipboard.writeText(clip)
+}
+
+/**
+ * Запись в буфер: сначала Clipboard API, при ошибке — execCommand.
+ * На iOS важно не ставить await до writeText, иначе теряется user activation.
+ */
+function writeClipboardPayload(
+  api: ExcalidrawImperativeAPI,
+  clip: string,
+  onSuccess: () => void,
+  what: 'copy' | 'cut'
+): void {
+  const fail = () => {
+    const hint =
+      location.protocol === 'http:' && location.hostname !== 'localhost'
+        ? ' Откройте сайт по https:// (не http://).'
+        : ''
+    api.setToast?.({
+      message:
+        (what === 'cut' ? 'Не удалось вырезать в буфер' : 'Не удалось скопировать в буфер') +
+        '.' +
+        hint,
+      duration: 5500,
+    })
+  }
+
+  if (navigator.clipboard?.writeText) {
+    void navigator.clipboard.writeText(clip).then(onSuccess, () => {
+      if (copyTextViaExecCommand(clip)) onSuccess()
+      else fail()
+    })
+    return
+  }
+  if (copyTextViaExecCommand(clip)) onSuccess()
+  else fail()
 }
 
 export async function excalidrawBarCopy(api: ExcalidrawImperativeAPI, pasteRoot: HTMLDivElement): Promise<void> {
   focusInner(pasteRoot)
   const selected = getSelectedElementsForBar(api)
   if (selected.length === 0) return
-  if (!window.isSecureContext) {
-    api.setToast?.({ message: 'Копирование нужен HTTPS или localhost', duration: 4000 })
-    return
-  }
-  await writeExcalidrawClipboard(api, selected)
+  const clip = buildExcalidrawClipboardString(api, selected)
+  writeClipboardPayload(api, clip, () => {}, 'copy')
 }
 
 export async function excalidrawBarCut(api: ExcalidrawImperativeAPI, pasteRoot: HTMLDivElement): Promise<void> {
   focusInner(pasteRoot)
   const selected = getSelectedElementsForBar(api)
   if (selected.length === 0) return
-  if (!window.isSecureContext) {
-    api.setToast?.({ message: 'Вырезание нужен HTTPS или localhost', duration: 4000 })
-    return
-  }
-  await writeExcalidrawClipboard(api, selected)
+  const clip = buildExcalidrawClipboardString(api, selected)
   const toRemove = new Set(selected.map((e) => e.id))
-  const cur = api.getSceneElements()
-  const next = cur.map((el) => (toRemove.has(el.id) ? newElementWith(el, { isDeleted: true }) : el))
-  api.updateScene({
-    elements: next,
-    appState: { selectedElementIds: {} },
-    captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-  })
+  const applyCut = () => {
+    const cur = api.getSceneElements()
+    const next = cur.map((el) => (toRemove.has(el.id) ? newElementWith(el, { isDeleted: true }) : el))
+    api.updateScene({
+      elements: next,
+      appState: { selectedElementIds: {} },
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    })
+  }
+  writeClipboardPayload(api, clip, applyCut, 'cut')
 }
 
 export async function excalidrawBarPaste(api: ExcalidrawImperativeAPI, pasteRoot: HTMLDivElement): Promise<void> {
   focusInner(pasteRoot)
-  if (!window.isSecureContext || !navigator.clipboard?.readText) {
-    api.setToast?.({ message: 'Вставка нужен HTTPS или localhost', duration: 4000 })
-    return
+  const finish = (text: string) => {
+    const t = text?.trim() ?? ''
+    if (!t || !excalidrawClipboardPayloadLooksLikeJson(t)) {
+      api.setToast?.({
+        message: 'В буфере нет данных схемы — сначала «Копировать» в этой же заметке',
+        duration: 5000,
+      })
+      return
+    }
+    const client = excalidrawGetLastPointerClientCoords()
+    applyExcalidrawClipboardJson(api, t, client)
   }
-  let text: string
-  try {
-    text = await navigator.clipboard.readText()
-  } catch {
-    api.setToast?.({ message: 'Не удалось прочитать буфер обмена', duration: 4000 })
-    return
-  }
-  if (!text || !excalidrawClipboardPayloadLooksLikeJson(text)) {
+
+  if (!navigator.clipboard?.readText) {
     api.setToast?.({
-      message: 'В буфере нет данных схемы — сначала «Копировать» в этой же заметке',
-      duration: 5000,
+      message:
+        'Вставка из кнопки недоступна в этом браузере. Нажмите на холст и используйте вставку с клавиатуры (или меню «Вставить»).',
+      duration: 6000,
     })
     return
   }
-  const client = excalidrawGetLastPointerClientCoords()
-  applyExcalidrawClipboardJson(api, text, client)
+
+  try {
+    const text = await navigator.clipboard.readText()
+    finish(text)
+  } catch {
+    api.setToast?.({
+      message:
+        'Не удалось прочитать буфер. Разрешите доступ к буферу обмена для сайта или вставьте через клавиатуру по холсту.',
+      duration: 6000,
+    })
+  }
 }

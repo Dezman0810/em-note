@@ -380,20 +380,24 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       if (clipboardLooksLikeFileOrImagePaste(ev.clipboardData)) return
 
       /*
-       * readText() требует secure context (HTTPS или localhost). На http://<LAN-IP> без TLS
-       * Clipboard API часто падает — если вызвать preventDefault, вставка «молчит».
+       * Ctrl+V: иногда getData в paste пустой, а readText() всё ещё видит JSON.
+       * Не опираемся только на isSecureContext — на части планшетов/оболочек буфер всё равно доступен по https.
        */
-      if (!window.isSecureContext || !navigator.clipboard?.readText) return
+      if (!navigator.clipboard?.readText) return
 
-      /* Ctrl+V: иногда getData в paste пустой, а readText() всё ещё видит JSON. */
       ev.preventDefault()
       ev.stopImmediatePropagation()
       inner.focus({ preventScroll: true })
-      void navigator.clipboard.readText().then((t) => {
-        if (t && excalidrawClipboardPayloadLooksLikeJson(t)) {
-          applyExcalidrawClipboardJson(api, t, lastPastePointerClient.get(hr) ?? null)
+      void navigator.clipboard.readText().then(
+        (t) => {
+          if (t && excalidrawClipboardPayloadLooksLikeJson(t)) {
+            applyExcalidrawClipboardJson(api, t, lastPastePointerClient.get(hr) ?? null)
+          }
+        },
+        () => {
+          /* без доступа к readText не блокируем системную вставку зря */
         }
-      })
+      )
     }
 
     /**
