@@ -4,6 +4,21 @@ import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import ExcalidrawNodeView from './ExcalidrawNodeView.vue'
 import { DEFAULT_EXCALIDRAW_SCENE } from './excalidrawDefaultScene'
 
+/** Область холста в заметке: шапка блока снаружи `.excal-fullscreen-shell`. */
+function eventIsOverExcalidrawDrawingUi(event: Event, target: Element): boolean {
+  if (target.closest('[data-excalidraw-paste-root]')) return true
+  /* paste-root — потомок .excal-host; в :fullscreen target часто retarget на shell/host без предка paste-root */
+  if (target.closest('.excal-fullscreen-shell')) return true
+  if (typeof event.composedPath === 'function') {
+    return event.composedPath().some(
+      (n) =>
+        n instanceof Element &&
+        (n.hasAttribute('data-excalidraw-paste-root') || n.classList.contains('excal-fullscreen-shell'))
+    )
+  }
+  return false
+}
+
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     excalidrawBlock: {
@@ -50,7 +65,7 @@ export const ExcalidrawBlock = Node.create({
       stopEvent: ({ event }) => {
         const t = event.target
         if (!(t instanceof Element)) return false
-        if (t.closest('[data-excalidraw-paste-root]')) return true
+        if (eventIsOverExcalidrawDrawingUi(event, t)) return true
 
         const el = t as HTMLElement
         const tag = el.tagName
