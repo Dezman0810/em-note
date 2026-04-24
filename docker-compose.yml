@@ -53,8 +53,8 @@ services:
       - "8000"
       - --reload
 
-  # node_modules в именованном томе: при ошибках «cannot find module» после git pull
-  # выполните: docker compose down && docker volume rm em-note_web_node_modules && docker compose up --build
+  # node_modules лежит в ./frontend/node_modules (как при локальном npm install), без отдельного тома —
+  # иначе после git pull с новыми зависимостями том мог оставаться со старыми пакетами («Failed to resolve import»).
   web:
     image: node:20-bookworm-slim
     working_dir: /app
@@ -62,17 +62,15 @@ services:
       - api
     volumes:
       - ./frontend:/app
-      - web_node_modules:/app/node_modules
+      - ./deploy/docker-web-dev.sh:/docker-web-dev.sh:ro
     ports:
       - "5173:5173"
     environment:
       API_PROXY_TARGET: http://api:8000
-    # npm install (не ci): подтягивает новые пакеты, если lock на диске обновился;
-    # для прод-сборки см. deploy/Dockerfile.web — там по-прежнему npm ci.
-    command: >
-      sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    # Скрипт: npm ci при изменении package-lock.json или при отсутствии таблиц TipTap (см. deploy/docker-web-dev.sh).
+    # Прод: deploy/Dockerfile.web — npm ci при сборке образа.
+    command: ["sh", "/docker-web-dev.sh"]
 
 volumes:
   em_note_pg_data:
   em_note_attachments:
-  web_node_modules:

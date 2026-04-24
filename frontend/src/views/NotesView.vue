@@ -14,6 +14,17 @@ import { isStrictDescendantOf, tagsWithChildrenSet, visibleTagsForNav } from '..
 
 const adminUsersOpen = ref(false)
 
+/** Узкий экран: телефон / узкий планшет — отдельный расклад и выдвижная панель папок. */
+const MOBILE_LAYOUT_MQ = '(max-width: 768px)'
+const isNarrowLayout = ref(false)
+const mobileNavOpen = ref(false)
+let mobileMq: MediaQueryList | null = null
+
+function syncNarrowLayout() {
+  if (typeof window === 'undefined') return
+  isNarrowLayout.value = window.matchMedia(MOBILE_LAYOUT_MQ).matches
+}
+
 const COL_FOLDER_KEY = 'note-ui-w-folder'
 const TAG_NAV_COLLAPSED_KEY = 'note-ui-tag-collapsed'
 const COL_LIST_KEY = 'note-ui-w-list'
@@ -398,6 +409,16 @@ const activeNoteId = computed(() =>
   route.name === 'note' && typeof route.params.id === 'string' ? route.params.id : null
 )
 
+const noteRouteOpen = computed(() => !!activeNoteId.value)
+
+watch(isNarrowLayout, (narrow) => {
+  if (!narrow) mobileNavOpen.value = false
+})
+
+watch(activeNoteId, () => {
+  mobileNavOpen.value = false
+})
+
 function bumpEditorSyncIfOpen(noteId: string) {
   if (noteId === activeNoteId.value) editorSyncSignal.value++
 }
@@ -733,6 +754,10 @@ function noteBodyPreview(n: Note): string {
 }
 
 onMounted(async () => {
+  syncNarrowLayout()
+  mobileMq = window.matchMedia(MOBILE_LAYOUT_MQ)
+  mobileMq.addEventListener('change', syncNarrowLayout)
+
   await loadFolders()
   await load()
   await nextTick()
@@ -771,6 +796,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  mobileMq?.removeEventListener('change', syncNarrowLayout)
+  mobileMq = null
   window.removeEventListener('resize', clampTagsPanelHeight)
   window.removeEventListener('mousemove', onGutterMove)
   window.removeEventListener('mouseup', onGutterUp)
@@ -780,9 +807,31 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="workspace">
+  <div
+    class="workspace"
+    :class="{
+      'workspace--narrow': isNarrowLayout,
+      'workspace--note-route': noteRouteOpen,
+    }"
+  >
+    <div
+      v-if="isNarrowLayout && mobileNavOpen"
+      class="mobile-nav-backdrop"
+      aria-hidden="true"
+      @click="mobileNavOpen = false"
+    />
     <header class="workspace-header">
       <div class="header-left">
+        <button
+          v-if="isNarrowLayout"
+          type="button"
+          class="btn header-menu-btn"
+          aria-label="Папки, метки и календарь"
+          title="Папки и метки"
+          @click="mobileNavOpen = !mobileNavOpen"
+        >
+          ☰
+        </button>
         <h1 class="logo">Note</h1>
         <span class="header-sub">Заметки</span>
       </div>
@@ -835,7 +884,12 @@ onBeforeUnmount(() => {
     <div class="workspace-body">
       <aside
         class="folders-aside sidebar-panel"
-        :style="{ width: colFolderPx + 'px', flexShrink: 0 }"
+        :class="{ 'folders-aside--drawer-open': isNarrowLayout && mobileNavOpen }"
+        :style="
+          isNarrowLayout
+            ? {}
+            : { width: colFolderPx + 'px', flexShrink: 0 }
+        "
       >
         <nav ref="folderNavRef" class="folder-nav">
           <div class="folder-nav-main" :style="folderNavMainStyle">
@@ -1112,9 +1166,29 @@ onBeforeUnmount(() => {
 <style scoped>
 .workspace {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+.mobile-nav-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  background: rgba(15, 23, 42, 0.42);
+  -webkit-tap-highlight-color: transparent;
+}
+.header-menu-btn {
+  padding: 0.32rem 0.5rem;
+  margin-right: 0.15rem;
+  font-size: 1rem;
+  line-height: 1;
+  background: #fff;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: #334155;
 }
 .workspace-header {
   display: flex;
@@ -1890,5 +1964,81 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-height: 0;
   max-height: calc(100vh - 52px);
+}
+
+.workspace--narrow .workspace-header {
+  padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
+  padding-right: max(0.65rem, env(safe-area-inset-right, 0px));
+  padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
+}
+.workspace--narrow .actions {
+  flex-wrap: nowrap;
+  margin-left: auto;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.workspace--narrow .search-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.workspace--narrow .search {
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+}
+.workspace--narrow .header-user .user {
+  display: none;
+}
+.workspace--narrow .header-user {
+  border-left: none;
+  margin-left: 0;
+  padding-left: 0;
+  flex-shrink: 0;
+}
+.workspace--narrow .folders-aside {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: min(20rem, 88vw);
+  max-width: 360px;
+  max-height: none;
+  z-index: 200;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+  padding-top: calc(0.65rem + env(safe-area-inset-top, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  box-shadow: 4px 0 28px rgba(15, 23, 42, 0.18);
+}
+.workspace--narrow .folders-aside.folders-aside--drawer-open {
+  transform: translateX(0);
+}
+.workspace--narrow .col-gutter {
+  display: none;
+}
+.workspace--narrow .notes-list-col {
+  width: 100% !important;
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
+.workspace--narrow.workspace--note-route .notes-list-col {
+  display: none;
+}
+.workspace--narrow:not(.workspace--note-route) .editor-shell {
+  display: none;
+}
+.workspace--narrow.workspace--note-route .editor-shell {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-height: none;
+  min-height: calc(
+    100dvh - 52px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
+  );
+}
+.workspace--narrow .workspace-body {
+  flex: 1;
+  min-height: 0;
 }
 </style>

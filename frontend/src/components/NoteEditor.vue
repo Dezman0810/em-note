@@ -2,6 +2,7 @@
 import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
 import Image from '@tiptap/extension-image'
+import { TableKit } from '@tiptap/extension-table'
 import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
@@ -177,6 +178,15 @@ const editor = useEditor({
     StarterKit.configure({
       heading: { levels: [2, 3] },
     }),
+    TableKit.configure({
+      table: {
+        resizable: true,
+        /** Стартовая ширина колонок не на весь редактор — расширять перетаскиванием границы. */
+        cellMinWidth: 44,
+        handleWidth: 6,
+        lastColumnResizable: true,
+      },
+    }),
     TaskList,
     TaskItemNote.configure({ nested: false }),
     TaskListEnterKeymap,
@@ -246,6 +256,46 @@ const highlightPickerValue = computed(() => {
 const taskListOn = computed(() => {
   void toolbarTick.value
   return editor.value?.isActive('taskList') ?? false
+})
+
+const tableDd = ref<HTMLDetailsElement | null>(null)
+
+const tableMenuInTable = computed(() => {
+  void toolbarTick.value
+  return editor.value?.isActive('table') ?? false
+})
+
+const canTableAddRowBefore = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().addRowBefore() ?? false
+})
+const canTableAddRowAfter = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().addRowAfter() ?? false
+})
+const canTableDeleteRow = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().deleteRow() ?? false
+})
+const canTableAddColBefore = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().addColumnBefore() ?? false
+})
+const canTableAddColAfter = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().addColumnAfter() ?? false
+})
+const canTableDeleteCol = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().deleteColumn() ?? false
+})
+const canTableDeleteTable = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().deleteTable() ?? false
+})
+const canTableToggleHeaderRow = computed(() => {
+  void toolbarTick.value
+  return editor.value?.can().toggleHeaderRow() ?? false
 })
 
 const boldOn = computed(() => {
@@ -333,6 +383,19 @@ function unsetHighlightFill() {
 
 function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
+}
+
+function closeTableDd() {
+  if (tableDd.value) tableDd.value.open = false
+}
+
+function insertNoteTable(rows: number, cols: number, withHeaderRow: boolean) {
+  editor.value
+    ?.chain()
+    .focus()
+    .insertTable({ rows, cols, withHeaderRow })
+    .run()
+  closeTableDd()
 }
 
 function triggerFilePick() {
@@ -592,6 +655,120 @@ onBeforeUnmount(() => {
       >
         Чек-лист
       </button>
+      <details ref="tableDd" class="table-dd">
+        <summary class="table-dd-summary" title="Таблица: вставить или изменить строки и столбцы">
+          <span class="table-dd-label">Таблица</span>
+          <span class="table-dd-chev" aria-hidden="true">▼</span>
+        </summary>
+        <div class="table-dd-panel" @click.stop>
+          <template v-if="!tableMenuInTable">
+            <p class="table-dd-hint">Вставить таблицу (первая строка — заголовок):</p>
+            <div class="table-dd-grid">
+              <button type="button" class="table-dd-preset" @click="insertNoteTable(2, 2, true)">
+                2×2
+              </button>
+              <button type="button" class="table-dd-preset" @click="insertNoteTable(3, 3, true)">
+                3×3
+              </button>
+              <button type="button" class="table-dd-preset" @click="insertNoteTable(4, 4, true)">
+                4×4
+              </button>
+              <button type="button" class="table-dd-preset" @click="insertNoteTable(3, 5, true)">
+                3×5
+              </button>
+            </div>
+            <p class="table-dd-note">
+              Ширина таблицы по колонкам (не на всю строку): граница между ячейками — потянуть мышью. Tab —
+              следующая ячейка.
+            </p>
+          </template>
+          <template v-else>
+            <p class="table-dd-hint">Строки и столбцы (курсор в ячейке):</p>
+            <div class="table-dd-actions">
+              <span class="table-dd-grp-lab">Строка</span>
+              <div class="table-dd-row">
+                <button
+                  type="button"
+                  class="table-dd-act"
+                  :disabled="!canTableAddRowBefore"
+                  title="Вставить строку выше"
+                  @click="editor.chain().focus().addRowBefore().run(); closeTableDd()"
+                >
+                  + сверху
+                </button>
+                <button
+                  type="button"
+                  class="table-dd-act"
+                  :disabled="!canTableAddRowAfter"
+                  title="Вставить строку ниже"
+                  @click="editor.chain().focus().addRowAfter().run(); closeTableDd()"
+                >
+                  + снизу
+                </button>
+                <button
+                  type="button"
+                  class="table-dd-act danger"
+                  :disabled="!canTableDeleteRow"
+                  title="Удалить текущую строку"
+                  @click="editor.chain().focus().deleteRow().run(); closeTableDd()"
+                >
+                  Удалить
+                </button>
+              </div>
+              <span class="table-dd-grp-lab">Столбец</span>
+              <div class="table-dd-row">
+                <button
+                  type="button"
+                  class="table-dd-act"
+                  :disabled="!canTableAddColBefore"
+                  title="Вставить столбец слева"
+                  @click="editor.chain().focus().addColumnBefore().run(); closeTableDd()"
+                >
+                  + слева
+                </button>
+                <button
+                  type="button"
+                  class="table-dd-act"
+                  :disabled="!canTableAddColAfter"
+                  title="Вставить столбец справа"
+                  @click="editor.chain().focus().addColumnAfter().run(); closeTableDd()"
+                >
+                  + справа
+                </button>
+                <button
+                  type="button"
+                  class="table-dd-act danger"
+                  :disabled="!canTableDeleteCol"
+                  title="Удалить текущий столбец"
+                  @click="editor.chain().focus().deleteColumn().run(); closeTableDd()"
+                >
+                  Удалить
+                </button>
+              </div>
+              <div class="table-dd-row table-dd-row--footer">
+                <button
+                  type="button"
+                  class="table-dd-act"
+                  :disabled="!canTableToggleHeaderRow"
+                  title="Сделать первую строку строкой заголовков или обычной"
+                  @click="editor.chain().focus().toggleHeaderRow().run()"
+                >
+                  Строка заголовков
+                </button>
+                <button
+                  type="button"
+                  class="table-dd-act danger"
+                  :disabled="!canTableDeleteTable"
+                  title="Удалить всю таблицу"
+                  @click="editor.chain().focus().deleteTable().run(); closeTableDd()"
+                >
+                  Удалить таблицу
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </details>
       <details ref="textColorDd" class="word-dd">
         <summary class="word-dd-summary" title="Цвет текста">
           <span class="word-dd-left" aria-hidden="true">
@@ -1116,5 +1293,198 @@ onBeforeUnmount(() => {
 .editor-content :deep(ul[data-type='taskList'] > li[data-checked='true'] > div p) {
   opacity: 0.65;
   text-decoration: line-through;
+}
+
+/* —— Таблицы (TipTap TableKit) —— */
+.table-dd {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  vertical-align: middle;
+}
+.table-dd-summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 0.28rem 0.45rem;
+  font: inherit;
+  font-size: 0.78rem;
+  user-select: none;
+}
+.table-dd-summary::-webkit-details-marker {
+  display: none;
+}
+.table-dd-label {
+  font-weight: 500;
+}
+.table-dd-chev {
+  font-size: 0.5rem;
+  color: #64748b;
+  line-height: 1;
+}
+.table-dd:hover .table-dd-summary,
+.table-dd[open] .table-dd-summary {
+  border-color: rgba(37, 99, 235, 0.35);
+}
+.table-dd-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  width: min(17.5rem, calc(100vw - 2rem));
+  padding: 0.55rem 0.6rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.table-dd-hint {
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #475569;
+}
+.table-dd-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.35rem;
+}
+.table-dd-preset {
+  padding: 0.38rem 0.45rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--accent);
+}
+.table-dd-preset:hover {
+  border-color: rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.06);
+}
+.table-dd-note {
+  margin: 0.45rem 0 0;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: var(--text-muted, #64748b);
+}
+.table-dd-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.table-dd-grp-lab {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 0.15rem;
+}
+.table-dd-grp-lab:first-child {
+  margin-top: 0;
+}
+.table-dd-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.table-dd-row--footer {
+  margin-top: 0.25rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--border);
+}
+.table-dd-act {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.32rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: #334155;
+}
+.table-dd-act:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.35);
+}
+.table-dd-act:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.table-dd-act.danger {
+  color: var(--danger, #b91c1c);
+  border-color: rgba(185, 28, 28, 0.35);
+}
+.table-dd-act.danger:hover:not(:disabled) {
+  background: rgba(185, 28, 28, 0.06);
+}
+
+.editor-content :deep(.tableWrapper) {
+  margin: 0.65rem 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  /* Таблица по ширине содержимого/колонок, не растягивается на всю строку заметки */
+  width: max-content;
+  max-width: 100%;
+}
+.editor-content :deep(.tableWrapper table) {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: auto;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 0.88rem;
+}
+.editor-content :deep(.tableWrapper td),
+.editor-content :deep(.tableWrapper th) {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.45rem;
+  vertical-align: top;
+  min-width: 2rem;
+  box-sizing: border-box;
+  position: relative;
+}
+.editor-content :deep(.tableWrapper th) {
+  background: rgba(148, 163, 184, 0.14);
+  font-weight: 600;
+  text-align: left;
+}
+.editor-content :deep(.tableWrapper .selectedCell:after) {
+  z-index: 2;
+  position: absolute;
+  content: '';
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(37, 99, 235, 0.12);
+  pointer-events: none;
+}
+.editor-content :deep(.tableWrapper .column-resize-handle) {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  bottom: -2px;
+  width: 6px;
+  background: var(--accent);
+  cursor: col-resize;
+  pointer-events: auto;
+  z-index: 3;
+  opacity: 0.65;
+}
+.editor-content :deep(.tableWrapper p) {
+  margin: 0;
+}
+.editor-content :deep(.tableWrapper p + p) {
+  margin-top: 0.35em;
 }
 </style>

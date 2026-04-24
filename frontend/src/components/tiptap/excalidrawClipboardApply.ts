@@ -67,9 +67,15 @@ export function applyExcalidrawClipboardJson(
     const dy = targetScene.y - minY
     const shifted = pasted.map((el) => newElementWith(el, { x: el.x + dx, y: el.y + dy }))
 
+    const selectedElementIds: Record<string, true> = {}
+    for (const el of shifted) {
+      if (!el.isDeleted) selectedElementIds[el.id] = true
+    }
+
     const cur = api.getSceneElements()
     api.updateScene({
       elements: [...cur, ...shifted],
+      appState: { selectedElementIds },
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     })
     if (restored.files && Object.keys(restored.files).length > 0) {

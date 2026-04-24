@@ -1,4 +1,11 @@
-import { Excalidraw, Footer, MainMenu, restore, serializeAsJSON } from '@excalidraw/excalidraw'
+import {
+  CaptureUpdateAction,
+  Excalidraw,
+  Footer,
+  MainMenu,
+  restore,
+  serializeAsJSON,
+} from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { excalidrawRegisterApi } from './excalidrawApiRegistry'
@@ -206,10 +213,26 @@ function createClipboardFooter(hostRef: RefObject<HTMLDivElement | null>) {
   )
 }
 
+function selectedIdsFromAppState(selectedElementIds: unknown): Set<string> {
+  if (!selectedElementIds || typeof selectedElementIds !== 'object') return new Set()
+  const out = new Set<string>()
+  for (const [k, v] of Object.entries(selectedElementIds as Record<string, unknown>)) {
+    if (v) out.add(k)
+  }
+  return out
+}
+
 export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced }: ExcalidrawAppProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  /** Встраивание: иногда Cmd/Ctrl+клик сбрасывает прежнее выделение до одного id — восстанавливаем объединение. */
+  const mergeModifierClickRef = useRef<{
+    beforeIds: Set<string>
+    startX: number
+    startY: number
+    pointerId: number
+  } | null>(null)
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -522,12 +545,68 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     }
   }, [readOnly, sceneKey])
 
+  useEffect(() => {
+    if (readOnly) return
+    const finishMergeIfNeeded = (e: globalThis.PointerEvent) => {
+      const pending = mergeModifierClickRef.current
+      if (!pending || e.pointerId !== pending.pointerId) return
+      mergeModifierClickRef.current = null
+      const dx = e.clientX - pending.startX
+      const dy = e.clientY - pending.startY
+      if (dx * dx + dy * dy > 36) return
+      const beforeIds = pending.beforeIds
+      if (beforeIds.size === 0) return
+      queueMicrotask(() => {
+        const api = apiRef.current
+        if (!api) return
+        const afterIds = selectedIdsFromAppState(api.getAppState().selectedElementIds)
+        if (afterIds.size !== 1) return
+        const only = [...afterIds][0]!
+        if (beforeIds.has(only)) return
+        const merged: Record<string, true> = {}
+        for (const id of beforeIds) merged[id] = true
+        merged[only] = true
+        api.updateScene({
+          appState: { selectedElementIds: merged },
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        })
+      })
+    }
+    const onDocUp = (e: Event) => {
+      if (e instanceof window.PointerEvent) finishMergeIfNeeded(e)
+    }
+    const onDocCancel = (e: Event) => {
+      if (!(e instanceof window.PointerEvent)) return
+      if (mergeModifierClickRef.current?.pointerId === e.pointerId) mergeModifierClickRef.current = null
+    }
+    document.addEventListener('pointerup', onDocUp)
+    document.addEventListener('pointercancel', onDocCancel)
+    return () => {
+      document.removeEventListener('pointerup', onDocUp)
+      document.removeEventListener('pointercancel', onDocCancel)
+    }
+  }, [readOnly, sceneKey])
+
   const onHostPointerDownCapture = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (readOnly) return
     excalidrawSetLastPasteHost(hostRef.current)
     /* Фокус только с canvas: фокус на каждый клик по UI Excalidraw ломал множественное выделение и рамку. */
     if (e.target instanceof HTMLCanvasElement) {
       focusExcalidrawContainer(hostRef.current)
+      const api = apiRef.current
+      if (api && (e.ctrlKey || e.metaKey) && e.button === 0) {
+        const beforeIds = selectedIdsFromAppState(api.getAppState().selectedElementIds)
+        mergeModifierClickRef.current = {
+          beforeIds,
+          startX: e.clientX,
+          startY: e.clientY,
+          pointerId: e.pointerId,
+        }
+      } else {
+        mergeModifierClickRef.current = null
+      }
+    } else {
+      mergeModifierClickRef.current = null
     }
   }, [readOnly])
 

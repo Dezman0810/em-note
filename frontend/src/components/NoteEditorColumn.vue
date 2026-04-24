@@ -1162,6 +1162,17 @@ watch(
   overflow-y: auto;
   max-height: calc(100vh - 52px);
 }
+@media (max-width: 768px) {
+  .editor-column {
+    max-height: none;
+    min-height: calc(
+      100dvh - 52px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)
+    );
+    padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
+    padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  }
+}
 .editor-placeholder {
   flex: 1;
   display: flex;
