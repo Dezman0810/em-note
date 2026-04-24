@@ -21,9 +21,9 @@ import {
   type PointerEvent,
 } from 'react'
 
-/** ЛКМ = панорама (как «рука» на excalidraw.com), а не рамка выделения. */
+/** По умолчанию выделение: так можно кликать/Shift+кликать объекты; панорама — инструмент «рука» или клавиша H в Excalidraw. */
 const DEFAULT_ACTIVE_TOOL = {
-  type: 'hand' as const,
+  type: 'selection' as const,
   customType: null as null,
   lastActiveTool: null,
   locked: false,
@@ -113,7 +113,7 @@ function scenePointAtClient(
   )
 }
 
-/** Смещает вставку: центр вставленной группы попадает в точку под курсором (или в центр видимой области). */
+/** Смещает вставку: левый верхний угол общего bbox группы совпадает с точкой под курсором (или с центром видимой области). */
 function applyExcalidrawClipboardText(
   api: ExcalidrawImperativeAPI,
   text: string,
@@ -144,9 +144,7 @@ function applyExcalidrawClipboardText(
     const pasted = pastedRaw as readonly ExcalidrawElement[]
     if (pasted.length === 0) return
 
-    const [minX, minY, maxX, maxY] = getCommonBounds(pasted)
-    const cx = (minX + maxX) / 2
-    const cy = (minY + maxY) / 2
+    const [minX, minY] = getCommonBounds(pasted)
 
     const app = api.getAppState()
     const client = pasteRootHost ? lastPastePointerClient.get(pasteRootHost) : undefined
@@ -154,8 +152,8 @@ function applyExcalidrawClipboardText(
       ? scenePointAtClient(api, client.clientX, client.clientY)
       : scenePointAtClient(api, app.offsetLeft + app.width / 2, app.offsetTop + app.height / 2)
 
-    const dx = targetScene.x - cx
-    const dy = targetScene.y - cy
+    const dx = targetScene.x - minX
+    const dy = targetScene.y - minY
     const shifted = pasted.map((el) => newElementWith(el, { x: el.x + dx, y: el.y + dy }))
 
     const cur = api.getSceneElements()
@@ -172,6 +170,8 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  /** Снимок выделения до Ctrl/Cmd+клика — Excalidraw сам по себе часто заменяет выделение, а не добавляет. */
+  const ctrlMultiSelectPrevRef = useRef<Readonly<Record<string, true>> | null>(null)
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -223,11 +223,39 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   useEffect(() => {
     const api = apiRef.current
     if (!api || readOnly) return
-    return api.onPointerDown((_tool, _pds, event) => {
+
+    const unsubDown = api.onPointerDown((activeTool, _pds, event) => {
       if (event.target instanceof HTMLCanvasElement) {
         focusExcalidrawContainer(hostRef.current)
       }
+      if (activeTool.type === 'selection' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+        ctrlMultiSelectPrevRef.current = { ...api.getAppState().selectedElementIds }
+      } else {
+        ctrlMultiSelectPrevRef.current = null
+      }
     })
+
+    const unsubUp = api.onPointerUp((activeTool, pds, event) => {
+      const prev = ctrlMultiSelectPrevRef.current
+      ctrlMultiSelectPrevRef.current = null
+      if (!prev) return
+      if (activeTool.type !== 'selection') return
+      if (!(event.ctrlKey || event.metaKey) || event.shiftKey) return
+      if (pds.drag.hasOccurred) return
+      if (pds.boxSelection.hasOccurred) return
+      const el = pds.hit.element
+      if (!el) return
+      api.updateScene({
+        appState: {
+          selectedElementIds: { ...prev, [el.id]: true },
+        },
+      })
+    })
+
+    return () => {
+      unsubDown()
+      unsubUp()
+    }
   }, [readOnly, sceneKey])
 
   /** Paste в capture: иначе ProseMirror раньше обрабатывает вставку, пока activeElement не в схеме (типично в полноэкране). */
