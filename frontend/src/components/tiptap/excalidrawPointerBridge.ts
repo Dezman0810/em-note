@@ -102,22 +102,3 @@ export function excalidrawSyntheticModKeys(): { ctrlKey: boolean; metaKey: boole
   const mac = /Mac|iPhone|iPod|iPad/i.test(navigator.userAgent)
   return mac ? { ctrlKey: false, metaKey: true } : { ctrlKey: true, metaKey: false }
 }
-
-/** Клик по холсту (canvas/svg), не по тулбару/полям — для Ctrl+добавления в выделение. */
-export function excalidrawIsLikelyCanvasPointerTarget(
-  target: EventTarget | null,
-  host: HTMLDivElement | null
-): boolean {
-  if (!(target instanceof Element) || !host?.contains(target)) return false
-  if (
-    target.closest(
-      'button, input, textarea, select, a[href], [role="button"], .App-toolbar, .App-bottom-bar, .mobile-misc-buttons, .main-menu, .dropdown-menu, .context-menu, .popover, .Modal, .Dialog'
-    )
-  ) {
-    return false
-  }
-  /* Интерактивный слой: canvas; подписи/фигуры могут быть в SVG вне кнопок. */
-  if (target instanceof HTMLCanvasElement) return true
-  if (target instanceof SVGElement) return !target.closest('button')
-  return false
-}

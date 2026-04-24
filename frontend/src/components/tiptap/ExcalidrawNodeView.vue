@@ -4,9 +4,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { createRoot } from 'react-dom/client'
 import * as React from 'react'
 import { ExcalidrawApp } from './ExcalidrawApp'
-import { excalidrawBarCopy, excalidrawBarCut, excalidrawBarPaste } from './excalidrawBarClipboard'
-import { excalidrawBarRedo, excalidrawBarUndo } from './excalidrawBarHistory'
-import { excalidrawGetApiForPasteRoot } from './excalidrawApiRegistry'
 
 const props = defineProps(nodeViewProps)
 
@@ -172,55 +169,6 @@ function toggle() {
   expanded.value = !expanded.value
 }
 
-function excalPasteRootEl(): HTMLDivElement | null {
-  return hostRef.value?.querySelector('[data-excalidraw-paste-root]') ?? null
-}
-
-async function onBarCut() {
-  const root = excalPasteRootEl()
-  const api = root ? excalidrawGetApiForPasteRoot(root) : null
-  if (!root || !api) return
-  try {
-    await excalidrawBarCut(api, root)
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function onBarCopy() {
-  const root = excalPasteRootEl()
-  const api = root ? excalidrawGetApiForPasteRoot(root) : null
-  if (!root || !api) return
-  try {
-    await excalidrawBarCopy(api, root)
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-async function onBarPaste() {
-  const root = excalPasteRootEl()
-  const api = root ? excalidrawGetApiForPasteRoot(root) : null
-  if (!root || !api) return
-  try {
-    await excalidrawBarPaste(api, root)
-  } catch (e) {
-    console.error(e)
-  }
-}
-
-function onBarUndo() {
-  const root = excalPasteRootEl()
-  if (!root) return
-  excalidrawBarUndo(root)
-}
-
-function onBarRedo() {
-  const root = excalPasteRootEl()
-  if (!root) return
-  excalidrawBarRedo(root)
-}
-
 function onImportFile(ev: Event) {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
@@ -263,48 +211,6 @@ function onImportFile(ev: Event) {
       :class="{ 'excal-fullscreen-shell--fallback': fullscreenFallback }"
     >
       <div class="excal-innerbar">
-        <div v-if="editor.isEditable" class="excal-innerbar-clip">
-          <button
-            type="button"
-            class="excal-fs-btn excal-clip-btn"
-            title="Назад: отменить последнее действие на схеме (как Ctrl+Z)"
-            @click="onBarUndo"
-          >
-            Назад
-          </button>
-          <button
-            type="button"
-            class="excal-fs-btn excal-clip-btn"
-            title="Вперёд: повторить отменённое (как Ctrl+Shift+Z)"
-            @click="onBarRedo"
-          >
-            Вперёд
-          </button>
-          <button
-            type="button"
-            class="excal-fs-btn excal-clip-btn"
-            title="Вырезать выделенные элементы (в буфер схемы, не в текст заметки)"
-            @click="onBarCut"
-          >
-            Вырезать
-          </button>
-          <button
-            type="button"
-            class="excal-fs-btn excal-clip-btn"
-            title="Копировать выделение в буфер формата Excalidraw"
-            @click="onBarCopy"
-          >
-            Копировать
-          </button>
-          <button
-            type="button"
-            class="excal-fs-btn excal-clip-btn"
-            title="Вставить из буфера у курсора (рамка/несколько объектов — удобнее, чем Ctrl+V)"
-            @click="onBarPaste"
-          >
-            Вставить
-          </button>
-        </div>
         <div class="excal-innerbar-spacer" />
         <button type="button" class="excal-fs-btn" @click="toggleFullscreen">
           {{ isFullscreenUi() ? 'Выйти из полноэкранного' : 'На весь экран' }}
@@ -370,18 +276,9 @@ function onImportFile(ev: Event) {
   gap: 0.5rem;
   flex-shrink: 0;
 }
-.excal-innerbar-clip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
 .excal-innerbar-spacer {
   flex: 1;
   min-width: 0.5rem;
-}
-.excal-clip-btn {
-  font-weight: 500;
 }
 .excal-fs-btn {
   padding: 0.28rem 0.55rem;
@@ -425,6 +322,21 @@ function onImportFile(ev: Event) {
   min-height: 0;
   height: auto;
   max-height: none;
+}
+
+/* Третья «кнопка» в подвале: скругления как у зума/undo (три иконки в одном островке). */
+.excal-host :deep(.excal-embed-clipboard .excal-clip-footer-btn--first .ToolIcon_type_button) {
+  border-top-left-radius: var(--border-radius-lg) !important;
+  border-bottom-left-radius: var(--border-radius-lg) !important;
+  border-right: 0 !important;
+}
+.excal-host :deep(.excal-embed-clipboard .excal-clip-footer-btn--mid .ToolIcon_type_button) {
+  border-radius: 0 !important;
+  border-right: 0 !important;
+}
+.excal-host :deep(.excal-embed-clipboard .excal-clip-footer-btn--last .ToolIcon_type_button) {
+  border-top-right-radius: var(--border-radius-lg) !important;
+  border-bottom-right-radius: var(--border-radius-lg) !important;
 }
 
 /* Скрыть Library в схеме (в @excalidraw/excalidraw 0.18 нет опции в UIOptions). */

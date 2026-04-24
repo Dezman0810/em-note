@@ -1,4 +1,4 @@
-import { CaptureUpdateAction, Excalidraw, MainMenu, restore, serializeAsJSON } from '@excalidraw/excalidraw'
+import { Excalidraw, Footer, MainMenu, restore, serializeAsJSON } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { excalidrawRegisterApi } from './excalidrawApiRegistry'
@@ -9,7 +9,6 @@ import {
 import {
   excalidrawGetLastPasteHost,
   excalidrawInnerHasFocusedTextField,
-  excalidrawIsLikelyCanvasPointerTarget,
   excalidrawPasteRootInActiveFullscreen,
   excalidrawPasteRootUnderLastPointer,
   excalidrawSetLastPasteHost,
@@ -20,17 +19,20 @@ import {
 } from './excalidrawPointerBridge'
 import {
   createElement,
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  type MouseEvent,
   type PointerEvent,
+  type RefObject,
 } from 'react'
+import { excalidrawBarCopy, excalidrawBarCut, excalidrawBarPaste } from './excalidrawBarClipboard'
+import { excalidrawGetApiForPasteRoot } from './excalidrawApiRegistry'
 
-/**
- * Выделение по умолчанию. Множественное: Shift+клик, рамка, и Ctrl/Cmd+клик (добавление/снятие) — см. onPointerUp.
- */
+/** Выделение по умолчанию. Множественное: Shift+клик, рамка, Ctrl/Cmd+клик — встроенная логика Excalidraw 0.18. */
 const DEFAULT_ACTIVE_TOOL = {
   type: 'selection' as const,
   customType: null as null,
@@ -101,14 +103,113 @@ function clipboardLooksLikeFileOrImagePaste(cd: DataTransfer | null): boolean {
   )
 }
 
+function iconCut() {
+  return createElement(
+    'svg',
+    {
+      width: 24,
+      height: 24,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 2,
+      'aria-hidden': true,
+    },
+    createElement('circle', { cx: 6, cy: 6, r: 3 }),
+    createElement('circle', { cx: 6, cy: 18, r: 3 }),
+    createElement('path', {
+      d: 'M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12',
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+    })
+  )
+}
+
+function iconCopy() {
+  return createElement(
+    'svg',
+    {
+      width: 24,
+      height: 24,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 2,
+      'aria-hidden': true,
+    },
+    createElement('rect', { x: 9, y: 9, width: 13, height: 13, rx: 2, ry: 2 }),
+    createElement('path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' })
+  )
+}
+
+function iconPaste() {
+  return createElement(
+    'svg',
+    {
+      width: 24,
+      height: 24,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 2,
+      'aria-hidden': true,
+    },
+    createElement('path', { d: 'M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2' }),
+    createElement('rect', { x: 8, y: 2, width: 8, height: 4, rx: 1, ry: 1 })
+  )
+}
+
+function clipFooterTool(
+  pos: 'first' | 'mid' | 'last',
+  title: string,
+  icon: ReturnType<typeof iconCut>,
+  activate: () => void | Promise<void>
+) {
+  return createElement(
+    'div',
+    { className: `excal-clip-footer-btn excal-clip-footer-btn--${pos}` },
+    createElement(
+      'label',
+      { className: 'ToolIcon ToolIcon_size_small' },
+      createElement(
+        'button',
+        {
+          type: 'button',
+          className: 'ToolIcon_type_button',
+          title,
+          'aria-label': title,
+          onClick: (e: MouseEvent<HTMLButtonElement>) => {
+            e.stopPropagation()
+            e.preventDefault()
+            void Promise.resolve(activate()).catch(console.error)
+          },
+        },
+        createElement('div', { className: 'ToolIcon__icon' }, icon)
+      )
+    )
+  )
+}
+
+function createClipboardFooter(hostRef: RefObject<HTMLDivElement | null>) {
+  const withApi = (fn: typeof excalidrawBarCut | typeof excalidrawBarCopy | typeof excalidrawBarPaste) => () => {
+    const root = hostRef.current
+    const api = root ? excalidrawGetApiForPasteRoot(root) : null
+    if (!root || !api) return
+    return fn(api, root)
+  }
+  return createElement(
+    'div',
+    { className: 'undo-redo-buttons excal-embed-clipboard' },
+    clipFooterTool('first', 'Вырезать (в буфер схемы)', iconCut(), withApi(excalidrawBarCut)),
+    clipFooterTool('mid', 'Копировать', iconCopy(), withApi(excalidrawBarCopy)),
+    clipFooterTool('last', 'Вставить', iconPaste(), withApi(excalidrawBarPaste))
+  )
+}
+
 export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced }: ExcalidrawAppProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
-  /** Ctrl/Cmd+клик: снимок выделения на pointerdown; hadModOnDown — иначе при отпускании Ctrl до mouseup merge не срабатывает. */
-  const ctrlAdditiveRef = useRef<{ prevSel: Readonly<Record<string, true>>; hadModOnDown: boolean } | null>(
-    null
-  )
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -165,73 +266,6 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     const id = requestAnimationFrame(() => markExcalidrawRootEl(hostRef.current))
     return () => cancelAnimationFrame(id)
   }, [sceneKey])
-
-  useEffect(() => {
-    const api = apiRef.current
-    if (!api || readOnly) return
-    const unsubDown = api.onPointerDown((activeTool, _pds, event) => {
-      if (event.target instanceof HTMLCanvasElement) {
-        focusExcalidrawContainer(hostRef.current)
-      }
-      if (activeTool.type !== 'selection') {
-        ctrlAdditiveRef.current = null
-        return
-      }
-      if (!(event.ctrlKey || event.metaKey)) {
-        ctrlAdditiveRef.current = null
-        return
-      }
-      if (!excalidrawIsLikelyCanvasPointerTarget(event.target, hostRef.current)) {
-        ctrlAdditiveRef.current = null
-        return
-      }
-      ctrlAdditiveRef.current = {
-        prevSel: { ...api.getAppState().selectedElementIds },
-        hadModOnDown: true,
-      }
-    })
-    const unsubUp = api.onPointerUp((activeTool, pds, _ev) => {
-      const gesture = ctrlAdditiveRef.current
-      ctrlAdditiveRef.current = null
-      if (!gesture?.hadModOnDown) return
-      if (activeTool.type !== 'selection') return
-      if (pds.boxSelection.hasOccurred) return
-      if (pds.drag.hasOccurred) return
-      if (pds.resize.isResizing) return
-      if (!pds.hit.element) return
-
-      const snap = gesture.prevSel
-      const st = api.getAppState()
-      const next = st.selectedElementIds
-      const prevKeys = Object.keys(snap).filter((k) => snap[k])
-      const nextKeys = Object.keys(next).filter((k) => next[k])
-      if (nextKeys.length === 0) return
-
-      if (nextKeys.length === 1) {
-        const id = nextKeys[0]
-        if (prevKeys.includes(id) && prevKeys.length > 1) {
-          const merged: Record<string, true> = {}
-          for (const k of prevKeys) {
-            if (k !== id) merged[k] = true
-          }
-          api.updateScene({
-            appState: { selectedElementIds: merged },
-            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-          })
-          return
-        }
-      }
-      const merged = { ...snap, ...next } as Record<string, true>
-      api.updateScene({
-        appState: { selectedElementIds: merged },
-        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
-      })
-    })
-    return () => {
-      unsubDown()
-      unsubUp()
-    }
-  }, [readOnly, sceneKey])
 
   /** Paste в capture: иначе ProseMirror раньше обрабатывает вставку, пока activeElement не в схеме (типично в полноэкране). */
   useEffect(() => {
@@ -505,6 +539,15 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     createElement(MainMenu.DefaultItems.ChangeCanvasBackground)
   )
 
+  const excalChildren = readOnly
+    ? customMainMenu
+    : createElement(
+        Fragment,
+        null,
+        customMainMenu,
+        createElement(Footer, null, createClipboardFooter(hostRef))
+      )
+
   const uiOptions = useMemo(
     () => ({
       canvasActions: {
@@ -536,7 +579,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       detectScroll: false,
       viewModeEnabled: readOnly,
       UIOptions: uiOptions,
-      children: customMainMenu,
+      children: excalChildren,
     })
   )
 }
