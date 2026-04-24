@@ -13,8 +13,10 @@ import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
 import {
+  excalidrawGetLastPasteHost,
   excalidrawPasteRootInActiveFullscreen,
   excalidrawPasteRootUnderLastPointer,
+  excalidrawSetLastPasteHost,
   excalidrawTrackPointerClient,
 } from './excalidrawPointerBridge'
 import {
@@ -28,8 +30,7 @@ import {
 } from 'react'
 
 /**
- * По умолчанию выделение. Несколько объектов — штатно: Shift+клик или рамка на пустом месте;
- * в Excalidraw Ctrl/Cmd используется для других жестов — не дублируем это своим кодом.
+ * Выделение по умолчанию. Множественное: Shift+клик, рамка, и Ctrl/Cmd+клик (добавление/снятие) — см. onPointerUp.
  */
 const DEFAULT_ACTIVE_TOOL = {
   type: 'selection' as const,
@@ -82,9 +83,6 @@ function markExcalidrawRootEl(host: HTMLDivElement | null) {
   const inner = host.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
   if (inner) inner.setAttribute('data-excalidraw-root', '')
 }
-
-/** Последний экземпляр схемы, куда кликнули (нужно для paste в fullscreen, когда фокус остаётся в TipTap). */
-let lastExcalidrawPointerHost: HTMLDivElement | null = null
 
 /** Последняя позиция указателя над корнем вставки (client coords) — куда ставить вставку в координатах сцены. */
 const lastPastePointerClient = new WeakMap<HTMLDivElement, { clientX: number; clientY: number }>()
@@ -182,6 +180,8 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
+  /** Снимок выделения до Ctrl/Cmd+клика — Excalidraw сам по Cmd не добавляет в выделение. */
+  const prevSelOnCtrlPointerRef = useRef<Record<string, boolean> | null>(null)
 
   const initialData = useMemo(() => {
     const r = parseScene(sceneJson)
@@ -233,26 +233,92 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   useEffect(() => {
     const api = apiRef.current
     if (!api || readOnly) return
-    return api.onPointerDown((_tool, _pds, event) => {
+    const unsubDown = api.onPointerDown((activeTool, _pds, event) => {
       if (event.target instanceof HTMLCanvasElement) {
         focusExcalidrawContainer(hostRef.current)
       }
+      if (activeTool.type !== 'selection') {
+        prevSelOnCtrlPointerRef.current = null
+        return
+      }
+      if (!(event.ctrlKey || event.metaKey)) {
+        prevSelOnCtrlPointerRef.current = null
+        return
+      }
+      const t = event.target
+      if (!(t instanceof HTMLElement) || !hostRef.current?.contains(t)) {
+        prevSelOnCtrlPointerRef.current = null
+        return
+      }
+      if (!(t instanceof HTMLCanvasElement)) {
+        prevSelOnCtrlPointerRef.current = null
+        return
+      }
+      prevSelOnCtrlPointerRef.current = { ...api.getAppState().selectedElementIds }
     })
+    const unsubUp = api.onPointerUp((activeTool, pds, _ev) => {
+      const snap = prevSelOnCtrlPointerRef.current
+      prevSelOnCtrlPointerRef.current = null
+      if (!snap) return
+      if (activeTool.type !== 'selection') return
+      if (!pds.withCmdOrCtrl) return
+      if (pds.boxSelection.hasOccurred) return
+      if (pds.drag.hasOccurred) return
+      if (pds.resize.isResizing) return
+      if (!pds.hit.element) return
+
+      const st = api.getAppState()
+      const next = st.selectedElementIds
+      const prevKeys = Object.keys(snap).filter((k) => snap[k])
+      const nextKeys = Object.keys(next).filter((k) => next[k])
+      if (nextKeys.length === 0) return
+
+      if (nextKeys.length === 1) {
+        const id = nextKeys[0]
+        if (prevKeys.includes(id) && prevKeys.length > 1) {
+          const merged: Record<string, true> = {}
+          for (const k of prevKeys) {
+            if (k !== id) merged[k] = true
+          }
+          api.updateScene({
+            appState: { selectedElementIds: merged },
+            captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+          })
+          return
+        }
+      }
+      const merged = { ...snap, ...next } as Record<string, true>
+      api.updateScene({
+        appState: { selectedElementIds: merged },
+        captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+      })
+    })
+    return () => {
+      unsubDown()
+      unsubUp()
+    }
   }, [readOnly, sceneKey])
 
   /** Paste в capture: иначе ProseMirror раньше обрабатывает вставку, пока activeElement не в схеме (типично в полноэкране). */
   useEffect(() => {
     if (readOnly) return
 
+    const onPointerOverDoc = (e: Event) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      const h = t.closest('[data-excalidraw-paste-root]')
+      if (h instanceof HTMLDivElement) excalidrawSetLastPasteHost(h)
+    }
+
     const onPointerDownDoc = (e: Event) => {
       if (e instanceof PointerEvent) excalidrawTrackPointerClient(e)
       const t = e.target
       if (!(t instanceof Element)) {
-        lastExcalidrawPointerHost = null
+        excalidrawSetLastPasteHost(null)
         return
       }
       const h = t.closest('[data-excalidraw-paste-root]')
-      lastExcalidrawPointerHost = h instanceof HTMLDivElement ? h : null
+      excalidrawSetLastPasteHost(h instanceof HTMLDivElement ? h : null)
     }
 
     const onPointerMoveDoc = (e: Event) => {
@@ -297,7 +363,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const forThisInstance =
         fullscreenRoot === hr ||
         underPointer === hr ||
-        lastExcalidrawPointerHost === hr ||
+        excalidrawGetLastPasteHost() === hr ||
         inner.contains(document.activeElement)
       if (!forThisInstance) return
 
@@ -354,7 +420,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const forThisInstance =
         fullscreenRoot === hr ||
         underPointer === hr ||
-        lastExcalidrawPointerHost === hr ||
+        excalidrawGetLastPasteHost() === hr ||
         inner.contains(document.activeElement)
       if (!forThisInstance) return
 
@@ -395,7 +461,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       if (
         fullscreenRoot !== hr &&
         underPointer !== hr &&
-        lastExcalidrawPointerHost !== hr
+        excalidrawGetLastPasteHost() !== hr
       )
         return
       if (k === 'c' || k === 'v' || k === 'x' || (k === 'a' && !ke.shiftKey)) {
@@ -403,11 +469,13 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       }
     }
 
+    document.addEventListener('pointerover', onPointerOverDoc, true)
     document.addEventListener('pointerdown', onPointerDownDoc, true)
     document.addEventListener('pointermove', onPointerMoveDoc, true)
     document.addEventListener('keydown', onKeyDownCapture, true)
     document.addEventListener('paste', onPasteCapture, true)
     return () => {
+      document.removeEventListener('pointerover', onPointerOverDoc, true)
       document.removeEventListener('pointerdown', onPointerDownDoc, true)
       document.removeEventListener('pointermove', onPointerMoveDoc, true)
       document.removeEventListener('keydown', onKeyDownCapture, true)
@@ -417,7 +485,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
 
   const onHostPointerDownCapture = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (readOnly) return
-    lastExcalidrawPointerHost = hostRef.current
+    excalidrawSetLastPasteHost(hostRef.current)
     /* Фокус только с canvas: фокус на каждый клик по UI Excalidraw ломал множественное выделение и рамку. */
     if (e.target instanceof HTMLCanvasElement) {
       focusExcalidrawContainer(hostRef.current)

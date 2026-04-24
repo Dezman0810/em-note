@@ -7,6 +7,7 @@ import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreak
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
 import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
+import { ExcalidrawUndoGuard } from './tiptap/ExcalidrawUndoGuard'
 import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
 import { TextStyle } from '@tiptap/extension-text-style'
@@ -18,8 +19,8 @@ import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../util
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 import {
-  excalidrawPasteRootInActiveFullscreen,
-  excalidrawPasteRootUnderLastPointer,
+  excalidrawInnerHasFocusedTextField,
+  resolveExcalidrawInnerForUndoRedo,
 } from './tiptap/excalidrawPointerBridge'
 
 /** Цвет букв (круги + первая палитра). */
@@ -119,20 +120,9 @@ const editor = useEditor({
           const undo = k === 'z' && !event.shiftKey
           const redo = k === 'y' || (k === 'z' && event.shiftKey)
           if (undo || redo) {
-            const fsRoot = excalidrawPasteRootInActiveFullscreen()
-            const fromPoint = excalidrawPasteRootUnderLastPointer()
-            const roots: HTMLElement[] = []
-            if (fsRoot) roots.push(fsRoot)
-            else if (fromPoint) roots.push(fromPoint)
-            else {
-              document.querySelectorAll('[data-excalidraw-paste-root]').forEach((n) => {
-                if (n instanceof HTMLElement && n.matches(':hover')) roots.push(n)
-              })
-            }
-            for (let i = 0; i < roots.length; i++) {
-              const r = roots[i]
-              const inner = r.querySelector('.excalidraw.excalidraw-container')
-              if (!(inner instanceof HTMLElement)) continue
+            const inner = resolveExcalidrawInnerForUndoRedo()
+            if (inner) {
+              if (excalidrawInnerHasFocusedTextField(inner)) return false
               if (inner.contains(document.activeElement)) return true
               event.preventDefault()
               inner.focus({ preventScroll: true })
@@ -158,6 +148,7 @@ const editor = useEditor({
     },
   },
   extensions: [
+    ExcalidrawUndoGuard,
     StarterKit.configure({
       heading: { levels: [2, 3] },
     }),
