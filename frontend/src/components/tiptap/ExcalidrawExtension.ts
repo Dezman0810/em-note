@@ -41,7 +41,27 @@ export const ExcalidrawBlock = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(ExcalidrawNodeView)
+    return VueNodeViewRenderer(ExcalidrawNodeView, {
+      /**
+       * По умолчанию TipTap для selectable atom даёт ProseMirror обработать mousedown — выделяется
+       * весь блок схемы, а не фигуры внутри Excalidraw (ломается Ctrl/Cmd+клик и обычный клик по холсту).
+       * Внутри paste-root события полностью остаются у Excalidraw.
+       */
+      stopEvent: ({ event }) => {
+        const t = event.target
+        if (!(t instanceof Element)) return false
+        if (t.closest('[data-excalidraw-paste-root]')) return true
+
+        const el = t as HTMLElement
+        const tag = el.tagName
+        if (tag === 'LABEL' || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
+          return true
+        }
+        if (el.isContentEditable) return true
+
+        return false
+      },
+    })
   },
 
   addCommands() {
