@@ -13,6 +13,7 @@ import '@excalidraw/excalidraw/index.css'
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types'
 import {
+  excalidrawPasteRootInActiveFullscreen,
   excalidrawPasteRootUnderLastPointer,
   excalidrawTrackPointerClient,
 } from './excalidrawPointerBridge'
@@ -291,8 +292,10 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const inner = hr.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!inner) return
 
+      const fullscreenRoot = excalidrawPasteRootInActiveFullscreen()
       const underPointer = excalidrawPasteRootUnderLastPointer()
       const forThisInstance =
+        fullscreenRoot === hr ||
         underPointer === hr ||
         lastExcalidrawPointerHost === hr ||
         inner.contains(document.activeElement)
@@ -346,8 +349,10 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       const inner = hr?.querySelector('.excalidraw.excalidraw-container') as HTMLElement | null
       if (!hr || !inner) return
 
+      const fullscreenRoot = excalidrawPasteRootInActiveFullscreen()
       const underPointer = excalidrawPasteRootUnderLastPointer()
       const forThisInstance =
+        fullscreenRoot === hr ||
         underPointer === hr ||
         lastExcalidrawPointerHost === hr ||
         inner.contains(document.activeElement)
@@ -387,7 +392,12 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       }
 
       if (focusInInner) return
-      if (underPointer !== hr && lastExcalidrawPointerHost !== hr) return
+      if (
+        fullscreenRoot !== hr &&
+        underPointer !== hr &&
+        lastExcalidrawPointerHost !== hr
+      )
+        return
       if (k === 'c' || k === 'v' || k === 'x' || (k === 'a' && !ke.shiftKey)) {
         inner.focus({ preventScroll: true })
       }

@@ -17,7 +17,10 @@ import { attachmentsApi, errMessage, publicNoteApi } from '../api/client'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
-import { excalidrawPasteRootUnderLastPointer } from './tiptap/excalidrawPointerBridge'
+import {
+  excalidrawPasteRootInActiveFullscreen,
+  excalidrawPasteRootUnderLastPointer,
+} from './tiptap/excalidrawPointerBridge'
 
 /** Цвет букв (круги + первая палитра). */
 const TEXT_COLOR_PRESETS = [
@@ -116,9 +119,11 @@ const editor = useEditor({
           const undo = k === 'z' && !event.shiftKey
           const redo = k === 'y' || (k === 'z' && event.shiftKey)
           if (undo || redo) {
+            const fsRoot = excalidrawPasteRootInActiveFullscreen()
             const fromPoint = excalidrawPasteRootUnderLastPointer()
             const roots: HTMLElement[] = []
-            if (fromPoint) roots.push(fromPoint)
+            if (fsRoot) roots.push(fsRoot)
+            else if (fromPoint) roots.push(fromPoint)
             else {
               document.querySelectorAll('[data-excalidraw-paste-root]').forEach((n) => {
                 if (n instanceof HTMLElement && n.matches(':hover')) roots.push(n)
