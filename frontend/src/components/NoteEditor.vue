@@ -3,6 +3,12 @@ import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
 import Image from '@tiptap/extension-image'
 import { TableKit } from '@tiptap/extension-table'
+import { NoteTableCell, NoteTableHeader } from './tiptap/noteTableSizingCells'
+import {
+  CELL_MIN,
+  getNoteTableApproxWidthPx,
+  getNoteTableCellMetrics,
+} from './tiptap/noteTableMenuMetrics'
 import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
@@ -186,7 +192,11 @@ const editor = useEditor({
         handleWidth: 6,
         lastColumnResizable: true,
       },
+      tableCell: false,
+      tableHeader: false,
     }),
+    NoteTableCell,
+    NoteTableHeader,
     TaskList,
     TaskItemNote.configure({ nested: false }),
     TaskListEnterKeymap,
@@ -297,6 +307,84 @@ const canTableToggleHeaderRow = computed(() => {
   void toolbarTick.value
   return editor.value?.can().toggleHeaderRow() ?? false
 })
+
+const tableCellMetrics = computed(() => {
+  void toolbarTick.value
+  const ed = editor.value
+  if (!ed?.isActive('table')) return null
+  return getNoteTableCellMetrics(ed.state)
+})
+
+const tableApproxLabel = computed(() => {
+  void toolbarTick.value
+  const ed = editor.value
+  if (!ed?.isActive('table')) return ''
+  const px = getNoteTableApproxWidthPx(ed.state, 44)
+  return px != null ? `≈ ${px} px (первая строка)` : ''
+})
+
+const canTableApplySizing = computed(() => {
+  void toolbarTick.value
+  const ed = editor.value
+  if (!ed?.isActive('table') || !tableCellMetrics.value) return false
+  return ed.can().setCellAttribute('colwidth', [CELL_MIN])
+})
+
+const draftColW = ref('')
+const draftMinH = ref('')
+
+watch(
+  () => [toolbarTick.value, tableMenuInTable.value, tableDd.value?.open] as const,
+  () => {
+    const m = tableCellMetrics.value
+    if (m) {
+      draftColW.value = m.widthPx != null ? String(m.widthPx) : ''
+      draftMinH.value = m.minHeightPx != null ? String(m.minHeightPx) : ''
+    }
+  }
+)
+
+function applyTableCellSizing() {
+  const ed = editor.value
+  if (!ed || !tableCellMetrics.value || !canTableApplySizing.value) return
+
+  const wStr = draftColW.value.trim()
+  const hStr = draftMinH.value.trim()
+  let ch = ed.chain().focus()
+
+  if (wStr === '') {
+    ch = ch.setCellAttribute('colwidth', null)
+  } else {
+    const w = parseInt(wStr, 10)
+    if (!Number.isNaN(w) && w >= CELL_MIN) {
+      const m = tableCellMetrics.value
+      const span = m.colspan
+      const attrs = ed.getAttributes(m.cellKind)
+      const cur = attrs.colwidth as number[] | null
+      let next: number[]
+      if (span === 1) {
+        next = [w]
+      } else if (cur && cur.length >= span) {
+        next = cur.slice(0, span)
+        next[0] = w
+      } else {
+        next = Array.from({ length: span }, (_, i) => (i === 0 ? w : CELL_MIN))
+      }
+      ch = ch.setCellAttribute('colwidth', next)
+    }
+  }
+
+  if (hStr === '') {
+    ch = ch.setCellAttribute('minHeight', null)
+  } else {
+    const h = parseInt(hStr, 10)
+    if (!Number.isNaN(h) && h >= CELL_MIN) {
+      ch = ch.setCellAttribute('minHeight', h)
+    }
+  }
+
+  ch.run()
+}
 
 const boldOn = computed(() => {
   void toolbarTick.value
@@ -684,6 +772,59 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <p class="table-dd-hint">Строки и столбцы (курсор в ячейке):</p>
+            <div v-if="tableCellMetrics" class="table-dd-metrics">
+              <p class="table-dd-metrics-line">
+                <strong>Ячейка:</strong> строка {{ tableCellMetrics.row }}, столбец
+                {{ tableCellMetrics.colRangeLabel }}
+                <span v-if="tableCellMetrics.cellKind === 'tableHeader'" class="table-dd-metrics-tag">заголовок</span>
+              </p>
+              <p class="table-dd-metrics-line">
+                <strong>Ширина столбца:</strong>
+                {{ tableCellMetrics.widthPx != null ? tableCellMetrics.widthPx + ' px' : 'авто' }}
+                ·
+                <strong>мин. высота ячейки:</strong>
+                {{ tableCellMetrics.minHeightPx != null ? tableCellMetrics.minHeightPx + ' px' : 'авто' }}
+              </p>
+              <p v-if="tableApproxLabel" class="table-dd-metrics-line table-dd-metrics-line--muted">
+                <strong>Таблица:</strong> {{ tableApproxLabel }}
+              </p>
+              <div class="table-dd-size-fields">
+                <label class="table-dd-field">
+                  <span>Ширина столбца (px)</span>
+                  <input
+                    v-model="draftColW"
+                    type="number"
+                    :min="CELL_MIN"
+                    class="table-dd-inp"
+                    placeholder="авто"
+                    :disabled="!canTableApplySizing"
+                  />
+                </label>
+                <label class="table-dd-field">
+                  <span>Мин. высота ячейки (px)</span>
+                  <input
+                    v-model="draftMinH"
+                    type="number"
+                    :min="CELL_MIN"
+                    class="table-dd-inp"
+                    placeholder="авто"
+                    :disabled="!canTableApplySizing"
+                  />
+                </label>
+              </div>
+              <p class="table-dd-metrics-hint">
+                Пустое поле и «Применить» — сброс в авто. Общая ширина таблицы складывается из столбцов; высоту
+                строки удобнее задавать по ячейке.
+              </p>
+              <button
+                type="button"
+                class="table-dd-act table-dd-apply"
+                :disabled="!canTableApplySizing"
+                @click="applyTableCellSizing"
+              >
+                Применить размеры
+              </button>
+            </div>
             <div class="table-dd-actions">
               <span class="table-dd-grp-lab">Строка</span>
               <div class="table-dd-row">
@@ -1374,6 +1515,64 @@ onBeforeUnmount(() => {
   font-size: 0.68rem;
   line-height: 1.4;
   color: var(--text-muted, #64748b);
+}
+.table-dd-metrics {
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+}
+.table-dd-metrics-line {
+  margin: 0 0 0.28rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text, #1e293b);
+}
+.table-dd-metrics-line--muted {
+  font-size: 0.68rem;
+  color: var(--text-muted, #64748b);
+}
+.table-dd-metrics-tag {
+  margin-left: 0.25rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+.table-dd-size-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.35rem;
+}
+.table-dd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.68rem;
+  color: var(--text-muted, #64748b);
+}
+.table-dd-field span {
+  font-weight: 600;
+}
+.table-dd-inp {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.32rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.table-dd-metrics-hint {
+  margin: 0 0 0.4rem;
+  font-size: 0.64rem;
+  line-height: 1.35;
+  color: var(--text-muted, #94a3b8);
+}
+.table-dd-apply {
+  width: 100%;
+  margin-bottom: 0.15rem;
 }
 .table-dd-actions {
   display: flex;
