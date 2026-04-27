@@ -9,10 +9,15 @@ import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
-import { contentHasExcalidraw } from '../utils/tiptapContent'
+import { contentHasAudio, contentHasExcalidraw } from '../utils/tiptapContent'
 import { foldersSortedAlphabetical } from '../utils/folders'
 
-const props = defineProps<{ noteId: string | null; editorSyncSignal?: number }>()
+const props = defineProps<{
+  noteId: string | null
+  /** Порядок как в средней колонке: фильтры папок/меток/поиска и сортировка */
+  sortedNoteIds?: string[]
+  editorSyncSignal?: number
+}>()
 const emit = defineEmits<{ refresh: [] }>()
 
 const router = useRouter()
@@ -45,6 +50,9 @@ const folders = ref<Folder[]>([])
 const folderSelect = ref('')
 
 const SCHEMA_TAG_NAME = 'Схема'
+const REMINDER_TAG_NAME = 'Напоминание с датой'
+const AUDIO_TAG_NAME = 'Аудиозапись'
+const PUBLIC_LINK_TAG_NAME = 'Публичная ссылка'
 
 /** Компактный popover у кнопки: дата + время с шагом 15 минут (Teleport + fixed, как anchored popover). */
 const reminderPanelOpen = ref(false)
@@ -65,6 +73,30 @@ const mailSending = ref(false)
 const mailError = ref('')
 
 const isOwner = computed(() => !!(note.value && auth.user && note.value.owner_id === auth.user.id))
+
+const noteNavIds = computed(() => props.sortedNoteIds ?? [])
+const noteNavIndex = computed(() => {
+  const id = props.noteId
+  if (!id) return -1
+  return noteNavIds.value.indexOf(id)
+})
+/** Есть куда листать в рамках текущего списка */
+const noteNavVisible = computed(() => {
+  const i = noteNavIndex.value
+  return i >= 0 && noteNavIds.value.length > 1
+})
+const hasPrevNote = computed(() => noteNavIndex.value > 0)
+const hasNextNote = computed(() => {
+  const i = noteNavIndex.value
+  const ids = noteNavIds.value
+  return i >= 0 && i < ids.length - 1
+})
+const noteNavCounter = computed(() => {
+  const i = noteNavIndex.value
+  const n = noteNavIds.value.length
+  if (i < 0 || n === 0) return ''
+  return `${i + 1} / ${n}`
+})
 
 const publicUrl = computed(() => {
   if (!publicLink.value || typeof window === 'undefined') return ''
@@ -180,6 +212,7 @@ async function updateReminderAt(iso: string | null) {
   try {
     note.value = await notesApi.update(note.value.id, { reminder_at: iso })
     emitRefresh()
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -319,31 +352,54 @@ async function clearReminderQuick() {
   await updateReminderAt(null)
 }
 
-async function syncSchemaTag() {
+/** Системные метки по содержимому / полям заметки (владелец, не корзина). */
+async function syncSystemTag(tagName: string, shouldAttach: boolean) {
   if (!note.value || !isOwner.value || !editorEditable.value) return
-  const has = contentHasExcalidraw(contentJson.value)
-  let schemaTag = tags.value.find((t) => t.name === SCHEMA_TAG_NAME)
-  if (has && !schemaTag) {
+  let tag = tags.value.find((t) => t.name === tagName)
+  if (shouldAttach && !tag) {
     try {
-      schemaTag = await tagsApi.create({ name: SCHEMA_TAG_NAME })
+      tag = await tagsApi.create({ name: tagName })
       tags.value = await tagsApi.list()
     } catch {
       return
     }
   }
-  if (!schemaTag) return
-  const attached = note.value.tag_ids.includes(schemaTag.id)
+  if (!tag) return
+  const attached = note.value.tag_ids.includes(tag.id)
   try {
-    if (has && !attached) {
-      note.value = await notesApi.attachTag(note.value.id, schemaTag.id)
+    if (shouldAttach && !attached) {
+      note.value = await notesApi.attachTag(note.value.id, tag.id)
       emitRefresh()
-    } else if (!has && attached) {
-      note.value = await notesApi.detachTag(note.value.id, schemaTag.id)
+    } else if (!shouldAttach && attached) {
+      note.value = await notesApi.detachTag(note.value.id, tag.id)
       emitRefresh()
     }
   } catch {
     /* не блокируем сохранение текста */
   }
+}
+
+async function syncSchemaTag() {
+  await syncSystemTag(SCHEMA_TAG_NAME, contentHasExcalidraw(contentJson.value))
+}
+
+async function syncReminderTag() {
+  await syncSystemTag(REMINDER_TAG_NAME, !!note.value?.reminder_at)
+}
+
+async function syncAudioTag() {
+  await syncSystemTag(AUDIO_TAG_NAME, contentHasAudio(contentJson.value))
+}
+
+async function syncPublicLinkTag() {
+  await syncSystemTag(PUBLIC_LINK_TAG_NAME, !!publicLink.value)
+}
+
+async function syncAutoTags() {
+  await syncSchemaTag()
+  await syncReminderTag()
+  await syncAudioTag()
+  await syncPublicLinkTag()
 }
 
 async function applyFolderChange() {
@@ -466,7 +522,7 @@ async function load() {
     await loadFoldersOnly()
     folderSelect.value = n.folder_id ?? ''
     reminderPanelOpen.value = false
-    await syncSchemaTag()
+    await syncAutoTags()
   } catch (e) {
     if (gen !== loadGen || requestedId !== props.noteId) return
     error.value = errMessage(e)
@@ -502,7 +558,7 @@ async function refetchNoteIfRemoteNewer() {
     folderSelect.value = remote.folder_id ?? ''
     syncLastSavedFromEditor()
     emitRefresh()
-    void syncSchemaTag()
+    void syncAutoTags()
   } catch {
     /* сеть / 401 — не мешаем редактированию */
   }
@@ -521,7 +577,7 @@ async function save() {
     note.value = updated
     syncLastSavedFromEditor()
     emitRefresh()
-    await syncSchemaTag()
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -545,13 +601,29 @@ async function flushSave() {
       folderSelect.value = remote.folder_id ?? ''
       syncLastSavedFromEditor()
       emitRefresh()
-      void syncSchemaTag()
+      void syncAutoTags()
       return
     }
   } catch {
     /* если GET не удался — сохраняем локальные правки как раньше */
   }
   await save()
+}
+
+async function goPrevNote() {
+  const ids = noteNavIds.value
+  const i = noteNavIndex.value
+  if (i <= 0) return
+  await flushSave()
+  await router.push({ name: 'note', params: { id: ids[i - 1]! } })
+}
+
+async function goNextNote() {
+  const ids = noteNavIds.value
+  const i = noteNavIndex.value
+  if (i < 0 || i >= ids.length - 1) return
+  await flushSave()
+  await router.push({ name: 'note', params: { id: ids[i + 1]! } })
 }
 
 function scheduleSave() {
@@ -603,6 +675,24 @@ async function pickTag(t: Tag) {
 
 async function removeChip(tagId: string) {
   if (!note.value || !editorEditable.value) return
+  const tag = tags.value.find((x) => x.id === tagId)
+  if (tag?.name === PUBLIC_LINK_TAG_NAME && publicLink.value) {
+    publicAccessBusy.value = true
+    error.value = ''
+    try {
+      await notesApi.deletePublicLink(note.value.id)
+      publicLink.value = null
+      publicShareExpanded.value = false
+      publicCopyOk.value = false
+      await syncPublicLinkTag()
+      emitRefresh()
+    } catch (e) {
+      error.value = errMessage(e)
+    } finally {
+      publicAccessBusy.value = false
+    }
+    return
+  }
   try {
     note.value = await notesApi.detachTag(note.value.id, tagId)
     emitRefresh()
@@ -716,6 +806,7 @@ async function onPublicAccessToggle(e: Event) {
       publicShareExpanded.value = false
     }
     publicCopyOk.value = false
+    await syncAutoTags()
   } catch (err) {
     error.value = errMessage(err)
     el.checked = !wantOn
@@ -732,6 +823,7 @@ async function setPublicRole(role: 'viewer' | 'editor') {
   try {
     publicLink.value = await notesApi.upsertPublicLink(note.value.id, { role })
     publicCopyOk.value = false
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -747,6 +839,7 @@ async function regenPublicLink() {
   try {
     publicLink.value = await notesApi.regeneratePublicLink(note.value.id)
     publicCopyOk.value = false
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -780,13 +873,39 @@ function onVisibilityChange() {
   }
 }
 
+/** Режим «только заметка»: фиксированная колонка на весь вьюпорт, Esc — выход. */
+const editorFocusMode = ref(false)
+
+function toggleEditorFocusMode() {
+  editorFocusMode.value = !editorFocusMode.value
+}
+
+function exitEditorFocusMode() {
+  editorFocusMode.value = false
+}
+
+function onEditorFocusKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (!editorFocusMode.value) return
+  e.preventDefault()
+  exitEditorFocusMode()
+}
+
+watch(editorFocusMode, (v) => {
+  if (typeof document === 'undefined') return
+  document.body.style.overflow = v ? 'hidden' : ''
+})
+
 onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange)
+  window.addEventListener('keydown', onEditorFocusKeydown)
 })
 
 onBeforeUnmount(async () => {
   unbindReminderPopoverListeners()
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('keydown', onEditorFocusKeydown)
+  if (typeof document !== 'undefined') document.body.style.overflow = ''
   await flushSave()
 })
 
@@ -804,6 +923,7 @@ watch(
       fetching.value = false
       error.value = ''
       autoSaveOk.value = false
+      editorFocusMode.value = false
       return
     }
     if (newId !== oldId) {
@@ -825,7 +945,17 @@ watch(
 </script>
 
 <template>
-  <div class="editor-column">
+  <div class="editor-column" :class="{ 'editor-column--focus': editorFocusMode }">
+    <button
+      v-if="editorFocusMode && note"
+      type="button"
+      class="editor-focus-exit-float"
+      aria-label="Вернуть обычный вид с колонками списка"
+      title="Вернуть обычный вид колонок (Esc)"
+      @click="exitEditorFocusMode"
+    >
+      Обычный режим
+    </button>
     <template v-if="!noteId">
       <div class="editor-placeholder">
         <p class="ph-title">Заметка не выбрана</p>
@@ -854,6 +984,44 @@ watch(
           <button v-if="isOwner && !isTrashed" type="button" class="danger" @click="removeNote">
             В корзину
           </button>
+          <div
+            v-if="noteNavVisible"
+            class="bar-note-nav"
+            role="navigation"
+            aria-label="Переход по списку заметок"
+          >
+            <span v-if="noteNavCounter" class="bar-note-nav-counter">{{ noteNavCounter }}</span>
+            <button
+              type="button"
+              class="btn-note-nav"
+              :disabled="!hasPrevNote"
+              title="Предыдущая в списке (фильтры и сортировка как в средней колонке)"
+              aria-label="Предыдущая заметка в списке"
+              @click="goPrevNote"
+            >
+              ←
+            </button>
+            <button
+              type="button"
+              class="btn-note-nav"
+              :disabled="!hasNextNote"
+              title="Следующая в списке (фильтры и сортировка как в средней колонке)"
+              aria-label="Следующая заметка в списке"
+              @click="goNextNote"
+            >
+              →
+            </button>
+          </div>
+          <button
+            v-if="note && !isTrashed && !editorFocusMode"
+            type="button"
+            class="btn-editor-focus"
+            aria-label="Показать только заметку на весь экран"
+            title="Только заметка на весь экран"
+            @click="toggleEditorFocusMode"
+          >
+            На весь экран
+          </button>
         </div>
       </header>
       <div v-if="isTrashed" class="trash-banner">
@@ -865,108 +1033,6 @@ watch(
       </template>
       <template v-else-if="note">
         <div class="editor-main" :class="{ 'editor-fetching': fetching }">
-        <section v-if="isOwner && !isTrashed" class="share-hub" aria-label="Обмен и доступ">
-          <div class="share-hub-toolbar">
-            <button type="button" class="share-hub-tile share-hub-tile-mail" @click="openMailModal">
-              <span class="share-hub-ico" aria-hidden="true">✉</span>
-              <span class="share-hub-tile-text">По почте</span>
-            </button>
-            <div class="share-hub-divider" aria-hidden="true" />
-            <div class="share-hub-link-line">
-              <span class="share-hub-tile-label">Ссылка</span>
-              <span v-if="publicLink && !publicShareExpanded" class="share-hub-role-pill">{{
-                publicRole === 'editor' ? 'Редактирование' : 'Чтение'
-              }}</span>
-              <label class="public-switch public-switch--compact">
-                <input
-                  type="checkbox"
-                  :checked="!!publicLink"
-                  :disabled="publicAccessBusy"
-                  @change="onPublicAccessToggle"
-                />
-                <span class="public-switch-ui" aria-hidden="true" />
-              </label>
-              <button
-                type="button"
-                class="share-hub-expand"
-                :aria-expanded="publicShareExpanded"
-                @click="publicShareExpanded = !publicShareExpanded"
-              >
-                <span class="share-hub-chevron" :class="{ open: publicShareExpanded }" aria-hidden="true" />
-                <span>{{ publicShareExpanded ? 'Свернуть' : 'Настроить' }}</span>
-              </button>
-            </div>
-          </div>
-          <div v-show="publicShareExpanded" class="share-hub-drop">
-            <template v-if="publicLink">
-              <div class="public-mode-row">
-                <span class="mode-label">Доступ по ссылке</span>
-                <div class="mode-seg" role="group" aria-label="Режим общей ссылки">
-                  <button
-                    type="button"
-                    class="mode-btn"
-                    :class="{ active: publicRole === 'viewer' }"
-                    :disabled="publicAccessBusy"
-                    @click="setPublicRole('viewer')"
-                  >
-                    Только чтение
-                  </button>
-                  <button
-                    type="button"
-                    class="mode-btn"
-                    :class="{ active: publicRole === 'editor' }"
-                    :disabled="publicAccessBusy"
-                    @click="setPublicRole('editor')"
-                  >
-                    Редактирование
-                  </button>
-                </div>
-              </div>
-              <div class="public-url-row">
-                <input class="public-url-input" type="text" readonly :value="publicUrl" />
-                <button type="button" class="share-hub-btn-secondary" :disabled="publicAccessBusy" @click="copyPublicUrl">
-                  {{ publicCopyOk ? 'Скопировано' : 'Копировать' }}
-                </button>
-              </div>
-              <p class="public-regen-hint">
-                <button type="button" class="linkish" :disabled="publicAccessBusy" @click="regenPublicLink">
-                  Новый адрес ссылки
-                </button>
-                <span class="muted small"> — прежний перестанет работать</span>
-              </p>
-            </template>
-          </div>
-
-          <button
-            type="button"
-            class="share-hub-subtoggle"
-            :aria-expanded="emailSharesExpanded"
-            @click="emailSharesExpanded = !emailSharesExpanded"
-          >
-            <span class="share-hub-chevron" :class="{ open: emailSharesExpanded }" aria-hidden="true" />
-            <span>Доступ по email</span>
-            <span v-if="shares.length" class="share-hub-count">{{ shares.length }}</span>
-          </button>
-          <div v-show="emailSharesExpanded" class="share-hub-drop share-hub-drop-email">
-            <div class="share-form-row">
-              <input v-model="shareEmail" class="share-input" type="email" placeholder="Email пользователя" />
-              <select v-model="shareRole" class="share-select">
-                <option value="viewer">Читатель</option>
-                <option value="editor">Редактор</option>
-              </select>
-              <button type="button" class="share-hub-btn-secondary" @click="addShare">Добавить</button>
-            </div>
-            <ul v-if="shares.length" class="share-email-list">
-              <li v-for="s in shares" :key="s.id" class="share-email-item">
-                <span class="share-email-who">{{ s.shared_with_user_id || s.invite_email }}</span>
-                <span class="share-email-role">{{ s.role }}</span>
-                <button type="button" class="linkish" @click="removeShare(s)">Убрать</button>
-              </li>
-            </ul>
-            <p v-else class="muted small share-email-empty">Пока никого не приглашали</p>
-          </div>
-        </section>
-
         <input
           v-model="title"
           class="title-input"
@@ -1074,6 +1140,108 @@ watch(
           :editable="editorEditable"
           :note-id="note?.id ?? null"
         />
+
+        <section v-if="isOwner && !isTrashed" class="share-hub share-hub--after-editor" aria-label="Обмен и доступ">
+          <div class="share-hub-toolbar">
+            <button type="button" class="share-hub-tile share-hub-tile-mail" @click="openMailModal">
+              <span class="share-hub-ico" aria-hidden="true">✉</span>
+              <span class="share-hub-tile-text">По почте</span>
+            </button>
+            <div class="share-hub-divider" aria-hidden="true" />
+            <div class="share-hub-link-line">
+              <span class="share-hub-tile-label">Ссылка</span>
+              <span v-if="publicLink && !publicShareExpanded" class="share-hub-role-pill">{{
+                publicRole === 'editor' ? 'Редактирование' : 'Чтение'
+              }}</span>
+              <label class="public-switch public-switch--compact">
+                <input
+                  type="checkbox"
+                  :checked="!!publicLink"
+                  :disabled="publicAccessBusy"
+                  @change="onPublicAccessToggle"
+                />
+                <span class="public-switch-ui" aria-hidden="true" />
+              </label>
+              <button
+                type="button"
+                class="share-hub-expand"
+                :aria-expanded="publicShareExpanded"
+                @click="publicShareExpanded = !publicShareExpanded"
+              >
+                <span class="share-hub-chevron" :class="{ open: publicShareExpanded }" aria-hidden="true" />
+                <span>{{ publicShareExpanded ? 'Свернуть' : 'Настроить' }}</span>
+              </button>
+            </div>
+          </div>
+          <div v-show="publicShareExpanded" class="share-hub-drop">
+            <template v-if="publicLink">
+              <div class="public-mode-row">
+                <span class="mode-label">Доступ по ссылке</span>
+                <div class="mode-seg" role="group" aria-label="Режим общей ссылки">
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    :class="{ active: publicRole === 'viewer' }"
+                    :disabled="publicAccessBusy"
+                    @click="setPublicRole('viewer')"
+                  >
+                    Только чтение
+                  </button>
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    :class="{ active: publicRole === 'editor' }"
+                    :disabled="publicAccessBusy"
+                    @click="setPublicRole('editor')"
+                  >
+                    Редактирование
+                  </button>
+                </div>
+              </div>
+              <div class="public-url-row">
+                <input class="public-url-input" type="text" readonly :value="publicUrl" />
+                <button type="button" class="share-hub-btn-secondary" :disabled="publicAccessBusy" @click="copyPublicUrl">
+                  {{ publicCopyOk ? 'Скопировано' : 'Копировать' }}
+                </button>
+              </div>
+              <p class="public-regen-hint">
+                <button type="button" class="linkish" :disabled="publicAccessBusy" @click="regenPublicLink">
+                  Новый адрес ссылки
+                </button>
+                <span class="muted small"> — прежний перестанет работать</span>
+              </p>
+            </template>
+          </div>
+
+          <button
+            type="button"
+            class="share-hub-subtoggle"
+            :aria-expanded="emailSharesExpanded"
+            @click="emailSharesExpanded = !emailSharesExpanded"
+          >
+            <span class="share-hub-chevron" :class="{ open: emailSharesExpanded }" aria-hidden="true" />
+            <span>Доступ по email</span>
+            <span v-if="shares.length" class="share-hub-count">{{ shares.length }}</span>
+          </button>
+          <div v-show="emailSharesExpanded" class="share-hub-drop share-hub-drop-email">
+            <div class="share-form-row">
+              <input v-model="shareEmail" class="share-input" type="email" placeholder="Email пользователя" />
+              <select v-model="shareRole" class="share-select">
+                <option value="viewer">Читатель</option>
+                <option value="editor">Редактор</option>
+              </select>
+              <button type="button" class="share-hub-btn-secondary" @click="addShare">Добавить</button>
+            </div>
+            <ul v-if="shares.length" class="share-email-list">
+              <li v-for="s in shares" :key="s.id" class="share-email-item">
+                <span class="share-email-who">{{ s.shared_with_user_id || s.invite_email }}</span>
+                <span class="share-email-role">{{ s.role }}</span>
+                <button type="button" class="linkish" @click="removeShare(s)">Убрать</button>
+              </li>
+            </ul>
+            <p v-else class="muted small share-email-empty">Пока никого не приглашали</p>
+          </div>
+        </section>
         </div>
       </template>
 
@@ -1162,6 +1330,98 @@ watch(
   overflow-y: auto;
   max-height: calc(100vh - 52px);
 }
+.editor-column--focus {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  max-height: none;
+  min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.14);
+  padding: max(0.65rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px))
+    calc(1.5rem + env(safe-area-inset-bottom, 0px)) max(1rem, env(safe-area-inset-left, 0px));
+}
+.btn-editor-focus {
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 0.28rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: #475569;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.btn-editor-focus:hover {
+  border-color: rgba(37, 99, 235, 0.35);
+  color: var(--accent);
+}
+.editor-focus-exit-float {
+  position: fixed;
+  top: max(3rem, calc(env(safe-area-inset-top, 0px) + 2.75rem));
+  right: max(0.6rem, env(safe-area-inset-right, 0px));
+  z-index: 3100;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 0.34rem 0.58rem;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 91, 140, 0.32);
+  background: #fff;
+  color: #3d5a85;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.1);
+  -webkit-font-smoothing: antialiased;
+}
+.editor-focus-exit-float:hover {
+  background: rgba(90, 110, 150, 0.08);
+  border-color: rgba(59, 91, 140, 0.42);
+  color: #2d4a6f;
+}
+.bar-note-nav {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.12rem 0.28rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.bar-note-nav-counter {
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  color: #64748b;
+  padding: 0 0.15rem;
+  user-select: none;
+}
+.btn-note-nav {
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  min-width: 1.85rem;
+  padding: 0.26rem 0.35rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+}
+.btn-note-nav:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--accent);
+}
+.btn-note-nav:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.share-hub--after-editor {
+  margin-top: 1.35rem;
+}
 @media (max-width: 768px) {
   .editor-column {
     max-height: none;
@@ -1171,6 +1431,11 @@ watch(
     padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
     padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
     padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  }
+  .editor-column--focus {
+    min-height: 100dvh;
+    padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
   }
 }
 .editor-placeholder {

@@ -1,8 +1,11 @@
 # Основной локальный стек: UI http://localhost:5173/ · API http://localhost:8000/docs
 # (облако / VPS — отдельно через docker-compose.prod.yml после merge в репозиторий).
 #
-# Разработка: API с hot-reload + Vite. Нужны Docker и backend/.env (из .env.example).
-# При старте API выполняется `alembic upgrade head` (миграции БД).
+# Разработка на Windows: весь стек в Docker (API + БД + Vite). Нужен backend/.env (из .env.example).
+# После изменений backend/Dockerfile: docker compose build --no-cache api
+#
+# Распознавание (Vosk): в образе API — ffmpeg и модель small-ru в /opt/vosk-model (см. backend/Dockerfile).
+# Свою модель: смонтируйте в /opt/vosk-custom и задайте VOSK_MODEL_PATH=/opt/vosk-custom/...
 #
 #   docker compose up --build -d
 #
@@ -36,6 +39,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/note
       ATTACHMENTS_DIR: /app/data/attachments
+      # Образ backend/Dockerfile ставит ffmpeg в /usr/bin (не зависит от PATH хоста Windows)
+      FFMPEG_PATH: /usr/bin/ffmpeg
+      VOSK_MODEL_PATH: /opt/vosk-model/vosk-model-small-ru-0.22
     depends_on:
       db:
         condition: service_healthy

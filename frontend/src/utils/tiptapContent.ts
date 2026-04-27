@@ -17,3 +17,27 @@ export function contentHasExcalidraw(contentJson: string): boolean {
   }
   return walk(doc)
 }
+
+/** Есть ли в документе аудио (вложение audio/* или legacy audioNote). */
+export function contentHasAudio(contentJson: string): boolean {
+  let doc: unknown
+  try {
+    doc = JSON.parse(contentJson || '{}')
+  } catch {
+    return false
+  }
+  function walk(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false
+    const o = node as Record<string, unknown>
+    if (o.type === 'audioNote') return true
+    if (o.type === 'uploadedFile') {
+      const attrs = o.attrs as Record<string, unknown> | undefined
+      const mt = String(attrs?.mimeType ?? '').toLowerCase()
+      if (mt.startsWith('audio/')) return true
+    }
+    const c = o.content
+    if (Array.isArray(c)) return c.some(walk)
+    return false
+  }
+  return walk(doc)
+}

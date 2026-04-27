@@ -11,7 +11,8 @@ from app.config import settings
 from app.database import get_db
 from app.models.note_attachment import NoteAttachment
 from app.models.user import User
-from app.schemas.attachment import AttachmentRead
+from app.schemas.attachment import AttachmentRead, TranscriptionRead
+from app.services.audio_transcribe import transcribe_audio_file
 from app.services.attachment_ops import create_attachment_for_note
 from app.services.note_access import get_note_for_read, require_note_edit
 
@@ -28,6 +29,25 @@ async def upload_attachment(
     await require_note_edit(db, note_id, user.id)
     row = await create_attachment_for_note(db, note_id, file)
     return AttachmentRead.from_row(row)
+
+
+@router.post("/attachments/{attachment_id}/transcribe", response_model=TranscriptionRead)
+async def transcribe_attachment(
+    attachment_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> TranscriptionRead:
+    row = await db.get(NoteAttachment, attachment_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    await require_note_edit(db, row.note_id, user.id)
+    path = Path(settings.attachments_dir) / row.storage_key
+    text = await transcribe_audio_file(
+        path,
+        filename=row.original_filename or "audio.webm",
+        content_type=row.content_type,
+    )
+    return TranscriptionRead(text=text)
 
 
 @router.get("/attachments/{attachment_id}/file")

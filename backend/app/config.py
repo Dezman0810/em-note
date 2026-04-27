@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     attachments_dir: str = "/app/data/attachments"
     max_attachment_bytes: int = 25 * 1024 * 1024
 
+    # Распознавание аудио (Vosk): путь к распакованной модели, напр. .../vosk-model-small-ru-0.22
+    vosk_model_path: str = ""
+    # Пусто — авто-поиск; в Docker задайте /usr/bin/ffmpeg (см. docker-compose) или полный путь на Windows
+    ffmpeg_path: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

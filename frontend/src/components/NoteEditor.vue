@@ -5,9 +5,10 @@ import Image from '@tiptap/extension-image'
 import { TableKit } from '@tiptap/extension-table'
 import { NoteTableCell, NoteTableHeader } from './tiptap/noteTableSizingCells'
 import {
-  CELL_MIN,
-  getNoteTableApproxWidthPx,
+  TABLE_COL_WIDTH_MAX,
+  TABLE_COL_WIDTH_MIN,
   getNoteTableCellMetrics,
+  getNoteTableCellMetricsAt,
 } from './tiptap/noteTableMenuMetrics'
 import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
@@ -19,8 +20,11 @@ import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
 import { TextStyle } from '@tiptap/extension-text-style'
 import StarterKit from '@tiptap/starter-kit'
+import type { Editor } from '@tiptap/core'
+import type { EditorState, Transaction } from '@tiptap/pm/state'
+import { TableMap } from '@tiptap/pm/tables'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { attachmentsApi, errMessage, publicNoteApi } from '../api/client'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
@@ -68,9 +72,17 @@ const props = withDefaults(
 )
 const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
+/** Контекст для NodeView вложений (публичная ссылка vs своя заметка). */
+const noteAttachmentContext = computed(() => ({
+  publicToken: props.publicToken?.trim() || null,
+}))
+provide('noteAttachmentContext', noteAttachmentContext)
+
 const toolbarTick = ref(0)
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024
+/** Битрейт Opus/WebM: баланс качества и размера (~1 МБ на 1–1.5 мин речи). */
+const AUDIO_RECORD_BITS_PER_SECOND = 96_000
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const fileUploadErr = ref('')
@@ -187,8 +199,8 @@ const editor = useEditor({
     TableKit.configure({
       table: {
         resizable: true,
-        /** Стартовая ширина колонок не на весь редактор — расширять перетаскиванием границы. */
-        cellMinWidth: 44,
+        /** Совпадает с TABLE_COL_WIDTH_MIN — иначе узкие colwidth поджимаются при отрисовке. */
+        cellMinWidth: 20,
         handleWidth: 6,
         lastColumnResizable: true,
       },
@@ -249,19 +261,16 @@ watch(
   }
 )
 
-const colorPickerValue = computed(() => {
-  void toolbarTick.value
-  const c = editor.value?.getAttributes('textStyle')?.color
-  if (typeof c === 'string' && /^#[0-9A-Fa-f]{6}$/.test(c)) return c
-  return '#1e293b'
-})
+/** Цвета на кнопках панели: только из палитры / быстрого выбора, не от выделения в тексте. */
+const DEFAULT_TOOLBAR_TEXT_COLOR = '#1e293b'
+const DEFAULT_TOOLBAR_HIGHLIGHT_COLOR = '#fef08a'
+const toolbarTextColor = ref(DEFAULT_TOOLBAR_TEXT_COLOR)
+const toolbarHighlightColor = ref(DEFAULT_TOOLBAR_HIGHLIGHT_COLOR)
 
-const highlightPickerValue = computed(() => {
-  void toolbarTick.value
-  const c = editor.value?.getAttributes('highlight')?.color
-  if (typeof c === 'string' && /^#[0-9A-Fa-f]{6}$/i.test(c)) return c.toLowerCase()
-  return '#fef08a'
-})
+function normalizeToolbarHex(hex: string, fallback: string): string {
+  const s = hex.trim()
+  return /^#[0-9A-Fa-f]{6}$/i.test(s) ? s.toLowerCase() : fallback
+}
 
 const taskListOn = computed(() => {
   void toolbarTick.value
@@ -270,9 +279,45 @@ const taskListOn = computed(() => {
 
 const tableDd = ref<HTMLDetailsElement | null>(null)
 
+/** Якорь ячейки: сохраняем на pointerdown по summary (до ухода фокуса с редактора). */
+const tableMenuSavedAnchor = ref<number | null>(null)
+
+function onTableSummaryPointerDown() {
+  const dd = tableDd.value
+  const ed = editor.value
+  if (!dd || !ed) return
+  /* Сохраняем якорь при любом открытии меню, пока details ещё закрыт (фокус часто ещё в редакторе). */
+  if (!dd.open) {
+    tableMenuSavedAnchor.value = ed.state.selection.anchor
+  }
+}
+
+watch(
+  () => tableDd.value?.open,
+  (open) => {
+    if (!open) {
+      tableMenuSavedAnchor.value = null
+      return
+    }
+    const ed = editor.value
+    if (tableMenuSavedAnchor.value == null && ed?.isActive('table')) {
+      tableMenuSavedAnchor.value = ed.state.selection.anchor
+    }
+  }
+)
+
 const tableMenuInTable = computed(() => {
   void toolbarTick.value
   return editor.value?.isActive('table') ?? false
+})
+
+/** Панель строк/столбцов даже если после открытия меню isActive('table') на мгновение false. */
+const showTableRowColPanel = computed(() => {
+  void toolbarTick.value
+  void tableMenuSavedAnchor.value
+  if (editor.value?.isActive('table')) return true
+  if (tableDd.value?.open && tableMenuSavedAnchor.value != null) return true
+  return false
 })
 
 const canTableAddRowBefore = computed(() => {
@@ -310,80 +355,184 @@ const canTableToggleHeaderRow = computed(() => {
 
 const tableCellMetrics = computed(() => {
   void toolbarTick.value
+  void tableMenuSavedAnchor.value
   const ed = editor.value
   if (!ed?.isActive('table')) return null
+  const open = tableDd.value?.open
+  const anchor = tableMenuSavedAnchor.value
+  if (open && anchor != null) {
+    return getNoteTableCellMetricsAt(ed.state, anchor) ?? getNoteTableCellMetrics(ed.state)
+  }
   return getNoteTableCellMetrics(ed.state)
-})
-
-const tableApproxLabel = computed(() => {
-  void toolbarTick.value
-  const ed = editor.value
-  if (!ed?.isActive('table')) return ''
-  const px = getNoteTableApproxWidthPx(ed.state, 44)
-  return px != null ? `≈ ${px} px (первая строка)` : ''
 })
 
 const canTableApplySizing = computed(() => {
   void toolbarTick.value
-  const ed = editor.value
-  if (!ed?.isActive('table') || !tableCellMetrics.value) return false
-  return ed.can().setCellAttribute('colwidth', [CELL_MIN])
+  return showTableRowColPanel.value
 })
 
 const draftColW = ref('')
-const draftMinH = ref('')
+
+/** Фактическая ширина ячейки на экране (getBoundingClientRect), px. */
+const measuredCellW = ref<number | null>(null)
+
+function getSelectedTableCellElement(ed: Editor): HTMLElement | null {
+  const { from } = ed.state.selection
+  const root = ed.view.dom
+  let n: Node | null = ed.view.domAtPos(from).node
+  if (n.nodeType === Node.TEXT_NODE) n = n.parentElement
+  let cur: Element | null = n as Element | null
+  while (cur && root.contains(cur)) {
+    if (cur instanceof HTMLElement && (cur.tagName === 'TD' || cur.tagName === 'TH')) return cur
+    cur = cur.parentElement
+  }
+  return null
+}
+
+function refreshMeasuredCellSize() {
+  measuredCellW.value = null
+  const ed = editor.value
+  if (!ed?.isActive('table')) return
+  const cell = getSelectedTableCellElement(ed)
+  if (!cell) return
+  const r = cell.getBoundingClientRect()
+  measuredCellW.value = Math.max(0, Math.round(r.width))
+}
+
+/** Первая допустимая позиция внутри ячейки для метрик / якоря. */
+function posInsideTableCellForCommand(ed: Editor, pos: number): number {
+  const max = ed.state.doc.content.size
+  const p = Math.max(1, Math.min(pos, max))
+  try {
+    const $ = ed.state.doc.resolve(p)
+    for (let d = $.depth; d >= 1; d--) {
+      const n = $.node(d)
+      if (n.type.name === 'tableCell' || n.type.name === 'tableHeader') {
+        const inner = $.start(d) + 1
+        return Math.min(Math.max(1, inner), max)
+      }
+    }
+  } catch {
+    /* */
+  }
+  return p
+}
+
+/** Позиция перед ячейкой для setNodeMarkup (без selectionCell из pm-tables). */
+function findTableCellMarkupPosition(state: EditorState, hintPos: number): number | null {
+  try {
+    const max = state.doc.content.size
+    const p = Math.max(1, Math.min(hintPos, max))
+    const $ = state.doc.resolve(p)
+    for (let d = $.depth; d >= 1; d--) {
+      const node = $.node(d)
+      const role = node.type.spec.tableRole
+      if (role === 'cell' || role === 'header_cell') return $.before(d)
+      if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') return $.before(d)
+    }
+  } catch {
+    /* */
+  }
+  return null
+}
+
+function colwidthZeroes(span: number) {
+  return Array.from({ length: span }, () => 0)
+}
+
+/** Ширина столбца для всей колонки (как drag columnResizing / colgroup), иначе после первого раза раскладка ломается. */
+function setColWidthOnTableColumnAtHint(
+  tr: Transaction,
+  state: EditorState,
+  hintCellInsidePos: number,
+  widthPx: number | null
+): boolean {
+  const cellBefore = findTableCellMarkupPosition(state, hintCellInsidePos)
+  if (cellBefore == null) return false
+  const $cell = state.doc.resolve(cellBefore)
+  const nodeAfter = $cell.nodeAfter
+  if (!nodeAfter || (nodeAfter.type.name !== 'tableCell' && nodeAfter.type.name !== 'tableHeader')) return false
+  const table = $cell.node(-1)
+  if (!table || table.type.spec.tableRole !== 'table') return false
+  const start = $cell.start(-1)
+  const map = TableMap.get(table)
+  let col: number
+  try {
+    col = map.colCount($cell.pos - start) + nodeAfter.attrs.colspan - 1
+  } catch {
+    return false
+  }
+  let changed = false
+  for (let row = 0; row < map.height; row++) {
+    const mapIndex = row * map.width + col
+    if (row > 0 && map.map[mapIndex] === map.map[mapIndex - map.width]) continue
+    const rel = map.map[mapIndex]
+    const cellNode = table.nodeAt(rel)
+    if (!cellNode) continue
+    const attrs = cellNode.attrs
+    const span = Math.max(1, Number(attrs.colspan) || 1)
+    const slot = attrs.colspan === 1 ? 0 : col - map.colCount(rel)
+    let nextColwidth: number[] | null
+    if (widthPx == null) {
+      const cw = (attrs.colwidth as number[] | null) ?? null
+      if (!cw) continue
+      const colwidth = cw.slice()
+      colwidth[slot] = 0
+      nextColwidth = colwidth.every((x) => !x) ? null : colwidth
+    } else {
+      const w = widthPx
+      const cw = (attrs.colwidth as number[] | null) ?? null
+      if (cw && cw[slot] === w) continue
+      const colwidth = cw ? cw.slice() : colwidthZeroes(span)
+      colwidth[slot] = w
+      nextColwidth = colwidth
+    }
+    tr.setNodeMarkup(start + rel, null, { ...attrs, colwidth: nextColwidth })
+    changed = true
+  }
+  return changed
+}
 
 watch(
   () => [toolbarTick.value, tableMenuInTable.value, tableDd.value?.open] as const,
-  () => {
+  async () => {
     const m = tableCellMetrics.value
     if (m) {
       draftColW.value = m.widthPx != null ? String(m.widthPx) : ''
-      draftMinH.value = m.minHeightPx != null ? String(m.minHeightPx) : ''
     }
+    await nextTick()
+    refreshMeasuredCellSize()
   }
 )
 
-function applyTableCellSizing() {
+function clampDraftColW() {
+  const raw = String(draftColW.value ?? '').trim()
+  if (raw === '') return
+  const n = parseInt(raw, 10)
+  if (Number.isNaN(n)) return
+  const c = Math.min(TABLE_COL_WIDTH_MAX, Math.max(TABLE_COL_WIDTH_MIN, Math.round(n)))
+  draftColW.value = String(c)
+}
+
+function applyColWidthOnly() {
   const ed = editor.value
-  if (!ed || !tableCellMetrics.value || !canTableApplySizing.value) return
-
-  const wStr = draftColW.value.trim()
-  const hStr = draftMinH.value.trim()
-  let ch = ed.chain().focus()
-
-  if (wStr === '') {
-    ch = ch.setCellAttribute('colwidth', null)
-  } else {
-    const w = parseInt(wStr, 10)
-    if (!Number.isNaN(w) && w >= CELL_MIN) {
-      const m = tableCellMetrics.value
-      const span = m.colspan
-      const attrs = ed.getAttributes(m.cellKind)
-      const cur = attrs.colwidth as number[] | null
-      let next: number[]
-      if (span === 1) {
-        next = [w]
-      } else if (cur && cur.length >= span) {
-        next = cur.slice(0, span)
-        next[0] = w
-      } else {
-        next = Array.from({ length: span }, (_, i) => (i === 0 ? w : CELL_MIN))
-      }
-      ch = ch.setCellAttribute('colwidth', next)
-    }
+  if (!ed?.isEditable) return
+  if (String(draftColW.value ?? '').trim() !== '') clampDraftColW()
+  const wStr = String(draftColW.value ?? '').trim()
+  const hintRaw = tableMenuSavedAnchor.value ?? ed.state.selection.anchor
+  const hint = posInsideTableCellForCommand(ed, hintRaw)
+  let widthPx: number | null = null
+  if (wStr !== '') {
+    const parsed = parseInt(wStr, 10)
+    if (Number.isNaN(parsed)) return
+    widthPx = Math.min(TABLE_COL_WIDTH_MAX, Math.max(TABLE_COL_WIDTH_MIN, Math.round(parsed)))
   }
-
-  if (hStr === '') {
-    ch = ch.setCellAttribute('minHeight', null)
-  } else {
-    const h = parseInt(hStr, 10)
-    if (!Number.isNaN(h) && h >= CELL_MIN) {
-      ch = ch.setCellAttribute('minHeight', h)
-    }
-  }
-
-  ch.run()
+  ed.view.focus()
+  ed.chain()
+    .command(({ tr, state }) => setColWidthOnTableColumnAtHint(tr, state, hint, widthPx))
+    .run()
+  closeTableDd()
+  void nextTick(() => refreshMeasuredCellSize())
 }
 
 const boldOn = computed(() => {
@@ -400,23 +549,43 @@ const textColorDd = ref<HTMLDetailsElement | null>(null)
 const highlightDd = ref<HTMLDetailsElement | null>(null)
 
 function pickTextColor(hex: string) {
-  setTextColor(hex)
+  const n = normalizeToolbarHex(hex, toolbarTextColor.value)
+  toolbarTextColor.value = n
+  setTextColor(n)
   if (textColorDd.value) textColorDd.value.open = false
 }
 
 function clearTextColorFromMenu() {
+  toolbarTextColor.value = DEFAULT_TOOLBAR_TEXT_COLOR
   unsetTextColor()
   if (textColorDd.value) textColorDd.value.open = false
 }
 
 function pickHighlightFill(hex: string) {
-  setHighlightFill(hex)
+  const n = normalizeToolbarHex(hex, toolbarHighlightColor.value)
+  toolbarHighlightColor.value = n
+  setHighlightFill(n)
   if (highlightDd.value) highlightDd.value.open = false
 }
 
 function clearHighlightFromMenu() {
+  toolbarHighlightColor.value = DEFAULT_TOOLBAR_HIGHLIGHT_COLOR
   unsetHighlightFill()
   if (highlightDd.value) highlightDd.value.open = false
+}
+
+function onToolbarTextColorPickInput(ev: Event) {
+  const v = (ev.target as HTMLInputElement).value
+  const n = normalizeToolbarHex(v, toolbarTextColor.value)
+  toolbarTextColor.value = n
+  setTextColor(n)
+}
+
+function onToolbarHighlightPickInput(ev: Event) {
+  const v = (ev.target as HTMLInputElement).value
+  const n = normalizeToolbarHex(v, toolbarHighlightColor.value)
+  toolbarHighlightColor.value = n
+  setHighlightFill(n)
 }
 
 function closeTextColorDd() {
@@ -425,6 +594,23 @@ function closeTextColorDd() {
 
 function closeHighlightDd() {
   if (highlightDd.value) highlightDd.value.open = false
+}
+
+/** Стрелка — открыть палитру; слева (иконка + полоска) — сразу применить цвет к выделению. */
+function onTextColorSummaryClick(ev: MouseEvent) {
+  const chev = (ev.currentTarget as HTMLElement).querySelector('.word-dd-chev-wrap')
+  if (chev?.contains(ev.target as Node)) return
+  ev.preventDefault()
+  setTextColor(toolbarTextColor.value)
+  closeTextColorDd()
+}
+
+function onHighlightSummaryClick(ev: MouseEvent) {
+  const chev = (ev.currentTarget as HTMLElement).querySelector('.word-dd-chev-wrap')
+  if (chev?.contains(ev.target as Node)) return
+  ev.preventDefault()
+  setHighlightFill(toolbarHighlightColor.value)
+  closeHighlightDd()
 }
 
 /** Несколько абзацев или строк в одном абзаце (переносы) → отдельные пункты чек-листа. */
@@ -523,11 +709,81 @@ async function onFilePicked(ev: Event) {
 }
 
 function pickAudioMime(): string {
-  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+    'audio/mp4',
+  ]
   for (const c of candidates) {
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) return c
   }
   return ''
+}
+
+function recorderOptionsForMime(mime: string): MediaRecorderOptions {
+  const o: MediaRecorderOptions = {}
+  if (mime) o.mimeType = mime
+  if (
+    mime &&
+    (mime.includes('opus') || mime.includes('webm') || mime.includes('ogg') || mime.includes('mp4'))
+  ) {
+    o.audioBitsPerSecond = AUDIO_RECORD_BITS_PER_SECOND
+  }
+  return o
+}
+
+function blobTypeFromChunks(chunks: BlobPart[]): string {
+  for (const c of chunks) {
+    if (c instanceof Blob && c.type) return c.type
+  }
+  return 'audio/webm'
+}
+
+function fileExtensionForRecordedAudio(mime: string): string {
+  const m = mime.toLowerCase()
+  if (m.includes('webm')) return 'webm'
+  if (m.includes('ogg')) return 'ogg'
+  if (m.includes('mp4') || m.includes('aac') || m.includes('m4a')) return 'm4a'
+  return 'webm'
+}
+
+/** Имя файла: дата и время по Москве, сутки 0–23, время через точки (напр. 15.25.03). */
+function moscowRecordingFileStamp(): string {
+  const d = new Date()
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+  const parts = fmt.formatToParts(d)
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    (parts.find((p) => p.type === type)?.value ?? '').padStart(2, '0')
+  const y = pick('year')
+  const mo = pick('month')
+  const day = pick('day')
+  const h = pick('hour')
+  const mi = pick('minute')
+  const s = pick('second')
+  return `${y}-${mo}-${day}.${h}.${mi}.${s}`
+}
+
+async function uploadRecordedAudioBlob(blob: Blob, mimeType: string) {
+  const tok = props.publicToken?.trim()
+  if (!tok && !props.noteId) {
+    throw new Error('Сначала сохраните заметку — запись сохраняется как файл на сервере.')
+  }
+  const ext = fileExtensionForRecordedAudio(mimeType)
+  const stamp = moscowRecordingFileStamp()
+  const filename = `Запись-${stamp}.${ext}`
+  const file = new File([blob], filename, { type: mimeType || 'audio/webm' })
+  return tok ? publicNoteApi.uploadAttachment(tok, file) : attachmentsApi.upload(props.noteId!, file)
 }
 
 function cleanupRecordStream() {
@@ -553,10 +809,25 @@ async function startRecording() {
     return
   }
   try {
-    recordStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    try {
+      recordStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1,
+        },
+      })
+    } catch {
+      recordStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    }
     const mime = pickAudioMime()
-    const opts = mime ? { mimeType: mime } : undefined
-    mediaRecorder = new MediaRecorder(recordStream, opts)
+    let opts = recorderOptionsForMime(mime)
+    try {
+      mediaRecorder = new MediaRecorder(recordStream, Object.keys(opts).length ? opts : undefined)
+    } catch {
+      opts = mime ? { mimeType: mime } : {}
+      mediaRecorder = new MediaRecorder(recordStream, Object.keys(opts).length ? opts : undefined)
+    }
     recordChunks.length = 0
     mediaRecorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) recordChunks.push(e.data)
@@ -570,7 +841,7 @@ async function startRecording() {
       recording.value = false
       const mr = mediaRecorder
       const chunks = [...recordChunks]
-      const mimeType = mr?.mimeType || 'audio/webm'
+      const mimeType = mr?.mimeType || blobTypeFromChunks(chunks)
       cleanupRecordStream()
       if (!mr || !ed) return
       const blob = new Blob(chunks, { type: mimeType })
@@ -582,19 +853,28 @@ async function startRecording() {
         recordErr.value = 'Запись слишком короткая.'
         return
       }
-      const reader = new FileReader()
-      reader.onload = () => {
-        const src = reader.result as string
-        const edNow = editor.value
-        if (!edNow) return
-        edNow.chain().focus().insertAudioNote({ src, mime: blob.type, label: '' }).run()
-      }
-      reader.onerror = () => {
-        recordErr.value = 'Не удалось прочитать запись.'
-      }
-      reader.readAsDataURL(blob)
+      void (async () => {
+        try {
+          const meta = await uploadRecordedAudioBlob(blob, blob.type || mimeType)
+          const edNow = editor.value
+          if (!edNow) return
+          edNow
+            .chain()
+            .focus()
+            .insertUploadedFile({
+              attachmentId: meta.id,
+              filename: meta.original_filename,
+              mimeType: meta.content_type,
+              isImage: false,
+            })
+            .run()
+        } catch (e) {
+          recordErr.value = errMessage(e)
+        }
+      })()
     }
-    mediaRecorder.start(400)
+    /* Без интервала — один фрагмент при stop, обычно лучше качество, чем мелкие чанки */
+    mediaRecorder.start()
     recording.value = true
   } catch {
     recordErr.value = 'Нет доступа к микрофону. Разрешите запись в настройках браузера.'
@@ -744,12 +1024,16 @@ onBeforeUnmount(() => {
         Чек-лист
       </button>
       <details ref="tableDd" class="table-dd">
-        <summary class="table-dd-summary" title="Таблица: вставить или изменить строки и столбцы">
+        <summary
+          class="table-dd-summary"
+          title="Таблица: вставить или изменить строки и столбцы"
+          @pointerdown="onTableSummaryPointerDown"
+        >
           <span class="table-dd-label">Таблица</span>
           <span class="table-dd-chev" aria-hidden="true">▼</span>
         </summary>
         <div class="table-dd-panel" @click.stop>
-          <template v-if="!tableMenuInTable">
+          <template v-if="!showTableRowColPanel">
             <p class="table-dd-hint">Вставить таблицу (первая строка — заголовок):</p>
             <div class="table-dd-grid">
               <button type="button" class="table-dd-preset" @click="insertNoteTable(2, 2, true)">
@@ -772,62 +1056,9 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <p class="table-dd-hint">Строки и столбцы (курсор в ячейке):</p>
-            <div v-if="tableCellMetrics" class="table-dd-metrics">
-              <p class="table-dd-metrics-line">
-                <strong>Ячейка:</strong> строка {{ tableCellMetrics.row }}, столбец
-                {{ tableCellMetrics.colRangeLabel }}
-                <span v-if="tableCellMetrics.cellKind === 'tableHeader'" class="table-dd-metrics-tag">заголовок</span>
-              </p>
-              <p class="table-dd-metrics-line">
-                <strong>Ширина столбца:</strong>
-                {{ tableCellMetrics.widthPx != null ? tableCellMetrics.widthPx + ' px' : 'авто' }}
-                ·
-                <strong>мин. высота ячейки:</strong>
-                {{ tableCellMetrics.minHeightPx != null ? tableCellMetrics.minHeightPx + ' px' : 'авто' }}
-              </p>
-              <p v-if="tableApproxLabel" class="table-dd-metrics-line table-dd-metrics-line--muted">
-                <strong>Таблица:</strong> {{ tableApproxLabel }}
-              </p>
-              <div class="table-dd-size-fields">
-                <label class="table-dd-field">
-                  <span>Ширина столбца (px)</span>
-                  <input
-                    v-model="draftColW"
-                    type="number"
-                    :min="CELL_MIN"
-                    class="table-dd-inp"
-                    placeholder="авто"
-                    :disabled="!canTableApplySizing"
-                  />
-                </label>
-                <label class="table-dd-field">
-                  <span>Мин. высота ячейки (px)</span>
-                  <input
-                    v-model="draftMinH"
-                    type="number"
-                    :min="CELL_MIN"
-                    class="table-dd-inp"
-                    placeholder="авто"
-                    :disabled="!canTableApplySizing"
-                  />
-                </label>
-              </div>
-              <p class="table-dd-metrics-hint">
-                Пустое поле и «Применить» — сброс в авто. Общая ширина таблицы складывается из столбцов; высоту
-                строки удобнее задавать по ячейке.
-              </p>
-              <button
-                type="button"
-                class="table-dd-act table-dd-apply"
-                :disabled="!canTableApplySizing"
-                @click="applyTableCellSizing"
-              >
-                Применить размеры
-              </button>
-            </div>
             <div class="table-dd-actions">
               <span class="table-dd-grp-lab">Строка</span>
-              <div class="table-dd-row">
+              <div class="table-dd-row table-dd-row--sizes">
                 <button
                   type="button"
                   class="table-dd-act"
@@ -857,7 +1088,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <span class="table-dd-grp-lab">Столбец</span>
-              <div class="table-dd-row">
+              <div class="table-dd-row table-dd-row--sizes">
                 <button
                   type="button"
                   class="table-dd-act"
@@ -876,6 +1107,29 @@ onBeforeUnmount(() => {
                 >
                   + справа
                 </button>
+                <form
+                  v-if="canTableApplySizing"
+                  class="table-dd-inline-size"
+                  novalidate
+                  title="Сейчас на экране — ширина ячейки; в поле — ширина столбца (px), пусто = авто"
+                  @submit.prevent="applyColWidthOnly"
+                >
+                  <span class="table-dd-live-pill" v-if="measuredCellW != null">{{ measuredCellW }} px</span>
+                  <input
+                    v-model="draftColW"
+                    type="number"
+                    :min="TABLE_COL_WIDTH_MIN"
+                    :max="TABLE_COL_WIDTH_MAX"
+                    class="table-dd-inp table-dd-inp--inline"
+                    placeholder="w"
+                    aria-label="Ширина столбца в пикселях"
+                    @blur="clampDraftColW"
+                    @change="clampDraftColW"
+                  />
+                  <button type="submit" class="table-dd-act table-dd-act--narrow" title="Применить ширину">
+                    OK
+                  </button>
+                </form>
                 <button
                   type="button"
                   class="table-dd-act danger"
@@ -911,13 +1165,21 @@ onBeforeUnmount(() => {
         </div>
       </details>
       <details ref="textColorDd" class="word-dd">
-        <summary class="word-dd-summary" title="Цвет текста">
-          <span class="word-dd-left" aria-hidden="true">
-            <span class="word-dd-icon word-dd-icon--letter">A</span>
-            <span class="word-dd-bar" :style="{ background: colorPickerValue }" />
+        <summary class="word-dd-summary" @click="onTextColorSummaryClick($event)">
+          <span
+            class="word-dd-left"
+            title="Применить цвет полоски к выделению"
+            aria-label="Применить цвет полоски к выделению"
+          >
+            <span class="word-dd-icon word-dd-icon--letter" aria-hidden="true">A</span>
+            <span class="word-dd-bar" :style="{ background: toolbarTextColor }" aria-hidden="true" />
           </span>
-          <span class="word-dd-chev-wrap" aria-hidden="true">
-            <span class="word-dd-chev">▼</span>
+          <span
+            class="word-dd-chev-wrap"
+            title="Палитра: выбрать другой цвет"
+            aria-label="Открыть палитру цвета текста"
+          >
+            <span class="word-dd-chev" aria-hidden="true">▼</span>
           </span>
         </summary>
         <div class="word-dd-panel" @click.stop>
@@ -938,8 +1200,8 @@ onBeforeUnmount(() => {
             <input
               class="word-dd-color-input"
               type="color"
-              :value="colorPickerValue"
-              @input="setTextColor(($event.target as HTMLInputElement).value)"
+              :value="toolbarTextColor"
+              @input="onToolbarTextColorPickInput($event)"
               @change="closeTextColorDd"
             />
           </label>
@@ -947,10 +1209,14 @@ onBeforeUnmount(() => {
         </div>
       </details>
       <details ref="highlightDd" class="word-dd">
-        <summary class="word-dd-summary" title="Цвет выделения">
-          <span class="word-dd-left" aria-hidden="true">
-            <span class="word-dd-icon word-dd-icon--hi">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <summary class="word-dd-summary" @click="onHighlightSummaryClick($event)">
+          <span
+            class="word-dd-left"
+            title="Применить заливку по полоске к выделению"
+            aria-label="Применить заливку по полоске к выделению"
+          >
+            <span class="word-dd-icon word-dd-icon--hi" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path
                   d="M4 20h4l9.5-9.5a2.5 2.5 0 0 0 0-3.5L17 3.5a2.5 2.5 0 0 0-3.5 0L4 13v7z"
                   stroke="currentColor"
@@ -960,10 +1226,14 @@ onBeforeUnmount(() => {
                 <path d="M13 6l5 5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" />
               </svg>
             </span>
-            <span class="word-dd-bar" :style="{ background: highlightPickerValue }" />
+            <span class="word-dd-bar" :style="{ background: toolbarHighlightColor }" aria-hidden="true" />
           </span>
-          <span class="word-dd-chev-wrap" aria-hidden="true">
-            <span class="word-dd-chev">▼</span>
+          <span
+            class="word-dd-chev-wrap"
+            title="Палитра: выбрать другой цвет заливки"
+            aria-label="Открыть палитру заливки текста"
+          >
+            <span class="word-dd-chev" aria-hidden="true">▼</span>
           </span>
         </summary>
         <div class="word-dd-panel" @click.stop>
@@ -984,8 +1254,8 @@ onBeforeUnmount(() => {
             <input
               class="word-dd-color-input"
               type="color"
-              :value="highlightPickerValue"
-              @input="setHighlightFill(($event.target as HTMLInputElement).value)"
+              :value="toolbarHighlightColor"
+              @input="onToolbarHighlightPickInput($event)"
               @change="closeHighlightDd"
             />
           </label>
@@ -1027,7 +1297,11 @@ onBeforeUnmount(() => {
         type="button"
         class="tb tb-mic"
         :class="{ tbOn: recording }"
-        :title="recording ? 'Остановить запись' : 'Записать аудиозаметку (микрофон)'"
+        :title="
+          recording
+            ? 'Остановить запись'
+            : 'Записать звук в файл на сервере (WebM/Opus, нужна сохранённая заметка). Качество ~96 kbps'
+        "
         @click="recording ? stopRecording() : startRecording()"
       >
         {{ recording ? '■ Стоп' : '🎤 Аудио' }}
@@ -1477,7 +1751,7 @@ onBeforeUnmount(() => {
   top: calc(100% + 4px);
   left: 0;
   z-index: 60;
-  width: min(17.5rem, calc(100vw - 2rem));
+  width: min(19.5rem, calc(100vw - 2rem));
   padding: 0.55rem 0.6rem 0.6rem;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1516,43 +1790,6 @@ onBeforeUnmount(() => {
   line-height: 1.4;
   color: var(--text-muted, #64748b);
 }
-.table-dd-metrics {
-  margin-bottom: 0.45rem;
-  padding-bottom: 0.45rem;
-  border-bottom: 1px solid var(--border);
-}
-.table-dd-metrics-line {
-  margin: 0 0 0.28rem;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  color: var(--text, #1e293b);
-}
-.table-dd-metrics-line--muted {
-  font-size: 0.68rem;
-  color: var(--text-muted, #64748b);
-}
-.table-dd-metrics-tag {
-  margin-left: 0.25rem;
-  font-size: 0.62rem;
-  font-weight: 600;
-  color: var(--accent);
-}
-.table-dd-size-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin: 0.4rem 0 0.35rem;
-}
-.table-dd-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.68rem;
-  color: var(--text-muted, #64748b);
-}
-.table-dd-field span {
-  font-weight: 600;
-}
 .table-dd-inp {
   width: 100%;
   box-sizing: border-box;
@@ -1563,16 +1800,6 @@ onBeforeUnmount(() => {
   color: inherit;
   font: inherit;
   font-size: 0.8rem;
-}
-.table-dd-metrics-hint {
-  margin: 0 0 0.4rem;
-  font-size: 0.64rem;
-  line-height: 1.35;
-  color: var(--text-muted, #94a3b8);
-}
-.table-dd-apply {
-  width: 100%;
-  margin-bottom: 0.15rem;
 }
 .table-dd-actions {
   display: flex;
@@ -1594,6 +1821,43 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
+}
+.table-dd-row--sizes {
+  align-items: center;
+}
+.table-dd-inline-size {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.28rem;
+  flex: 1 1 7.5rem;
+  min-width: 6.75rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.table-dd-live-pill {
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  padding: 0.12rem 0.32rem;
+  border-radius: 4px;
+  background: rgba(37, 99, 235, 0.08);
+}
+.table-dd-inp--inline {
+  width: 3.75rem;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 0.26rem 0.32rem;
+  font-size: 0.72rem;
+}
+.table-dd-act--narrow {
+  flex: 0 0 auto;
+  min-width: 2.1rem;
+  padding: 0.26rem 0.4rem;
+  font-weight: 600;
 }
 .table-dd-row--footer {
   margin-top: 0.25rem;
@@ -1629,9 +1893,8 @@ onBeforeUnmount(() => {
 
 .editor-content :deep(.tableWrapper) {
   margin: 0.65rem 0;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  /* Таблица по ширине содержимого/колонок, не растягивается на всю строку заметки */
+  overflow: visible;
+  /* Таблица по ширине содержимого/колонок, без отдельного скролла обёртки */
   width: max-content;
   max-width: 100%;
 }

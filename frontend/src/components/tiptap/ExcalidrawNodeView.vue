@@ -7,8 +7,19 @@ import { ExcalidrawApp } from './ExcalidrawApp'
 
 const props = defineProps(nodeViewProps)
 
-/** По умолчанию развёрнуто, чтобы сразу видеть схему. */
-const expanded = ref(true)
+/** Состояние свёрнутости хранится в attrs.collapsed (сохраняется в content_json). */
+function expandedFromAttrs(): boolean {
+  return props.node.attrs.collapsed !== true
+}
+
+const expanded = ref(expandedFromAttrs())
+
+watch(
+  () => props.node.attrs.collapsed,
+  () => {
+    expanded.value = expandedFromAttrs()
+  }
+)
 const hostRef = ref<HTMLDivElement | null>(null)
 const fullscreenShellRef = ref<HTMLElement | null>(null)
 const fullscreenFallback = ref(false)
@@ -166,7 +177,9 @@ onMounted(() => {
 })
 
 function toggle() {
-  expanded.value = !expanded.value
+  const next = !expanded.value
+  expanded.value = next
+  props.updateAttributes({ collapsed: !next })
 }
 
 function onImportFile(ev: Event) {
@@ -337,6 +350,14 @@ function onImportFile(ev: Event) {
 .excal-host :deep(.excal-embed-clipboard .excal-clip-footer-btn--last .ToolIcon_type_button) {
   border-top-right-radius: var(--border-radius-lg) !important;
   border-bottom-right-radius: var(--border-radius-lg) !important;
+}
+
+/* Справка «?»: в 0.18 иконка с классом .help-icon; прячем и обёртку ToolIcon */
+.excal-host :deep(.excalidraw .ToolIcon:has(.help-icon)),
+.excal-host :deep(.excalidraw .help-icon),
+.excal-host :deep(.excalidraw .welcome-screen-decor--help),
+.excal-host :deep(.excalidraw .welcome-screen-decor-hint--help) {
+  display: none !important;
 }
 
 /* Скрыть Library в схеме (в @excalidraw/excalidraw 0.18 нет опции в UIOptions). */

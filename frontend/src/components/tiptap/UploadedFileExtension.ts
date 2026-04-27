@@ -11,6 +11,7 @@ declare module '@tiptap/core' {
         filename: string
         mimeType: string
         isImage: boolean
+        transcript?: string
       }) => ReturnType
     }
   }
@@ -28,6 +29,7 @@ export const UploadedFileBlock = Node.create({
       filename: { default: '' },
       mimeType: { default: 'application/octet-stream' },
       isImage: { default: false },
+      transcript: { default: '' },
     }
   },
 
@@ -46,7 +48,13 @@ export const UploadedFileBlock = Node.create({
   addCommands() {
     return {
       insertUploadedFile:
-        (attrs: { attachmentId: string; filename: string; mimeType: string; isImage: boolean }) =>
+        (attrs: {
+          attachmentId: string
+          filename: string
+          mimeType: string
+          isImage: boolean
+          transcript?: string
+        }) =>
         ({ commands, editor }) => {
           const pos = editor.state.selection.from
           return commands.insertContentAt(pos, {
@@ -56,6 +64,7 @@ export const UploadedFileBlock = Node.create({
               filename: attrs.filename,
               mimeType: attrs.mimeType,
               isImage: attrs.isImage,
+              transcript: attrs.transcript ?? '',
             },
           })
         },

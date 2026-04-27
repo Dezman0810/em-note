@@ -44,6 +44,11 @@ export const ExcalidrawBlock = Node.create({
           return { 'data-scene': attrs.scene as string }
         },
       },
+      collapsed: {
+        default: false,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-collapsed') === 'true',
+        renderHTML: (attrs) => (attrs.collapsed ? { 'data-collapsed': 'true' } : {}),
+      },
     }
   },
 
@@ -86,7 +91,7 @@ export const ExcalidrawBlock = Node.create({
         ({ commands }) =>
           commands.insertContent({
             type: this.name,
-            attrs: { scene: DEFAULT_EXCALIDRAW_SCENE },
+            attrs: { scene: DEFAULT_EXCALIDRAW_SCENE, collapsed: false },
           }),
     }
   },

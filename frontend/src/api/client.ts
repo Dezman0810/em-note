@@ -313,6 +313,13 @@ export const attachmentsApi = {
     const { data } = await api.get(`/api/attachments/${attachmentId}/file`, { responseType: 'blob' })
     return data
   },
+  async transcribe(attachmentId: string): Promise<{ text: string }> {
+    const { data } = await api.post<{ text: string }>(
+      `/api/attachments/${encodeURIComponent(attachmentId)}/transcribe`,
+      {}
+    )
+    return data
+  },
 }
 
 export const publicNoteApi = {
@@ -341,6 +348,13 @@ export const publicNoteApi = {
     const { data } = await api.get(
       `/api/public/notes/${encodeURIComponent(token)}/attachments/${attachmentId}/file`,
       { responseType: 'blob' }
+    )
+    return data
+  },
+  async transcribeAttachment(token: string, attachmentId: string): Promise<{ text: string }> {
+    const { data } = await api.post<{ text: string }>(
+      `/api/public/notes/${encodeURIComponent(token)}/attachments/${encodeURIComponent(attachmentId)}/transcribe`,
+      {}
     )
     return data
   },

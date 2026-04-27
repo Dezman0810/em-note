@@ -243,6 +243,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
         ...base,
         activeTool: DEFAULT_ACTIVE_TOOL,
         scrolledOutside: false,
+        showWelcomeScreen: false,
       },
       files: r.files,
     }
@@ -274,7 +275,10 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     apiRef.current = api
     const hr = hostRef.current
     if (hr) excalidrawRegisterApi(hr, api)
-    queueMicrotask(() => markExcalidrawRootEl(hostRef.current))
+    queueMicrotask(() => {
+      markExcalidrawRootEl(hostRef.current)
+      api.updateScene({ appState: { showWelcomeScreen: false } as never })
+    })
   }, [])
 
   useEffect(() => {
@@ -662,6 +666,8 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       detectScroll: false,
       viewModeEnabled: readOnly,
       UIOptions: uiOptions,
+      /** Убираем кластер справа сверху (в т.ч. кнопку «?» / справка). */
+      renderTopRightUI: () => null,
       children: excalChildren,
     })
   )

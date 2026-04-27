@@ -1,9 +1,20 @@
 <script setup lang="ts">
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
-import { onBeforeUnmount, ref, watch } from 'vue'
+import type { ComputedRef } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
+import { attachmentsApi, errMessage, publicNoteApi } from '../../api/client'
 import { fetchAttachmentBlob } from '../../utils/attachmentBlob'
 
+type NoteAttachmentCtx = { publicToken: string | null }
+
 const props = defineProps(nodeViewProps)
+
+const noteAttachmentContext = inject<ComputedRef<NoteAttachmentCtx> | undefined>('noteAttachmentContext', undefined)
+
+const isAudio = computed(() => String(props.node.attrs.mimeType || '').toLowerCase().startsWith('audio/'))
+
+/** Аудио по умолчанию свёрнуто, чтобы не занимать много места в заметке. */
+const audioExpanded = ref(false)
 
 const blobUrl = ref<string | null>(null)
 const loadErr = ref('')
@@ -58,6 +69,42 @@ async function downloadFile() {
 onBeforeUnmount(() => {
   if (revokeOnUnmount) URL.revokeObjectURL(revokeOnUnmount)
 })
+
+const transcriptLocal = ref(String(props.node.attrs.transcript || ''))
+watch(
+  () => props.node.attrs.transcript,
+  (v) => {
+    transcriptLocal.value = String(v || '')
+  }
+)
+
+function commitTranscript() {
+  const next = transcriptLocal.value
+  if (next === String(props.node.attrs.transcript || '')) return
+  props.updateAttributes({ transcript: next })
+}
+
+const transcribing = ref(false)
+const transcribeErr = ref('')
+
+async function runTranscribe() {
+  transcribeErr.value = ''
+  const id = String(props.node.attrs.attachmentId || '').trim()
+  if (!id) return
+  transcribing.value = true
+  try {
+    const tok = noteAttachmentContext?.value?.publicToken?.trim() || null
+    const { text } = tok
+      ? await publicNoteApi.transcribeAttachment(tok, id)
+      : await attachmentsApi.transcribe(id)
+    transcriptLocal.value = text
+    props.updateAttributes({ transcript: text })
+  } catch (e) {
+    transcribeErr.value = errMessage(e)
+  } finally {
+    transcribing.value = false
+  }
+}
 </script>
 
 <template>
@@ -68,6 +115,16 @@ onBeforeUnmount(() => {
           node.attrs.filename || 'Файл'
         }}</span>
         <div class="uploaded-file-actions">
+          <button
+            v-if="isAudio && blobUrl && !loadErr"
+            type="button"
+            class="uploaded-file-btn"
+            :aria-expanded="audioExpanded"
+            :title="audioExpanded ? 'Скрыть плеер и текст' : 'Показать плеер и текст'"
+            @click.prevent="audioExpanded = !audioExpanded"
+          >
+            {{ audioExpanded ? 'Свернуть' : 'Развернуть' }}
+          </button>
           <button
             v-if="!node.attrs.isImage"
             type="button"
@@ -92,6 +149,35 @@ onBeforeUnmount(() => {
         <img class="uploaded-file-img" :src="blobUrl" :alt="String(node.attrs.filename || '')" />
       </div>
       <p v-else-if="node.attrs.isImage && !blobUrl" class="muted small">Загрузка…</p>
+      <template v-else-if="isAudio && blobUrl">
+        <div v-show="audioExpanded" class="audio-expanded-block">
+          <audio class="uploaded-file-audio" controls preload="metadata" :src="blobUrl" />
+          <div v-if="editor.isEditable" class="transcribe-row">
+            <button
+              type="button"
+              class="uploaded-file-btn"
+              :disabled="transcribing"
+              @click.prevent="runTranscribe"
+            >
+              {{ transcribing ? 'Распознавание…' : 'В текст' }}
+            </button>
+          </div>
+          <p v-if="transcribeErr" class="uploaded-file-err">{{ transcribeErr }}</p>
+          <textarea
+            v-if="editor.isEditable || transcriptLocal.trim()"
+            v-model="transcriptLocal"
+            class="uploaded-file-transcript"
+            :readonly="!editor.isEditable"
+            rows="4"
+            placeholder="Текст записи — распознайте кнопкой «В текст» или введите вручную"
+            @blur="commitTranscript"
+          />
+        </div>
+        <p v-if="!audioExpanded" class="audio-collapsed-hint muted small">
+          Аудио — нажмите «Развернуть», чтобы слушать и редактировать текст
+        </p>
+      </template>
+      <p v-else-if="isAudio && !blobUrl" class="muted small">Загрузка аудио…</p>
       <p v-else class="muted small">Вложение сохранено на сервере.</p>
     </div>
   </NodeViewWrapper>
@@ -152,6 +238,43 @@ onBeforeUnmount(() => {
   height: auto;
   border-radius: 6px;
   display: block;
+}
+.audio-expanded-block {
+  margin-top: 0.35rem;
+}
+.audio-collapsed-hint {
+  margin: 0.35rem 0 0;
+}
+.uploaded-file-audio {
+  width: 100%;
+  max-width: 100%;
+  min-width: 200px;
+  height: 40px;
+  margin-top: 0;
+}
+.transcribe-row {
+  margin-top: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.uploaded-file-transcript {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  border-radius: 6px;
+  border: 1px solid var(--border, #ddd);
+  background: var(--bg, #fff);
+  color: inherit;
+  resize: vertical;
+  min-height: 4.5rem;
+}
+.uploaded-file-transcript[readonly] {
+  background: var(--panel, #f5f5f5);
 }
 .muted.small {
   margin: 0.25rem 0 0;

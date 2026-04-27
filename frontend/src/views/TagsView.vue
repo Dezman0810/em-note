@@ -967,6 +967,7 @@ onBeforeUnmount(() => {
           v-if="activeNoteId"
           :key="activeNoteId"
           :note-id="activeNoteId"
+          :sorted-note-ids="sortedNotes.map((n) => n.id)"
           @refresh="onEditorRefresh"
         />
         <div v-else class="editor-placeholder">

@@ -1,6 +1,17 @@
+import type { ResolvedPos } from '@tiptap/pm/model'
 import type { EditorState } from '@tiptap/pm/state'
 
+/** Мин. высота ячейки (px). */
 const CELL_MIN = 44
+
+/** Мин. ширина столбца при ручном вводе; должна совпадать с cellMinWidth в TableKit. */
+export const TABLE_COL_WIDTH_MIN = 20
+
+/** Верхняя граница ширины столбца (px), защита от случайных огромных значений. */
+export const TABLE_COL_WIDTH_MAX = 1600
+
+/** Верхняя граница мин. высоты ячейки (px). */
+export const TABLE_ROW_MAX_HEIGHT = 1200
 
 export type NoteTableCellMetrics = {
   row: number
@@ -12,8 +23,7 @@ export type NoteTableCellMetrics = {
   cellKind: 'tableCell' | 'tableHeader'
 }
 
-export function getNoteTableCellMetrics(state: EditorState): NoteTableCellMetrics | null {
-  const $from = state.selection.$from
+function cellMetricsFromResolved($from: ResolvedPos): NoteTableCellMetrics | null {
   for (let d = $from.depth; d >= 1; d--) {
     const here = $from.node(d)
     if (here.type.name !== 'tableCell' && here.type.name !== 'tableHeader') continue
@@ -47,6 +57,20 @@ export function getNoteTableCellMetrics(state: EditorState): NoteTableCellMetric
     }
   }
   return null
+}
+
+export function getNoteTableCellMetrics(state: EditorState): NoteTableCellMetrics | null {
+  return cellMetricsFromResolved(state.selection.$from)
+}
+
+/** Метрики ячейки по позиции в документе (например сохранённый якорь при открытом меню). */
+export function getNoteTableCellMetricsAt(state: EditorState, pos: number): NoteTableCellMetrics | null {
+  try {
+    const clamped = Math.max(1, Math.min(pos, state.doc.content.size))
+    return cellMetricsFromResolved(state.doc.resolve(clamped))
+  } catch {
+    return null
+  }
 }
 
 /** Сумма ширин по первой строке (оценка; для «авто» столбцов — минимум ячейки). */

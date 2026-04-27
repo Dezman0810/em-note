@@ -15,7 +15,8 @@ from app.models.note import Note
 from app.models.note_attachment import NoteAttachment
 from app.models.note_public_link import NotePublicLink
 from app.models.share import ShareRole
-from app.schemas.attachment import AttachmentRead
+from app.schemas.attachment import AttachmentRead, TranscriptionRead
+from app.services.audio_transcribe import transcribe_audio_file
 from app.services.attachment_ops import create_attachment_for_note
 from app.schemas.note import NoteRead, NoteUpdate
 from app.schemas.public_link import PublicNotePayload
@@ -117,6 +118,27 @@ async def public_upload_attachment(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Edit not allowed for this link")
     row = await create_attachment_for_note(db, note.id, file)
     return AttachmentRead.from_row(row)
+
+
+@router.post("/notes/{token}/attachments/{attachment_id}/transcribe", response_model=TranscriptionRead)
+async def public_transcribe_attachment(
+    token: str,
+    attachment_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TranscriptionRead:
+    note, link = await _note_by_public_token(db, token)
+    if link.role != ShareRole.editor.value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Edit not allowed for this link")
+    row = await db.get(NoteAttachment, attachment_id)
+    if row is None or row.note_id != note.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    path = Path(settings.attachments_dir) / row.storage_key
+    text = await transcribe_audio_file(
+        path,
+        filename=row.original_filename or "audio.webm",
+        content_type=row.content_type,
+    )
+    return TranscriptionRead(text=text)
 
 
 @router.get("/notes/{token}/attachments/{attachment_id}/file")

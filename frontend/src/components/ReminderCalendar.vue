@@ -5,7 +5,14 @@ import type { Note } from '../api/types'
 import { fmtCompactMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 
-const props = defineProps<{ disabled?: boolean; refreshSignal?: number }>()
+const props = defineProps<{
+  disabled?: boolean
+  refreshSignal?: number
+  /** ID заметок из текущей выборки списка — в фильтре: приглушённый синий; вне фильтра: приглушённый красный */
+  scopeNoteIds?: string[]
+  /** В боковой панели заголовок «Календарь» уже снаружи — дублировать не нужно */
+  embedInSidebar?: boolean
+}>()
 const emit = defineEmits<{ openNote: [id: string] }>()
 
 /** Высота прокручиваемой области списка напоминаний (день / колонки недели). */
@@ -68,8 +75,27 @@ onBeforeUnmount(() => {
 })
 
 type CalView = 'month' | 'week' | 'day'
-const view = ref<CalView>('month')
+const view = ref<CalView>('week')
 const cursor = ref(new Date())
+
+const scopeTintActive = computed(() => props.scopeNoteIds !== undefined)
+const scopeSet = computed(() => new Set(props.scopeNoteIds ?? []))
+
+function dotScopeClass(n: Note): Record<string, boolean> {
+  if (!scopeTintActive.value) return {}
+  return {
+    'rem-dot--in-scope': scopeSet.value.has(n.id),
+    'rem-dot--out-scope': !scopeSet.value.has(n.id),
+  }
+}
+
+function dayItemScopeClass(n: Note): Record<string, boolean> {
+  if (!scopeTintActive.value) return {}
+  return {
+    'rem-cal-dayitem--in-scope': scopeSet.value.has(n.id),
+    'rem-cal-dayitem--out-scope': !scopeSet.value.has(n.id),
+  }
+}
 
 const reminders = ref<Note[]>([])
 const loading = ref(false)
@@ -139,15 +165,49 @@ const byDay = computed(() => {
   return m
 })
 
+function fmtDayMonthShort(x: Date): string {
+  return x
+    .toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+    .replace(/\.$/, '')
+    .trim()
+}
+
 const titleRange = computed(() => {
+  const d = cursor.value
+  if (view.value === 'day') {
+    return d
+      .toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' })
+      .replace(/,/g, '')
+      .trim()
+  }
+  if (view.value === 'week') {
+    const { from, to } = rangeForView()
+    const end = new Date(to.getTime() - 86400000)
+    const sameMonth = from.getMonth() === end.getMonth() && from.getFullYear() === end.getFullYear()
+    if (sameMonth) {
+      const mo = from.toLocaleDateString('ru-RU', { month: 'short' }).replace(/\.$/, '')
+      return `${from.getDate()}—${end.getDate()} ${mo}`
+    }
+    return `${fmtDayMonthShort(from)} — ${fmtDayMonthShort(end)}`
+  }
+  const y = d.getFullYear()
+  const nowY = new Date().getFullYear()
+  if (y !== nowY) {
+    return d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' }).replace(/\.$/, '')
+  }
+  return d.toLocaleDateString('ru-RU', { month: 'long' })
+})
+
+const titleRangeTooltip = computed(() => {
   const d = cursor.value
   if (view.value === 'day') {
     return d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   }
   if (view.value === 'week') {
     const { from, to } = rangeForView()
-    const a = from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
-    const b = new Date(to.getTime() - 1).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+    const end = new Date(to.getTime() - 86400000)
+    const a = from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+    const b = end.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
     return `${a} — ${b}`
   }
   return d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
@@ -208,12 +268,13 @@ const monthWeekRows = computed(() => {
 
 const weekDays = computed(() => {
   const { from } = rangeForView()
-  const cells: { key: string; label: string; short: number; d: Date }[] = []
+  const cells: { key: string; label: string; short: number; d: Date; titleFull: string }[] = []
   for (let i = 0; i < 7; i++) {
     const d = new Date(from.getTime() + i * 86400000)
     const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-    const label = d.toLocaleDateString('ru-RU', { weekday: 'short' })
-    cells.push({ key, label, short: d.getDate(), d })
+    const label = d.toLocaleDateString('ru-RU', { weekday: 'short' }).replace(/\.$/, '')
+    const titleFull = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    cells.push({ key, label, short: d.getDate(), d, titleFull })
   }
   return cells
 })
@@ -242,16 +303,24 @@ function reminderDetailTitle(n: Note): string {
   const t = (n.title || DEFAULT_NOTE_TITLE).trim()
   return `${t} — ${fmtCompactMsk(n.reminder_at!)}`
 }
+
+function cellDateTitle(d: Date): string {
+  return d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+}
 </script>
 
 <template>
   <div
     class="rem-cal"
-    :class="{ 'rem-cal--disabled': disabled, 'rem-cal--resizable': view === 'week' }"
+    :class="{
+      'rem-cal--disabled': disabled,
+      'rem-cal--resizable': view === 'week',
+      'rem-cal--embed': embedInSidebar,
+    }"
     :style="{ '--rem-cal-list-h': listAreaHeightPx + 'px' }"
   >
     <div class="rem-cal-head">
-      <span class="rem-cal-title">Календарь</span>
+      <span v-if="!embedInSidebar" class="rem-cal-title">Календарь</span>
       <div class="rem-cal-views">
         <button type="button" :class="{ on: view === 'day' }" @click="view = 'day'">День</button>
         <button type="button" :class="{ on: view === 'week' }" @click="view = 'week'">Неделя</button>
@@ -260,12 +329,12 @@ function reminderDetailTitle(n: Note): string {
     </div>
     <div class="rem-cal-nav">
       <button type="button" class="rem-cal-arrow" title="Назад" @click="prev">‹</button>
-      <span class="rem-cal-range">{{ titleRange }}</span>
+      <span class="rem-cal-range" :title="titleRangeTooltip">{{ titleRange }}</span>
       <button type="button" class="rem-cal-arrow" title="Вперёд" @click="next">›</button>
       <button type="button" class="rem-cal-today" @click="today">Сегодня</button>
     </div>
     <p v-if="loading" class="rem-cal-hint muted small">Загрузка…</p>
-    <div v-else-if="view === 'month'" class="rem-cal-month">
+    <div v-if="!loading && view === 'month'" class="rem-cal-month">
       <div class="rem-cal-dow">
         <span v-for="w in ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']" :key="w">{{ w }}</span>
       </div>
@@ -278,12 +347,13 @@ function reminderDetailTitle(n: Note): string {
             :class="{ 'rem-cal-cell--dots': c.inMonth && (byDay.get(c.key)?.length ?? 0) > 0 }"
           >
             <template v-if="c.inMonth">
-              <span class="rem-cal-daynum">{{ c.label }}</span>
+              <span class="rem-cal-daynum" :title="cellDateTitle(c.d)">{{ c.label }}</span>
               <div v-if="byDay.get(c.key)?.length" class="rem-cal-dots">
                 <span
                   v-for="n in (byDay.get(c.key) ?? []).slice(0, 6)"
                   :key="n.id"
                   class="rem-dot"
+                  :class="dotScopeClass(n)"
                   :title="reminderDetailTitle(n)"
                   @click.stop="open(n.id)"
                 />
@@ -296,7 +366,7 @@ function reminderDetailTitle(n: Note): string {
         </template>
       </div>
     </div>
-    <div v-else-if="view === 'week'" class="rem-cal-week">
+    <div v-else-if="!loading && view === 'week'" class="rem-cal-week">
       <div class="rem-cal-week-grid">
         <div
           v-for="c in weekDays"
@@ -304,13 +374,16 @@ function reminderDetailTitle(n: Note): string {
           class="rem-cal-wcol"
           :class="{ 'rem-cal-wcol--has': (byDay.get(c.key)?.length ?? 0) > 0 }"
         >
-          <div class="rem-cal-whead">{{ c.label }}<span class="rem-cal-wnum">{{ c.short }}</span></div>
+          <div class="rem-cal-whead" :title="c.titleFull">
+            {{ c.label }}<span class="rem-cal-wnum">{{ c.short }}</span>
+          </div>
           <div class="rem-cal-wdots">
             <div v-if="(byDay.get(c.key) ?? []).length" class="rem-cal-dots rem-cal-dots--week">
               <span
                 v-for="n in byDay.get(c.key) ?? []"
                 :key="n.id"
                 class="rem-dot"
+                :class="dotScopeClass(n)"
                 :title="reminderDetailTitle(n)"
                 role="button"
                 tabindex="0"
@@ -322,10 +395,15 @@ function reminderDetailTitle(n: Note): string {
         </div>
       </div>
     </div>
-    <div v-else class="rem-cal-dayview">
+    <div v-else-if="!loading && view === 'day'" class="rem-cal-dayview">
       <ul v-if="daySlots.length" class="rem-cal-daylist">
         <li v-for="n in daySlots" :key="n.id">
-          <button type="button" class="rem-cal-dayitem" @click="open(n.id)">
+          <button
+            type="button"
+            class="rem-cal-dayitem"
+            :class="dayItemScopeClass(n)"
+            @click="open(n.id)"
+          >
             <span class="rem-cal-ntime">{{ fmtCompactMsk(n.reminder_at!) }}</span>
             <span class="rem-cal-nt">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
           </button>
@@ -334,7 +412,7 @@ function reminderDetailTitle(n: Note): string {
       <p v-else class="muted small rem-cal-empty">Нет напоминаний в этот день</p>
     </div>
     <div
-      v-if="view === 'week'"
+      v-if="!loading && view === 'week'"
       class="rem-cal-resize"
       title="Потяните — высота области с точками в колонках недели"
       @mousedown="onListResizeDown"
@@ -363,6 +441,13 @@ function reminderDetailTitle(n: Note): string {
   opacity: 0.45;
   pointer-events: none;
 }
+.rem-cal--embed {
+  font-size: 0.75rem;
+  color: #475569;
+}
+.rem-cal--embed .rem-cal-head {
+  margin-bottom: 0.35rem;
+}
 .rem-cal-head {
   display: flex;
   flex-wrap: wrap;
@@ -370,6 +455,7 @@ function reminderDetailTitle(n: Note): string {
   justify-content: space-between;
   gap: 0.4rem;
   margin-bottom: 0.45rem;
+  width: 100%;
 }
 .rem-cal-title {
   font-size: 0.6875rem;
@@ -379,17 +465,24 @@ function reminderDetailTitle(n: Note): string {
   color: var(--text-muted);
 }
 .rem-cal-views {
-  display: inline-flex;
+  display: flex;
+  flex: 1;
+  min-width: 0;
   gap: 3px;
   padding: 2px;
   border-radius: 8px;
   background: rgba(148, 163, 184, 0.12);
 }
 .rem-cal-views button {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-family: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 500;
-  padding: 0.2rem 0.42rem;
+  padding: 0.2rem 0.35rem;
   border-radius: 6px;
   border: none;
   background: transparent;
@@ -410,13 +503,13 @@ function reminderDetailTitle(n: Note): string {
   margin-bottom: 0.45rem;
 }
 .rem-cal-arrow {
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 1.35rem;
+  height: 1.35rem;
   border: none;
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-size: 0.82rem;
   line-height: 1;
   color: var(--text-muted);
   transition: background 0.12s ease;
@@ -428,20 +521,20 @@ function reminderDetailTitle(n: Note): string {
 .rem-cal-range {
   flex: 1;
   min-width: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--note-list-title);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #64748b;
   text-align: center;
 }
 .rem-cal-today {
   font-family: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 500;
-  padding: 0.22rem 0.45rem;
+  padding: 0.2rem 0.4rem;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: #475569;
+  color: #64748b;
   cursor: pointer;
 }
 .rem-cal-today:hover {
@@ -458,11 +551,11 @@ function reminderDetailTitle(n: Note): string {
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
   margin-bottom: 4px;
-  font-size: 0.625rem;
+  font-size: 0.5625rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--note-list-meta);
+  letter-spacing: 0.04em;
+  color: #94a3b8;
   text-align: center;
 }
 .rem-cal-grid {
@@ -471,11 +564,11 @@ function reminderDetailTitle(n: Note): string {
   gap: 3px;
 }
 .rem-cal-cell {
-  min-height: 2.2rem;
+  min-height: 2rem;
   border-radius: 8px;
-  padding: 0.18rem 0.2rem;
+  padding: 0.16rem 0.18rem;
   background: var(--list-row-hover);
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -486,8 +579,9 @@ function reminderDetailTitle(n: Note): string {
   border-color: rgba(37, 99, 235, 0.25);
 }
 .rem-cal-daynum {
+  font-size: 0.625rem;
   font-weight: 600;
-  color: var(--note-list-title);
+  color: #475569;
 }
 .rem-cal-dots {
   display: flex;
@@ -502,6 +596,14 @@ function reminderDetailTitle(n: Note): string {
   background: var(--accent);
   cursor: pointer;
   flex-shrink: 0;
+}
+.rem-dot--in-scope {
+  background: #6d87b5;
+  box-shadow: 0 0 0 1px rgba(90, 110, 150, 0.35);
+}
+.rem-dot--out-scope {
+  background: #c0807a;
+  box-shadow: 0 0 0 1px rgba(160, 95, 90, 0.32);
 }
 .rem-more {
   font-size: 0.55rem;
@@ -526,19 +628,19 @@ function reminderDetailTitle(n: Note): string {
   border-color: rgba(37, 99, 235, 0.22);
 }
 .rem-cal-whead {
-  font-size: 0.65rem;
+  font-size: 0.5625rem;
   font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 0.35rem;
+  color: #94a3b8;
+  margin-bottom: 0.3rem;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 .rem-cal-wnum {
-  font-size: 0.8125rem;
-  font-weight: 700;
-  color: var(--note-list-title);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #475569;
 }
 .rem-cal-wdots {
   flex: 1;
@@ -627,6 +729,20 @@ function reminderDetailTitle(n: Note): string {
 .rem-cal-dayitem:hover {
   border-color: rgba(37, 99, 235, 0.35);
   box-shadow: var(--shadow-soft, 0 1px 3px rgba(15, 23, 42, 0.06));
+}
+.rem-cal-dayitem--in-scope {
+  border-color: rgba(90, 110, 150, 0.45);
+  background: rgba(109, 135, 181, 0.09);
+}
+.rem-cal-dayitem--in-scope:hover {
+  border-color: rgba(90, 110, 150, 0.58);
+}
+.rem-cal-dayitem--out-scope {
+  border-color: rgba(180, 110, 105, 0.42);
+  background: rgba(192, 128, 122, 0.08);
+}
+.rem-cal-dayitem--out-scope:hover {
+  border-color: rgba(180, 110, 105, 0.55);
 }
 .rem-cal-empty {
   margin: 0.45rem 0;

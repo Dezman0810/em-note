@@ -3,6 +3,10 @@ import uuid
 from pydantic import BaseModel
 
 
+class TranscriptionRead(BaseModel):
+    text: str
+
+
 class AttachmentRead(BaseModel):
     id: uuid.UUID
     original_filename: str

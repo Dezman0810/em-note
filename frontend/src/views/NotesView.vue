@@ -32,6 +32,7 @@ const FOLDER_NAV_MAIN_H_KEY = 'note-ui-folder-main-h'
 const TAGS_PANEL_H_KEY = 'note-ui-tags-panel-h'
 const FOLDERS_LIST_EXPANDED_KEY = 'note-ui-folders-list-expanded'
 const TAGS_LIST_EXPANDED_KEY = 'note-ui-tags-list-expanded'
+const CALENDAR_EXPANDED_KEY = 'note-ui-calendar-expanded'
 
 function readBoolKey(key: string, fallback: boolean): boolean {
   try {
@@ -63,7 +64,7 @@ function readColW(key: string, fallback: number, min: number, max: number): numb
   }
 }
 
-const colFolderPx = ref(readColW(COL_FOLDER_KEY, 220, 120, 420))
+const colFolderPx = ref(readColW(COL_FOLDER_KEY, 200, 120, 420))
 const colListPx = ref(readColW(COL_LIST_KEY, 300, 160, 640))
 
 type GutterDrag = null | 'folder' | 'list' | 'folderNavV' | 'tagsCalendar'
@@ -81,6 +82,7 @@ const folderNavMainPx = ref(
 )
 /** Высота блока меток (рамка: фильтры + список); календарь ниже. */
 const tagsPanelHeightPx = ref(readColW(TAGS_PANEL_H_KEY, 200, 96, 520))
+const calendarListExpanded = ref(readBoolKey(CALENDAR_EXPANDED_KEY, true))
 
 function persistColWidths() {
   try {
@@ -122,7 +124,7 @@ function tagsPanelHeightMax(): number {
   const footer = bottom.querySelector('.folder-nav-footer') as HTMLElement | null
   const fh = footer ? footer.offsetHeight + 8 : 48
   const g = 6
-  const calMin = 100
+  const calMin = calendarListExpanded.value ? 100 : 44
   return Math.max(96, bottom.clientHeight - fh - calMin - g - 4)
 }
 
@@ -213,6 +215,8 @@ const folderViewTrash = ref(false)
 const filterFolderIds = ref<string[]>([])
 /** Пустой список — без фильтра по меткам. Ctrl/Cmd+клик добавляет метку к фильтру (ИЛИ). */
 const filterTagIds = ref<string[]>([])
+/** Включён: наведение на строки меток добавляет их в фильтр (без сброса), как несколько Ctrl+кликов. */
+const tagHoverAddFilterMode = ref(false)
 
 const isAllFoldersScope = computed(
   () => !folderViewTrash.value && filterFolderIds.value.length === 0
@@ -288,14 +292,41 @@ async function onNoteRowDrop(e: DragEvent, noteId: string) {
   }
 }
 
-const folderNavMainStyle = computed(() => ({
-  flex: '0 0 auto',
-  height: `${folderNavMainPx.value}px`,
-  minHeight: '72px',
-  overflow: 'hidden',
-  display: 'flex',
-  flexDirection: 'column' as const,
-}))
+const folderNavMainStyle = computed(() => {
+  if (!foldersListExpanded.value) {
+    return {
+      flex: '0 0 auto',
+      height: 'auto',
+      minHeight: '0',
+      maxHeight: 'none' as const,
+      overflow: 'hidden' as const,
+      display: 'flex',
+      flexDirection: 'column' as const,
+    }
+  }
+  return {
+    flex: '0 0 auto',
+    height: `${folderNavMainPx.value}px`,
+    minHeight: '72px',
+    overflow: 'hidden' as const,
+    display: 'flex',
+    flexDirection: 'column' as const,
+  }
+})
+
+const tagsPanelStyle = computed(() => {
+  if (!tagsListExpanded.value) {
+    return {
+      flex: '0 0 auto',
+      height: 'auto',
+      minHeight: '0',
+    }
+  }
+  return {
+    flex: '0 0 auto',
+    height: `${tagsPanelHeightPx.value}px`,
+  }
+})
 
 const folderNavBottomStyle = computed(() => ({
   flex: '1 1 auto',
@@ -349,19 +380,42 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
 
 function clearTagFilter() {
   filterTagIds.value = []
+  tagHoverAddFilterMode.value = false
+}
+
+function toggleTagInMultiFilter(id: string) {
+  const cur = [...filterTagIds.value]
+  const i = cur.indexOf(id)
+  if (i >= 0) cur.splice(i, 1)
+  else cur.push(id)
+  filterTagIds.value = cur
 }
 
 function onSidebarTagClick(t: Tag, e: MouseEvent) {
   const id = t.id
   if (e.ctrlKey || e.metaKey) {
-    const cur = [...filterTagIds.value]
-    const i = cur.indexOf(id)
-    if (i >= 0) cur.splice(i, 1)
-    else cur.push(id)
-    filterTagIds.value = cur
+    toggleTagInMultiFilter(id)
   } else {
+    tagHoverAddFilterMode.value = false
     filterTagIds.value = [id]
   }
+}
+
+/** Кнопка «+»: включает режим наведения; текущая метка сразу попадает в фильтр; повторный клик «+» — выкл. */
+function toggleTagHoverAddMode(t: Tag) {
+  const next = !tagHoverAddFilterMode.value
+  tagHoverAddFilterMode.value = next
+  if (next) {
+    const cur = [...filterTagIds.value]
+    if (!cur.includes(t.id)) cur.push(t.id)
+    filterTagIds.value = cur
+  }
+}
+
+function onTagRowMouseEnterAdditive(t: Tag) {
+  if (!tagHoverAddFilterMode.value) return
+  if (filterTagIds.value.includes(t.id)) return
+  filterTagIds.value = [...filterTagIds.value, t.id]
 }
 
 const foldersSorted = computed(() => foldersSortedAlphabetical(folders.value))
@@ -395,6 +449,7 @@ function toggleFoldersList(e: Event) {
   e.stopPropagation()
   foldersListExpanded.value = !foldersListExpanded.value
   writeBoolKey(FOLDERS_LIST_EXPANDED_KEY, foldersListExpanded.value)
+  void nextTick(() => clampTagsPanelHeight())
 }
 
 function toggleTagsList(e: Event) {
@@ -402,6 +457,15 @@ function toggleTagsList(e: Event) {
   e.stopPropagation()
   tagsListExpanded.value = !tagsListExpanded.value
   writeBoolKey(TAGS_LIST_EXPANDED_KEY, tagsListExpanded.value)
+  void nextTick(() => clampTagsPanelHeight())
+}
+
+function toggleCalendarList(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  calendarListExpanded.value = !calendarListExpanded.value
+  writeBoolKey(CALENDAR_EXPANDED_KEY, calendarListExpanded.value)
+  void nextTick(() => clampTagsPanelHeight())
 }
 
 /** Активная заметка из URL /notes/:id */
@@ -763,10 +827,14 @@ onMounted(async () => {
   await nextTick()
   clampTagsPanelHeight()
   window.addEventListener('resize', clampTagsPanelHeight)
+  window.addEventListener('keydown', onTagHoverAddModeEscape)
 })
 
 watch(folderViewTrash, (trash) => {
-  if (trash) filterTagIds.value = []
+  if (trash) {
+    filterTagIds.value = []
+    tagHoverAddFilterMode.value = false
+  }
   void load()
 })
 watch(
@@ -795,10 +863,17 @@ watch(
   { deep: true }
 )
 
+function onTagHoverAddModeEscape(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (!tagHoverAddFilterMode.value) return
+  tagHoverAddFilterMode.value = false
+}
+
 onBeforeUnmount(() => {
   mobileMq?.removeEventListener('change', syncNarrowLayout)
   mobileMq = null
   window.removeEventListener('resize', clampTagsPanelHeight)
+  window.removeEventListener('keydown', onTagHoverAddModeEscape)
   window.removeEventListener('mousemove', onGutterMove)
   window.removeEventListener('mouseup', onGutterUp)
   document.body.style.cursor = ''
@@ -926,11 +1001,14 @@ onBeforeUnmount(() => {
                     @drop="onFolderDrop($event, 'all')"
                   >
                     <span class="folder-label nav-scope-label">Все заметки</span>
-                    <span v-if="folderNoteCounts" class="tag-count">({{ folderNoteCounts.total }})</span>
+                    <span v-if="folderNoteCounts" class="tag-count nav-scope-count"> ({{ folderNoteCounts.total }})</span>
                   </button>
                 </div>
               </div>
-              <div class="folder-nav-folders-scroll">
+              <div
+                class="folder-nav-folders-scroll"
+                :class="{ 'folder-nav-folders-scroll--collapsed': !foldersListExpanded }"
+              >
                 <div v-show="foldersListExpanded" class="folder-rows">
                   <div
                     v-for="f in foldersSorted"
@@ -978,7 +1056,7 @@ onBeforeUnmount(() => {
             @mousedown="onFolderNavVGutterDown($event)"
           />
           <div class="folder-nav-bottom" :style="folderNavBottomStyle">
-            <div class="folder-nav-tags-panel" :style="{ height: tagsPanelHeightPx + 'px' }">
+            <div class="folder-nav-tags-panel" :style="tagsPanelStyle">
                 <div class="folder-nav-tags-sticky">
                   <div class="folder-all-row tag-all-wrap folder-all-row--frame">
                     <button
@@ -999,20 +1077,27 @@ onBeforeUnmount(() => {
                       @click="clearTagFilter"
                     >
                       <span class="folder-label nav-scope-label">Все метки</span>
-                      <span v-if="folderNoteCounts" class="tag-count">({{ scopeNoteTotal }})</span>
+                      <span v-if="folderNoteCounts" class="tag-count nav-scope-count"> ({{ scopeNoteTotal }})</span>
                     </button>
                   </div>
                 </div>
-                <div class="folder-nav-tags-scroll">
+                <div
+                  class="folder-nav-tags-scroll"
+                  :class="{
+                    'folder-nav-tags-scroll--collapsed': !tagsListExpanded,
+                    'folder-nav-tags-scroll--add-hover': tagHoverAddFilterMode,
+                  }"
+                >
                   <div
                     v-for="t in tagsVisibleInSidebar"
                     v-show="tagsListExpanded"
                     :key="t.id"
                     class="nav-row tag-sidebar-row"
                     :class="{ on: filterTagIds.includes(t.id) }"
-                    :style="{ paddingLeft: (0.35 + Math.max(0, t.depth - 1) * 0.55) + 'rem' }"
+                    :style="{ paddingLeft: (0.28 + Math.max(0, t.depth - 1) * 0.38) + 'rem' }"
                     draggable="true"
                     @dragstart="onTagDragStart($event, t.id)"
+                    @mouseenter="onTagRowMouseEnterAdditive(t)"
                   >
                     <button
                       type="button"
@@ -1039,6 +1124,16 @@ onBeforeUnmount(() => {
                       <button type="button" class="btn-rename" title="Переименовать" @click.stop="renameTag(t)">
                         ✎
                       </button>
+                      <button
+                        type="button"
+                        class="btn-tag-add-hover"
+                        :class="{ on: tagHoverAddFilterMode }"
+                        title="Включить: наведите курсор на другие метки — они добавятся к фильтру (как Ctrl+клик). Повторный клик — выключить. Esc — выключить."
+                        :aria-pressed="tagHoverAddFilterMode"
+                        @click.stop="toggleTagHoverAddMode(t)"
+                      >
+                        +
+                      </button>
                       <button type="button" class="btn-del" title="Удалить метку" @click.stop="removeTag(t)">
                         ×
                       </button>
@@ -1048,12 +1143,34 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <div
+                v-show="tagsListExpanded"
                 class="folder-nav-tags-cal-gutter"
-                title="Потяните вниз — меньше меток и больше календарь; вверх — больше меток"
+                title="Потяните вниз — меньше меток, ниже — календарь и корзина; вверх — больше меток"
                 @mousedown="onTagsCalendarGutterDown($event)"
               />
-              <div class="folder-nav-calendar-wrap">
-                <ReminderCalendar :refresh-signal="reminderRefreshSignal" @open-note="openNote" />
+              <div class="folder-nav-calendar-block">
+                <div class="folder-nav-calendar-sticky">
+                  <div class="folder-all-row tag-all-wrap folder-all-row--frame">
+                    <button
+                      type="button"
+                      class="section-chevron"
+                      :class="{ 'section-chevron--collapsed': !calendarListExpanded }"
+                      title="Показать или скрыть календарь"
+                      @click="toggleCalendarList"
+                    >
+                      {{ calendarListExpanded ? '▾' : '▸' }}
+                    </button>
+                    <span class="folder-label nav-scope-label">Календарь</span>
+                  </div>
+                </div>
+                <div v-show="calendarListExpanded" class="folder-nav-calendar-wrap">
+                  <ReminderCalendar
+                    embed-in-sidebar
+                    :refresh-signal="reminderRefreshSignal"
+                    :scope-note-ids="notes.map((n) => n.id)"
+                    @open-note="openNote"
+                  />
+                </div>
               </div>
             <div class="folder-nav-footer">
               <button
@@ -1155,6 +1272,7 @@ onBeforeUnmount(() => {
       <div class="editor-shell">
         <NoteEditorColumn
           :note-id="activeNoteId"
+          :sorted-note-ids="sortedNotes.map((n) => n.id)"
           :editor-sync-signal="editorSyncSignal"
           @refresh="load"
         />
@@ -1436,12 +1554,42 @@ onBeforeUnmount(() => {
 }
 .nav-scope-label {
   font-weight: 600;
-  font-size: 0.76rem;
+  font-size: 0.8125rem;
   letter-spacing: -0.02em;
   color: #111827;
 }
 .folder-filter-all.on .nav-scope-label {
   color: #111827;
+}
+.nav-scope-count {
+  font-weight: 500;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  opacity: 1;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.folder-filter-all.on .nav-scope-count {
+  color: #7c8a9e;
+}
+.folder-nav-folders-panel .folder-filter .tag-count.nav-scope-count,
+.folder-nav-tags-panel .folder-filter .tag-count.nav-scope-count {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #94a3b8;
+  opacity: 1;
+  line-height: 1.2;
+}
+.folder-nav-folders-panel .folder-filter-all.on .nav-scope-count,
+.folder-nav-tags-panel .folder-filter-all.on .nav-scope-count {
+  color: #7c8a9e;
+}
+.folder-nav-calendar-sticky .nav-scope-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  align-self: center;
+  padding: 0.32rem 0.45rem;
 }
 .tag-all-wrap {
   margin-bottom: 3px;
@@ -1460,6 +1608,27 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-x: hidden;
   padding-top: 2px;
+}
+.folder-nav-calendar-block {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.folder-nav-calendar-sticky {
+  flex-shrink: 0;
+  padding: 0.35rem 0.4rem 0.25rem;
+  border-top: 1px solid #eceef2;
+  background: transparent;
+}
+.folder-nav-folders-scroll--collapsed,
+.folder-nav-tags-scroll--collapsed {
+  flex: 0 0 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
 }
 .folder-nav-tags-panel,
 .folder-nav-folders-panel {
@@ -1485,6 +1654,9 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid #eceef2;
   background: transparent;
   border-radius: 8px 8px 0 0;
+}
+.folder-nav-tags-sticky {
+  padding: 0.26rem 0.32rem 0.18rem;
 }
 .section-chevron {
   flex-shrink: 0;
@@ -1557,6 +1729,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 3px;
 }
+.folder-nav-tags-scroll {
+  padding: 0.16rem 0.26rem 0.2rem;
+  gap: 2px;
+}
 .folder-nav-tags-panel .folder-filter .tag-count {
   font-size: 0.62rem;
   font-weight: 500;
@@ -1569,14 +1745,40 @@ onBeforeUnmount(() => {
   gap: 0.35rem;
 }
 .nav-row.tag-sidebar-row .nav-row-label--tag {
-  gap: 0.25rem;
+  gap: 0.18rem;
 }
 .tag-sidebar-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: left;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row {
+  padding: 0.18rem 0.28rem;
+  gap: 0.12rem;
+  border-radius: 5px;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row-label {
+  font-size: 0.68rem;
+  line-height: 1.28;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row.on .nav-row-label {
+  font-size: 0.68rem;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row .tag-count {
+  font-size: 0.58rem;
+  line-height: 1.15;
+}
+.folder-nav-tags-panel .section-chevron,
+.folder-nav-tags-panel .section-chevron-spacer {
+  width: 1.12rem;
+  min-height: 1.42rem;
+  font-size: 0.6rem;
+}
+.folder-nav-tags-panel .folder-filter-all.tag-filter {
+  min-height: 0;
 }
 .tag-chevron {
   flex-shrink: 0;
@@ -1588,6 +1790,39 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   cursor: pointer;
   user-select: none;
+}
+.folder-nav-tags-panel .tag-chevron {
+  width: 0.95rem;
+  min-width: 0.95rem;
+  font-size: 0.55rem;
+  line-height: 1.25;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.folder-nav-tags-panel .tag-chevron-spacer {
+  width: 0.95rem;
+  min-width: 0.95rem;
+}
+.folder-nav-tags-panel .btn-rename,
+.folder-nav-tags-panel .btn-tag-add-hover,
+.folder-nav-tags-panel .btn-del {
+  width: 1.38rem;
+  height: 1.38rem;
+  font-size: 0.75rem;
+}
+.folder-nav-tags-panel .btn-tag-add-hover {
+  font-weight: 600;
+  line-height: 1;
+  padding: 0;
+}
+.folder-nav-tags-panel .btn-tag-add-hover.on {
+  background: rgba(37, 99, 235, 0.14);
+  color: var(--accent, #2563eb);
+}
+.folder-nav-tags-scroll--add-hover {
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.22);
+  border-radius: 6px;
 }
 .tag-chevron:hover {
   background: var(--sidebar-hover);
@@ -1652,7 +1887,8 @@ onBeforeUnmount(() => {
   background: rgba(254, 226, 226, 0.55);
   font-weight: 600;
 }
-.btn-rename {
+.btn-rename,
+.btn-tag-add-hover {
   flex-shrink: 0;
   width: 1.55rem;
   height: 1.55rem;
@@ -1664,7 +1900,8 @@ onBeforeUnmount(() => {
   font-size: 0.8rem;
   line-height: 1;
 }
-.btn-rename:hover {
+.btn-rename:hover,
+.btn-tag-add-hover:hover:not(.on) {
   color: var(--accent);
   background: var(--sidebar-hover);
 }
