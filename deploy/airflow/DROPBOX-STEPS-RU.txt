@@ -1,0 +1,110 @@
+================================================================================
+  EM-NOTE · БЭКАП В DROPBOX ЧЕРЕЗ API — ЧТО ДЕЛАЕТЕ ВЫ И ЧТО УЖЕ СДЕЛАНО В КОДЕ
+================================================================================
+
+УЖЕ СДЕЛАНО ЗА ВАС (писать код не нужно):
+  • DAG «em_note_db_backup» раз в день создаёт дамп БД и архив вложений во временной
+    папке контейнера и загружает оба файла только в Dropbox (на диск хоста не кладёт).
+  • В образ Airflow добавлен пакет dropbox.
+  • deploy/airflow/airflow.env.example — пример переменных.
+  • Скрипт deploy/airflow/scripts/obtain_dropbox_refresh_token.py получает
+    REFRESH TOKEN (кроме создания приложения в Dropbox).
+  • DAG «em_note_restore_from_dropbox» — восстановление БД + вложений из Dropbox
+    по параметрам в airflow.env (см. конец airflow.env.example), только ручной запуск.
+
+Вы делаете: приложение Dropbox в браузере → либо скрипт refresh token, либо
+одна кнопка «Generated access token» → вставили в airflow.env → пересобрали
+Docker Airflow.
+
+--------------------------------------------------------------------------------
+ШАГ 1 — Приложение в Dropbox (~5 мин, только браузер)
+--------------------------------------------------------------------------------
+
+  https://www.dropbox.com/developers/apps  → «Create app»
+
+• API: Scoped access.
+• Folder: «Full Dropbox» (удобно DROPBOX_REMOTE_ROOT=/em-note-backups)
+  или «App folder» (тогда только /Apps/<имя>/ — укажите такой DROPBOX_REMOTE_ROOT).
+
+• Permissions: Files and folders → files.content.write (+ read опционально).
+  Внизу вкладки нажмите Submit (без этого OAuth не примет разрешения).
+
+• Settings → «Redirect URIs» → добавьте ОДИН адрес РОВНО такой:
+
+      http://127.0.0.1:8756/dropbox-callback
+
+  Сохраните.
+
+• На Settings скопируйте App key и App secret.
+
+--------------------------------------------------------------------------------
+ШАГ 2A — Быстро: DROPBOX_ACCESS_TOKEN (без скрипта)
+--------------------------------------------------------------------------------
+
+  В консоли приложения: Settings → OAuth 2 → «Generated access token» → Generate.
+  Скопируйте токен в deploy\airflow\airflow.env:
+
+      DROPBOX_ACCESS_TOKEN=sl.xxx...
+
+  Если в логе Airflow «does not have the required scope files.content.write» —
+  используйте ШАГ 2B. На вкладке Permissions после галочек нажмите Submit; иначе
+  OAuth выдаст «No scope requested can be granted». После ШАГ 2B DROPBOX_ACCESS_TOKEN
+  можно оставить пустым.
+
+  Для долгой работы удобнее ШАГ 2B (refresh + автообновление access).
+
+--------------------------------------------------------------------------------
+ШАГ 2B — Получить DROPBOX_REFRESH_TOKEN на своём ПК
+--------------------------------------------------------------------------------
+
+  cd C:\Cursor\em-note
+  python deploy\airflow\scripts\obtain_dropbox_refresh_token.py
+
+Введите ключи → откроется авторизация → войдите в Dropbox → скрипт выведет
+строки для вставки в airflow.env (DROPBOX_ACCESS_TOKEN тогда не нужен).
+
+Ошибка redirect? В консоли Dropbox не тот URI (см. ШАГ 1).
+
+--------------------------------------------------------------------------------
+ШАГ 3 — Вставить в deploy/airflow/airflow.env
+--------------------------------------------------------------------------------
+
+Вставьте токен (ШАГ 2A) или вывод скрипта (ШАГ 2B) в deploy\airflow\airflow.env.
+Без валидных учётных данных Dropbox DAG завершится с ошибкой.
+
+НЕ отправляйте файл и токены никому.
+
+--------------------------------------------------------------------------------
+ШАГ 4 — Пересобрать Airflow
+--------------------------------------------------------------------------------
+
+  docker compose -f docker-compose.airflow.yml up -d --build
+
+  Метаданные Airflow хранятся в SQLite (том Docker), отдельный Postgres для Airflow
+  не нужен — удобно для слабого VPS. Если раньше был стек с airflow-metadata-db,
+  сделайте один раз: docker compose -f docker-compose.airflow.yml down, затем снова up.
+
+БД em-note на порту хоста 5432 при необходимости:
+
+  docker compose up -d db
+
+Airflow UI: http://localhost:8088
+
+После таска копии только в Dropbox: DROPBOX_REMOTE_ROOT/<дата UTC>/.
+
+--------------------------------------------------------------------------------
+Если таск висит «up_for_retry» или в Dropbox пусто
+--------------------------------------------------------------------------------
+
+  1) Откройте лог задачи — частая причина: пустые DROPBOX_ACCESS_TOKEN и
+     DROPBOX_REFRESH_TOKEN в deploy\airflow\airflow.env. Заполните один из них,
+     сохраните файл и пересоздайте контейнеры:
+
+        docker compose -f docker-compose.airflow.yml up -d --force-recreate
+
+  2) Тип «App folder»: в API путь начинается с корня приложения —
+     задайте DROPBOX_REMOTE_ROOT=/ (или /подпапка). Нельзя использовать
+     префикс /Apps/... как в браузере: для «App folder» это ломает files_upload.
+
+  3) Вкладка Permissions: включён scope files.content.write (для дампа нужна запись).
+

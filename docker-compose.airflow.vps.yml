@@ -1,0 +1,32 @@
+# Опционально на VPS: подключить Airflow к сети прод-стека em-note,
+# чтобы в AIRFLOW_CONN_POSTGRES_EM_NOTE использовать хост db:5432 (как у API).
+#
+# Проверьте имя сети: docker network ls
+# Обычно: em-note-prod_default (docker compose -p em-note-prod …) или em-note_default.
+#
+# Запуск:
+#   docker compose -f docker-compose.airflow.yml -f docker-compose.airflow.vps.yml up -d --build
+#
+# В deploy/airflow/airflow.env:
+#   AIRFLOW_CONN_POSTGRES_EM_NOTE=postgresql://postgres:ВАШ_ПАРОЛЬ@db:5432/note
+#   EM_NOTE_ATTACHMENTS_VOLUME=em-note-prod_em_note_attachments
+# (имена томов смотрите: docker volume ls)
+
+networks:
+  em_note_prod:
+    external: true
+    name: ${EM_NOTE_DOCKER_NETWORK:-em-note-prod_default}
+
+services:
+  airflow-init:
+    networks:
+      - default
+      - em_note_prod
+  airflow-scheduler:
+    networks:
+      - default
+      - em_note_prod
+  airflow-webserver:
+    networks:
+      - default
+      - em_note_prod

@@ -96,3 +96,9 @@ docker compose -p em-note-prod -f docker-compose.ghcr.yml --env-file .env up -d
 ```bash
 docker compose -f docker-compose.prod.yml exec -T db pg_dump -U postgres note > backup.sql
 ```
+
+## 8. Airflow → Dropbox (ежедневный бэкап + восстановление через UI)
+
+В репозитории отдельный compose: `docker-compose.airflow.yml` (метаданные Airflow в SQLite, без второго Postgres). На VPS подключается к сети прод-стека файлом `docker-compose.airflow.vps.yml`.
+
+Пошагово: **[deploy/airflow/README.md](airflow/README.md)** и **[deploy/airflow/DROPBOX-STEPS-RU.txt](airflow/DROPBOX-STEPS-RU.txt)**.

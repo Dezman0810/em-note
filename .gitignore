@@ -21,6 +21,12 @@ frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
+# Airflow (локальные секреты)
+deploy/airflow/airflow.env
+
+# Локальные бэкапы / выгрузки (не в репозиторий)
+backups/
+
 # Cursor / IDE (локальные правила)
 .cursor/
 

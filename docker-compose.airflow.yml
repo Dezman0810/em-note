@@ -1,0 +1,80 @@
+# Airflow внутри проекта em-note (отдельный compose).
+#
+# Метаданные Airflow: SQLite + SequentialExecutor (без отдельного Postgres для Airflow).
+# Так проще на VPS с 1 ядром и меньше RAM. Параллельно выполняется только один таск.
+#
+# 1) Dropbox: deploy/airflow/DROPBOX-STEPS-RU.txt
+# 2) cp deploy/airflow/airflow.env.example deploy/airflow/airflow.env
+# 3) БД em-note на хосте :5432: docker compose up -d db
+# 4) docker compose -f docker-compose.airflow.yml up -d --build
+#
+# VPS с прод-стеком: см. docker-compose.airflow.vps.yml и deploy/airflow/README.md
+#
+# UI: http://localhost:8088
+# Если раньше поднимали вариант с airflow-metadata-db (Postgres), том em_note_airflow_meta
+# больше не используется — история прогонов в UI начнётся с нуля.
+#
+name: em-note-airflow
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./deploy/airflow
+    dockerfile: Dockerfile
+  env_file:
+    - deploy/airflow/airflow.env
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow_meta/airflow.db
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  volumes:
+    - ./deploy/airflow/dags:/opt/airflow/dags
+    - em_note_airflow_sqlite:/opt/airflow/airflow_meta
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "0:0"
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        mkdir -p /opt/airflow/airflow_meta
+        airflow db migrate
+        airflow users create \
+          --username "$${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
+          --password "$${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
+          --firstname Admin --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+    environment:
+      <<: *airflow-common-env
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8088:8080"
+    environment:
+      <<: *airflow-common-env
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  em_note_airflow_sqlite:
