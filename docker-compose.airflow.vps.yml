@@ -11,6 +11,14 @@
 #   AIRFLOW_CONN_POSTGRES_EM_NOTE=postgresql://postgres:ВАШ_ПАРОЛЬ@db:5432/note
 #   EM_NOTE_ATTACHMENTS_VOLUME=em-note-prod_em_note_attachments
 # (имена томов смотрите: docker volume ls)
+#
+# Том вложений монтируется в airflow-scheduler как /mnt/em_note_attachments (без docker run + alpine,
+# что обходит лимиты Docker Hub). Опционально: EM_NOTE_ATTACHMENTS_MOUNT_PATH в airflow.env.
+
+volumes:
+  em_note_attachments_for_airflow:
+    external: true
+    name: ${EM_NOTE_ATTACHMENTS_VOLUME:-em-note-prod_em_note_attachments}
 
 networks:
   em_note_prod:
@@ -26,6 +34,8 @@ services:
     networks:
       - default
       - em_note_prod
+    volumes:
+      - em_note_attachments_for_airflow:/mnt/em_note_attachments
   airflow-webserver:
     networks:
       - default

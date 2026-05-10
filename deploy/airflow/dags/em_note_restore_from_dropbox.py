@@ -34,7 +34,10 @@ from airflow.models.param import Param
 from airflow.operators.python import PythonOperator
 
 from em_note_dropbox_util import (
+    attachments_mount_path,
+    attachments_use_host_mount,
     attachments_volume,
+    clear_attachments_mount,
     dropbox_client,
     dropbox_missing_message,
     dropbox_path_for_file,
@@ -172,42 +175,51 @@ def restore_em_note_from_dropbox(**context: Any) -> dict[str, str]:
                 f"и что дамп совместим с этой версией БД. Вывод psql:\n{err_tail}"
             )
 
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "-v",
-                f"{vol}:/to",
-                "alpine",
-                "find",
-                "/to",
-                "-mindepth",
-                "1",
-                "-delete",
-            ],
-            check=True,
-        )
-
-        with tar_path.open("rb") as tar_f:
+        if attachments_use_host_mount():
+            clear_attachments_mount(attachments_mount_path())
+            with tar_path.open("rb") as tar_f:
+                subprocess.run(
+                    ["tar", "xzf", "-", "-C", str(attachments_mount_path())],
+                    stdin=tar_f,
+                    check=True,
+                )
+        else:
             subprocess.run(
                 [
                     "docker",
                     "run",
                     "--rm",
-                    "-i",
                     "-v",
                     f"{vol}:/to",
                     "alpine",
-                    "tar",
-                    "xzf",
-                    "-",
-                    "-C",
+                    "find",
                     "/to",
+                    "-mindepth",
+                    "1",
+                    "-delete",
                 ],
-                stdin=tar_f,
                 check=True,
             )
+
+            with tar_path.open("rb") as tar_f:
+                subprocess.run(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "-i",
+                        "-v",
+                        f"{vol}:/to",
+                        "alpine",
+                        "tar",
+                        "xzf",
+                        "-",
+                        "-C",
+                        "/to",
+                    ],
+                    stdin=tar_f,
+                    check=True,
+                )
 
     return {
         "backup_day": day,

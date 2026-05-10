@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 
 from airflow.models import Variable
+
+# Том вложений смонтирован в контейнер scheduler (docker-compose.airflow.vps.yml).
+_DEFAULT_ATTACHMENTS_MOUNT = "/mnt/em_note_attachments"
 
 
 def attachments_volume() -> str:
@@ -13,6 +18,29 @@ def attachments_volume() -> str:
     if val:
         return val
     return os.environ.get(key, "em-note_em_note_attachments").strip()
+
+
+def attachments_mount_path() -> Path:
+    raw = (os.environ.get("EM_NOTE_ATTACHMENTS_MOUNT_PATH") or "").strip()
+    return Path(raw or _DEFAULT_ATTACHMENTS_MOUNT)
+
+
+def attachments_use_host_mount() -> bool:
+    """True, если каталог тома доступен в ФС контейнера (VPS) — без ``docker run`` / alpine."""
+    p = attachments_mount_path()
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def clear_attachments_mount(mount: Path) -> None:
+    """Очистка содержимого тома (аналог ``find … -mindepth 1 -delete``)."""
+    for child in mount.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def dropbox_missing_message() -> str | None:

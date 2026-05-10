@@ -30,6 +30,8 @@ from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
 
 from em_note_dropbox_util import (
+    attachments_mount_path,
+    attachments_use_host_mount,
     attachments_volume,
     dropbox_client,
     dropbox_missing_message,
@@ -124,12 +126,20 @@ def backup_em_note_to_dropbox(execution_date_ds: str) -> dict[str, str | list[st
             raise RuntimeError(f"Дамп БД подозрительно мал: {note_name}")
 
         with att_path.open("wb") as f:
-            subprocess.run(
-                docker_cmd,
-                stdout=f,
-                check=True,
-                stderr=subprocess.DEVNULL,
-            )
+            if attachments_use_host_mount():
+                subprocess.run(
+                    ["tar", "czf", "-", "-C", str(attachments_mount_path()), "."],
+                    stdout=f,
+                    check=True,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.run(
+                    docker_cmd,
+                    stdout=f,
+                    check=True,
+                    stderr=subprocess.DEVNULL,
+                )
 
         att_size = att_path.stat().st_size
         if att_size < 22:
