@@ -8,11 +8,18 @@ RUN apt-get update \
     && ffmpeg -version
 
 # Русская модель Vosk (~50 MB) вне /app: при dev volume ./backend:/app каталог приложения подменяется, /opt — нет.
+# При обрыве загрузки (curl 18): в корне репозитория создайте .env с SKIP_VOSK_DOWNLOAD=1 и пустым VOSK_MODEL_PATH=
+ARG SKIP_VOSK_DOWNLOAD=0
 RUN mkdir -p /opt/vosk-model \
-    && curl -fsSL -o /tmp/vosk-ru.zip "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" \
-    && unzip -q /tmp/vosk-ru.zip -d /opt/vosk-model \
-    && rm /tmp/vosk-ru.zip \
-    && test -d /opt/vosk-model/vosk-model-small-ru-0.22
+    && if [ "$SKIP_VOSK_DOWNLOAD" != "1" ]; then \
+         curl -fsSL --retry 8 --retry-delay 5 --retry-all-errors \
+              -o /tmp/vosk-ru.zip "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip" \
+         && unzip -q /tmp/vosk-ru.zip -d /opt/vosk-model \
+         && rm /tmp/vosk-ru.zip \
+         && test -d /opt/vosk-model/vosk-model-small-ru-0.22; \
+       else \
+         echo "[Dockerfile] SKIP_VOSK_DOWNLOAD=1 — модель не скачивается; задайте VOSK_MODEL_PATH или пересоберите без SKIP."; \
+       fi
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

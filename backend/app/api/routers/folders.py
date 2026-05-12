@@ -2,13 +2,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.folder import Folder
 from app.models.note import Note
 from app.models.share import NoteShare
+from app.models.note_user_placement import NoteUserPlacement
 from app.models.user import User
 from app.schemas.folder import (
     FolderCreate,
@@ -40,7 +41,21 @@ async def folder_note_counts(
     ).scalar_one()
     unfoldered = (
         await db.execute(
-            select(func.count()).select_from(Note).where(cond).where(Note.folder_id.is_(None))
+            select(func.count(Note.id))
+            .where(cond)
+            .where(
+                or_(
+                    (Note.owner_id == user.id) & Note.folder_id.is_(None),
+                    (Note.owner_id != user.id)
+                    & ~exists(
+                        select(literal_column("1")).select_from(NoteUserPlacement).where(
+                            NoteUserPlacement.user_id == user.id,
+                            NoteUserPlacement.note_id == Note.id,
+                            NoteUserPlacement.folder_id.isnot(None),
+                        )
+                    ),
+                )
+            )
         )
     ).scalar_one()
 
@@ -50,9 +65,23 @@ async def folder_note_counts(
     user_folders = list(folders_result.scalars().all())
     folder_counts: list[FolderCountItem] = []
     for folder in user_folders:
+        in_personal_share = exists(
+            select(literal_column("1")).select_from(NoteUserPlacement).where(
+                NoteUserPlacement.user_id == user.id,
+                NoteUserPlacement.note_id == Note.id,
+                NoteUserPlacement.folder_id == folder.id,
+            )
+        )
         cnt = (
             await db.execute(
-                select(func.count(Note.id)).where(cond).where(Note.folder_id == folder.id)
+                select(func.count(Note.id))
+                .where(cond)
+                .where(
+                    or_(
+                        (Note.owner_id == user.id) & (Note.folder_id == folder.id),
+                        (Note.owner_id != user.id) & in_personal_share,
+                    )
+                )
             )
         ).scalar_one()
         folder_counts.append(FolderCountItem(folder_id=folder.id, count=int(cnt)))
@@ -80,9 +109,9 @@ async def list_folders(
     for_note_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> list[Folder]:
     if for_note_id is not None:
-        note, _ = await get_note_for_read(db, for_note_id, user.id)
+        await get_note_for_read(db, for_note_id, user.id)
         result = await db.execute(
-            select(Folder).where(Folder.user_id == note.owner_id).order_by(Folder.name)
+            select(Folder).where(Folder.user_id == user.id).order_by(Folder.name)
         )
         return list(result.scalars().all())
     result = await db.execute(select(Folder).where(Folder.user_id == user.id).order_by(Folder.name))

@@ -13,6 +13,8 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
+Если сборка образа **api** падает при скачивании модели Vosk (**curl: (18)** из‑за сети), скопируйте `docker-env.example` → `.env` в корне (рядом с `docker-compose.yml`) или добавьте в уже существующий корневой `.env`: `SKIP_VOSK_DOWNLOAD=1` и пустое `VOSK_MODEL_PATH=` — затем снова `docker compose up --build -d`.
+
 - UI: http://localhost:5173/
 - API: http://localhost:8000/docs  
 

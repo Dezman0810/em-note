@@ -8,6 +8,8 @@ from app.api.deps import get_current_user, get_db
 from app.config import settings
 from app.models.user import User
 from app.schemas.user import Token, UserCreate, UserLogin, UserRead
+from app.services.share_claim import claim_invite_shares_for_user
+from app.services.share_recipient_tag import ensure_share_access_tags_for_user
 from app.utils.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -36,6 +38,8 @@ async def register(
     db.add(user)
     await db.flush()
     await db.refresh(user)
+    await claim_invite_shares_for_user(db, user)
+    await ensure_share_access_tags_for_user(db, user.id)
     return user
 
 
@@ -53,10 +57,17 @@ async def login(
     if admin_e and user.email.strip().lower() == admin_e and not user.can_create_notes:
         user.can_create_notes = True
         await db.flush()
+    await claim_invite_shares_for_user(db, user)
+    await ensure_share_access_tags_for_user(db, user.id)
     token = create_access_token(str(user.id))
     return Token(access_token=token)
 
 
 @router.get("/me", response_model=UserRead)
-async def me(user: Annotated[User, Depends(get_current_user)]) -> User:
+async def me(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    await claim_invite_shares_for_user(db, user)
+    await ensure_share_access_tags_for_user(db, user.id)
     return user

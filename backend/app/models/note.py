@@ -11,6 +11,7 @@ from app.models.note_tag import note_tag
 if TYPE_CHECKING:
     from app.models.folder import Folder
     from app.models.note_attachment import NoteAttachment
+    from app.models.note_mail_send import NoteMailSend
     from app.models.note_public_link import NotePublicLink
     from app.models.share import NoteShare
     from app.models.tag import Tag
@@ -63,4 +64,7 @@ class Note(Base):
     )
     attachments: Mapped[list["NoteAttachment"]] = relationship(
         "NoteAttachment", back_populates="note", cascade="all, delete-orphan"
+    )
+    mail_sends: Mapped[list["NoteMailSend"]] = relationship(
+        "NoteMailSend", back_populates="note", cascade="all, delete-orphan"
     )

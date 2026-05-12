@@ -1,6 +1,6 @@
 import re
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -65,6 +65,7 @@ class NoteRead(BaseModel):
     accent_color: str = ""
     reminder_at: UtcDatetime | None = None
     tag_ids: list[uuid.UUID] = []
+    my_access: Literal["owner", "edit", "read"] | None = None
 
     model_config = {"from_attributes": True}
 

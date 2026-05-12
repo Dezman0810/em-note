@@ -62,6 +62,16 @@ sudo I_UNDERSTAND_WIPE=yes PUBLIC_IP=ВАШ_IP bash deploy/vps-fresh-deploy.sh
 
 ## 5. Обновление (без сноса данных)
 
+### 5.0. Бэкап PostgreSQL перед обновлением (рекомендуется)
+
+На VPS, из корня клона (тот же `docker-compose`, что и для запуска):
+
+```bash
+bash deploy/vps-backup-db.sh
+```
+
+Появится файл вида `backups/em_note_YYYYMMDD_HHMMSS.sql.gz`. Скопируйте его на другой диск / скачайте через `scp`. Для стека GHCR: `COMPOSE_FILE=docker-compose.ghcr.yml bash deploy/vps-backup-db.sh`.
+
 ### Одна команда на VPS (рекомендуется)
 
 После **`git push`** в `main` подождите **успешный** workflow **Publish Docker images** в GitHub Actions (**5–15 минут**), затем на сервере:

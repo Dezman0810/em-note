@@ -5,6 +5,7 @@ import type {
   Folder,
   FolderNoteCounts,
   Note,
+  NoteMailSendHistoryRow,
   NotePublicLink,
   NoteShare,
   PublicNotePayload,
@@ -298,6 +299,10 @@ export const sharesApi = {
     const { data } = await api.post<NoteShare>(`/api/notes/${noteId}/shares`, body)
     return data
   },
+  async update(noteId: string, shareId: string, body: { role: string }): Promise<NoteShare> {
+    const { data } = await api.patch<NoteShare>(`/api/notes/${noteId}/shares/${shareId}`, body)
+    return data
+  },
   async remove(noteId: string, shareId: string): Promise<void> {
     await api.delete(`/api/notes/${noteId}/shares/${shareId}`)
   },
@@ -367,6 +372,12 @@ export const mailApi = {
   async sendNote(body: { note_id: string; to_emails: string[]; extra_message?: string }) {
     const { data } = await api.post<{ status: string }>('/api/mail/send-note', body)
     return data
+  },
+  async listSendHistory(noteId: string): Promise<NoteMailSendHistoryRow[]> {
+    const { data } = await api.get<unknown>(
+      `/api/mail/notes/${encodeURIComponent(noteId)}/send-history`
+    )
+    return Array.isArray(data) ? (data as NoteMailSendHistoryRow[]) : []
   },
 }
 

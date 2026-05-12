@@ -10,18 +10,30 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user, get_db
 from app.models.folder import Folder
 from app.models.note import Note
-from app.models.note_tag import note_tag
-from app.models.share import NoteShare
+from app.models.share import NoteShare, ShareRole
 from app.models.tag import Tag
 from app.models.user import User
 from app.schemas.note import NoteCreate, NoteRead, NoteUpdate, TagAttachByNameResult
 from app.schemas.tag import TagAttachByName, TagRead
 from app.services.tag_ops import get_or_create_root_tag
 from app.services.note_access import (
+    Access,
+    get_note_access,
     get_note_for_read,
     require_note_edit,
     require_note_owner,
     require_trashed_note_owner,
+)
+from app.services.note_personal_view import (
+    add_personal_tag_link,
+    folder_scope_predicate,
+    has_personal_tag,
+    note_read_overlay,
+    personal_tag_ids_map,
+    placement_folder_map,
+    remove_personal_tag_link,
+    tag_match_predicate,
+    upsert_placement,
 )
 from app.services.tag_subtree import subtree_tag_ids
 from app.utils.json_compare import json_doc_equal
@@ -30,11 +42,86 @@ from app.utils.text import plain_text_from_tiptap_json
 router = APIRouter(prefix="/notes", tags=["notes"])
 
 
+def _note_read_with_access(note: Note, access: Access) -> NoteRead:
+    """Только когда не нужна персональная подстановка папки/меток."""
+    base = NoteRead.from_note(note)
+    return base.model_copy(update={"my_access": access.value})
+
+
+async def _access_map_for_note_list(
+    db: AsyncSession, user_id: uuid.UUID, notes: list[Note]
+) -> dict[uuid.UUID, Access]:
+    """Для списков: владелец — owner; по шеру — edit или read."""
+    out: dict[uuid.UUID, Access] = {}
+    shared_ids: list[uuid.UUID] = []
+    for n in notes:
+        if n.owner_id == user_id:
+            out[n.id] = Access.owner
+        else:
+            shared_ids.append(n.id)
+    if not shared_ids:
+        return out
+    rows = (
+        await db.execute(
+            select(NoteShare.note_id, NoteShare.role).where(
+                NoteShare.shared_with_user_id == user_id,
+                NoteShare.note_id.in_(shared_ids),
+            )
+        )
+    ).all()
+    role_by_note = {nid: role for nid, role in rows}
+    for nid in shared_ids:
+        role = role_by_note.get(nid)
+        out[nid] = Access.edit if role == ShareRole.editor.value else Access.read
+    return out
+
+
+async def _notes_to_read_models(
+    db: AsyncSession, user_id: uuid.UUID, notes: list[Note]
+) -> list[NoteRead]:
+    acc_map = await _access_map_for_note_list(db, user_id, notes)
+    shared_nid = [n.id for n in notes if n.owner_id != user_id]
+    pmap = await placement_folder_map(db, user_id, shared_nid)
+    tmap = await personal_tag_ids_map(db, user_id, shared_nid)
+    out: list[NoteRead] = []
+    for n in notes:
+        acc = acc_map[n.id]
+        if n.owner_id == user_id:
+            out.append(_note_read_with_access(n, acc))
+        else:
+            out.append(
+                note_read_overlay(
+                    n,
+                    acc,
+                    viewer_id=user_id,
+                    folder_effective=pmap.get(n.id),
+                    tag_ids_effective=tmap.get(n.id, []),
+                )
+            )
+    return out
+
+
 async def _note_with_tags(db: AsyncSession, note_id: uuid.UUID) -> Note:
     result = await db.execute(
         select(Note).options(selectinload(Note.tags)).where(Note.id == note_id)
     )
     return result.scalar_one()
+
+
+async def note_read_for_requester(db: AsyncSession, user_id: uuid.UUID, note_id: uuid.UUID) -> NoteRead:
+    loaded = await _note_with_tags(db, note_id)
+    _, access = await get_note_access(db, note_id, user_id)
+    if loaded.owner_id == user_id:
+        return _note_read_with_access(loaded, access)
+    pmap = await placement_folder_map(db, user_id, [note_id])
+    tmap = await personal_tag_ids_map(db, user_id, [note_id])
+    return note_read_overlay(
+        loaded,
+        access,
+        viewer_id=user_id,
+        folder_effective=pmap.get(note_id),
+        tag_ids_effective=tmap.get(note_id, []),
+    )
 
 
 async def _validate_folder_for_owner(
@@ -115,7 +202,7 @@ async def list_reminders(
     )
     result = await db.execute(q)
     notes = result.scalars().unique().all()
-    return [NoteRead.from_note(n) for n in notes]
+    return await _notes_to_read_models(db, user.id, list(notes))
 
 
 @router.get("", response_model=list[NoteRead])
@@ -135,25 +222,24 @@ async def list_notes(
             .order_by(Note.deleted_at.desc())
         )
         trash_notes = result.scalars().unique().all()
-        return [NoteRead.from_note(n) for n in trash_notes]
+        return await _notes_to_read_models(db, user.id, list(trash_notes))
 
     tag_roots = tag_id or []
     folder_ids = folder_id or []
 
     q = _accessible_notes_query(user.id)
-    if unfoldered:
-        q = q.where(Note.folder_id.is_(None))
-    elif folder_ids:
+    if folder_ids:
         await _validate_folders_for_owner(db, folder_ids, user.id)
-        q = q.where(Note.folder_id.in_(folder_ids))
+    if unfoldered or folder_ids:
+        q = q.where(
+            folder_scope_predicate(user.id, None if unfoldered else folder_ids, unfoldered)
+        )
     if tag_roots:
         tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
-        q = q.where(
-            Note.id.in_(select(note_tag.c.note_id).where(note_tag.c.tag_id.in_(tree_ids)))
-        )
+        q = q.where(tag_match_predicate(user.id, tree_ids))
     result = await db.execute(q)
     notes = result.scalars().unique().all()
-    return [NoteRead.from_note(n) for n in notes]
+    return await _notes_to_read_models(db, user.id, list(notes))
 
 
 def _ilike_pattern(q: str) -> str:
@@ -177,19 +263,18 @@ async def search_notes(
     base = _accessible_notes_query(user.id).where(
         (Note.title.ilike(pattern, escape="\\")) | (Note.content_plain.ilike(pattern, escape="\\"))
     )
-    if unfoldered:
-        base = base.where(Note.folder_id.is_(None))
-    elif folder_ids:
+    if folder_ids:
         await _validate_folders_for_owner(db, folder_ids, user.id)
-        base = base.where(Note.folder_id.in_(folder_ids))
+    if unfoldered or folder_ids:
+        base = base.where(
+            folder_scope_predicate(user.id, None if unfoldered else folder_ids, unfoldered)
+        )
     if tag_roots:
         tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
-        base = base.where(
-            Note.id.in_(select(note_tag.c.note_id).where(note_tag.c.tag_id.in_(tree_ids)))
-        )
+        base = base.where(tag_match_predicate(user.id, tree_ids))
     result = await db.execute(base)
     notes = result.scalars().unique().all()
-    return [NoteRead.from_note(n) for n in notes]
+    return await _notes_to_read_models(db, user.id, list(notes))
 
 
 @router.post("", response_model=NoteRead, status_code=status.HTTP_201_CREATED)
@@ -219,7 +304,7 @@ async def create_note(
     db.add(note)
     await db.flush()
     loaded = await _note_with_tags(db, note.id)
-    return NoteRead.from_note(loaded)
+    return _note_read_with_access(loaded, Access.owner)
 
 
 @router.get("/{note_id}", response_model=NoteRead)
@@ -229,8 +314,7 @@ async def get_note(
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
     await get_note_for_read(db, note_id, user.id)
-    loaded = await _note_with_tags(db, note_id)
-    return NoteRead.from_note(loaded)
+    return await note_read_for_requester(db, user.id, note_id)
 
 
 @router.patch("/{note_id}", response_model=NoteRead)
@@ -240,11 +324,38 @@ async def update_note(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
-    note = await require_note_edit(db, note_id, user.id)
     updates = body.model_dump(exclude_unset=True)
+
+    async def finalize() -> NoteRead:
+        return await note_read_for_requester(db, user.id, note_id)
+
     if not updates:
-        loaded = await _note_with_tags(db, note_id)
-        return NoteRead.from_note(loaded)
+        return await finalize()
+
+    folder_only = updates.keys() <= {"folder_id"}
+
+    if folder_only:
+        note, _ = await get_note_access(db, note_id, user.id)
+        if note.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot change folder for trashed note",
+            )
+        fid_raw = updates.get("folder_id")
+        fid: uuid.UUID | None = fid_raw if fid_raw is not None else None
+        await _validate_folder_for_owner(db, fid, user.id)
+        if note.owner_id == user.id:
+            if note.folder_id != fid:
+                note.folder_id = fid
+                note.updated_at = datetime.now(timezone.utc)
+                await db.flush()
+        else:
+            await upsert_placement(db, user.id, note_id, fid)
+            await db.flush()
+        return await finalize()
+
+    note = await require_note_edit(db, note_id, user.id)
+
     changed = False
     if "title" in updates and updates["title"] is not None and note.title != updates["title"]:
         note.title = updates["title"]
@@ -266,10 +377,14 @@ async def update_note(
             changed = True
     if "folder_id" in updates:
         fid = updates["folder_id"]
-        if note.folder_id != fid:
-            await _validate_folder_for_owner(db, fid, note.owner_id)
-            note.folder_id = fid
-            changed = True
+        if note.owner_id == user.id:
+            if note.folder_id != fid:
+                await _validate_folder_for_owner(db, fid, user.id)
+                note.folder_id = fid
+                changed = True
+        else:
+            await _validate_folder_for_owner(db, fid, user.id)
+            await upsert_placement(db, user.id, note_id, fid)
     if "accent_color" in updates and updates["accent_color"] is not None:
         ac = updates["accent_color"] or ""
         if (note.accent_color or "") != ac:
@@ -281,8 +396,7 @@ async def update_note(
     if changed:
         note.updated_at = datetime.now(timezone.utc)
         await db.flush()
-    loaded = await _note_with_tags(db, note_id)
-    return NoteRead.from_note(loaded)
+    return await finalize()
 
 
 @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -305,7 +419,7 @@ async def restore_note(
     note.deleted_at = None
     await db.flush()
     loaded = await _note_with_tags(db, note_id)
-    return NoteRead.from_note(loaded)
+    return _note_read_with_access(loaded, Access.owner)
 
 
 @router.delete("/{note_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)
@@ -325,15 +439,25 @@ async def attach_tag_by_name(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> TagAttachByNameResult:
-    """Создать метку у владельца заметки по имени и прикрепить (для редактора с общим доступом)."""
-    note = await require_note_edit(db, note_id, user.id)
-    tag = await get_or_create_root_tag(db, note.owner_id, body.name)
-    if tag not in note.tags:
-        note.tags.append(tag)
-        note.updated_at = datetime.now(timezone.utc)
-    await db.flush()
-    loaded = await _note_with_tags(db, note_id)
-    return TagAttachByNameResult(note=NoteRead.from_note(loaded), tag=TagRead.model_validate(tag))
+    """Метки владельца на своих заметках; у получателя шаринга — только его личные метки."""
+    await get_note_for_read(db, note_id, user.id)
+    shell = await _note_with_tags(db, note_id)
+    if shell.owner_id == user.id:
+        note = await require_note_edit(db, note_id, user.id)
+        tag = await get_or_create_root_tag(db, user.id, body.name)
+        if tag not in note.tags:
+            note.tags.append(tag)
+            note.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+    else:
+        tag = await get_or_create_root_tag(db, user.id, body.name)
+        if not await has_personal_tag(db, user.id, note_id, tag.id):
+            await add_personal_tag_link(db, user.id, note_id, tag.id)
+            await db.flush()
+    return TagAttachByNameResult(
+        note=await note_read_for_requester(db, user.id, note_id),
+        tag=TagRead.model_validate(tag),
+    )
 
 
 @router.post("/{note_id}/tags/{tag_id}", response_model=NoteRead)
@@ -343,19 +467,25 @@ async def attach_tag(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
-    from app.models.tag import Tag
-
-    note = await require_note_edit(db, note_id, user.id)
-    tag_result = await db.execute(select(Tag).where(Tag.id == tag_id, Tag.user_id == note.owner_id))
+    await get_note_for_read(db, note_id, user.id)
+    shell = await _note_with_tags(db, note_id)
+    tag_result = await db.execute(select(Tag).where(Tag.id == tag_id))
     tag = tag_result.scalar_one_or_none()
-    if tag is None:
+    if tag is None or tag.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found")
-    if tag not in note.tags:
-        note.tags.append(tag)
-        note.updated_at = datetime.now(timezone.utc)
-    await db.flush()
-    loaded = await _note_with_tags(db, note_id)
-    return NoteRead.from_note(loaded)
+
+    if shell.owner_id == user.id:
+        note = await require_note_edit(db, note_id, user.id)
+        if tag not in note.tags:
+            note.tags.append(tag)
+            note.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+    else:
+        if not await has_personal_tag(db, user.id, note_id, tag_id):
+            await add_personal_tag_link(db, user.id, note_id, tag_id)
+            await db.flush()
+
+    return await note_read_for_requester(db, user.id, note_id)
 
 
 @router.delete("/{note_id}/tags/{tag_id}", response_model=NoteRead)
@@ -365,11 +495,20 @@ async def detach_tag(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> NoteRead:
-    note = await require_note_edit(db, note_id, user.id)
-    before = len(note.tags)
-    note.tags = [t for t in note.tags if t.id != tag_id]
-    if len(note.tags) < before:
-        note.updated_at = datetime.now(timezone.utc)
-    await db.flush()
-    loaded = await _note_with_tags(db, note_id)
-    return NoteRead.from_note(loaded)
+    await get_note_for_read(db, note_id, user.id)
+    shell = await _note_with_tags(db, note_id)
+    if shell.owner_id == user.id:
+        note = await require_note_edit(db, note_id, user.id)
+        before = len(note.tags)
+        note.tags = [t for t in note.tags if t.id != tag_id]
+        if len(note.tags) < before:
+            note.updated_at = datetime.now(timezone.utc)
+            await db.flush()
+    else:
+        if await has_personal_tag(db, user.id, note_id, tag_id):
+            await remove_personal_tag_link(db, user.id, note_id, tag_id)
+            await db.flush()
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not on note")
+
+    return await note_read_for_requester(db, user.id, note_id)

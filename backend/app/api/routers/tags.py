@@ -9,10 +9,12 @@ from app.api.deps import get_current_user, get_db
 from app.models.folder import Folder
 from app.models.note import Note
 from app.models.note_tag import note_tag
+from app.models.note_user_personal_tag import note_user_personal_tag
 from app.models.share import NoteShare
 from app.models.tag import Tag
 from app.models.user import User
 from app.schemas.tag import TagCreate, TagNoteCountRead, TagRead, TagUpdate
+from app.services.note_personal_view import folder_scope_predicate
 from app.services.tag_subtree import subtree_tag_ids
 from app.utils.text import slugify
 
@@ -101,10 +103,8 @@ def _accessible_note_ids_stmt(
         .where(Note.deleted_at.is_(None))
         .where((Note.owner_id == user_id) | (Note.id.in_(shared_ids)))
     )
-    if unfoldered:
-        stmt = stmt.where(Note.folder_id.is_(None))
-    elif folder_ids:
-        stmt = stmt.where(Note.folder_id.in_(folder_ids))
+    if unfoldered or folder_ids:
+        stmt = stmt.where(folder_scope_predicate(user_id, None if unfoldered else folder_ids, unfoldered))
     return stmt
 
 
@@ -139,16 +139,24 @@ async def tag_note_counts(
         if not tree_ids:
             out.append(TagNoteCountRead(tag_id=tag.id, count=0))
             continue
-        cnt_stmt = (
-            select(func.count(func.distinct(note_tag.c.note_id)))
-            .select_from(note_tag)
-            .where(
+        canonical = (
+            select(note_tag.c.note_id.label("note_id")).where(
                 note_tag.c.note_id.in_(select(note_scope_sq.c.id)),
+                note_tag.c.note_id.in_(select(Note.id).where(Note.owner_id == user.id)),
                 note_tag.c.tag_id.in_(tree_ids),
             )
         )
-        raw = (await db.execute(cnt_stmt)).scalar_one()
-        out.append(TagNoteCountRead(tag_id=tag.id, count=int(raw)))
+        personal = (
+            select(note_user_personal_tag.c.note_id.label("note_id")).where(
+                note_user_personal_tag.c.user_id == user.id,
+                note_user_personal_tag.c.note_id.in_(select(note_scope_sq.c.id)),
+                note_user_personal_tag.c.tag_id.in_(tree_ids),
+            )
+        )
+        combined = canonical.union_all(personal).subquery()
+        cnt_stmt = select(func.count(func.distinct(combined.c.note_id))).select_from(combined)
+        cnt_val = (await db.execute(cnt_stmt)).scalar_one()
+        out.append(TagNoteCountRead(tag_id=tag.id, count=int(cnt_val)))
     return out
 
 

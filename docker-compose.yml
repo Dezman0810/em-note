@@ -11,6 +11,10 @@
 #
 # UI http://localhost:5173/  ·  API http://localhost:8000/docs
 # PostgreSQL: localhost:5432 (логин/пароль postgres/postgres, БД note и em_note_test)
+#
+# История «Отправить по почте»: таблица note_mail_sends (Alembic revision 202605121000).
+# Проверка в БД dev: docker compose exec db psql -U postgres -d note -c "SELECT COUNT(*) FROM note_mail_sends;"
+# В логах API после отправки: строка mail_send_logged ...
 
 name: em-note
 
@@ -33,7 +37,10 @@ services:
       retries: 15
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        SKIP_VOSK_DOWNLOAD: ${SKIP_VOSK_DOWNLOAD:-0}
     env_file:
       - ./backend/.env
     environment:
@@ -41,7 +48,8 @@ services:
       ATTACHMENTS_DIR: /app/data/attachments
       # Образ backend/Dockerfile ставит ffmpeg в /usr/bin (не зависит от PATH хоста Windows)
       FFMPEG_PATH: /usr/bin/ffmpeg
-      VOSK_MODEL_PATH: /opt/vosk-model/vosk-model-small-ru-0.22
+      # По умолчанию путь в образе; при SKIP_VOSK_DOWNLOAD=1 задайте в корневом .env: VOSK_MODEL_PATH=
+      VOSK_MODEL_PATH: ${VOSK_MODEL_PATH-/opt/vosk-model/vosk-model-small-ru-0.22}
     depends_on:
       db:
         condition: service_healthy

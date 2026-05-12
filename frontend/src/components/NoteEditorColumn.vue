@@ -3,7 +3,7 @@ import { isAxiosError } from 'axios'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { errMessage, foldersApi, mailApi, notesApi, sharesApi, tagsApi } from '../api/client'
-import type { Folder, Note, NotePublicLink, NoteShare, Tag } from '../api/types'
+import type { Folder, Note, NoteMailSendHistoryRow, NotePublicLink, NoteShare, Tag } from '../api/types'
 import NoteEditor from './NoteEditor.vue'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
@@ -58,6 +58,7 @@ const SCHEMA_TAG_NAME = 'Схема'
 const REMINDER_TAG_NAME = 'Напоминание с датой'
 const AUDIO_TAG_NAME = 'Аудиозапись'
 const PUBLIC_LINK_TAG_NAME = 'Публичная ссылка'
+const EMAIL_SHARE_TAG_NAME = 'Доступ по email'
 
 /** Компактный popover у кнопки: дата + время с шагом 15 минут (Teleport + fixed, как anchored popover). */
 const reminderPanelOpen = ref(false)
@@ -76,6 +77,10 @@ const modalEmail = ref('')
 const modalMsg = ref('')
 const mailSending = ref(false)
 const mailError = ref('')
+/** Ошибка GET /mail/notes/…/send-history (иначе при сбое список просто пустой). */
+const mailHistoryFetchError = ref('')
+/** Последние отправки заметки по почте (подсказка на кнопках «По почте»). */
+const mailSendHistory = ref<NoteMailSendHistoryRow[]>([])
 
 const isOwner = computed(() => !!(note.value && auth.user && note.value.owner_id === auth.user.id))
 
@@ -109,7 +114,85 @@ const publicUrl = computed(() => {
   return `${window.location.origin}${path}`
 })
 const isTrashed = computed(() => !!note.value?.deleted_at)
-const editorEditable = computed(() => !!note.value && !isTrashed.value)
+
+function formatMailHistoryEntry(r: NoteMailSendHistoryRow): string {
+  const dest = r.to_emails.join(', ')
+  const when = fmtMsk(r.sent_at)
+  const showSender =
+    !!r.sender_email &&
+    !!auth.user?.email &&
+    r.sender_email.toLowerCase() !== auth.user.email.toLowerCase()
+  const senderPart = showSender ? ` (${r.sender_email})` : ''
+  return `${dest} — ${when}${senderPart}`
+}
+
+const mailHistoryTitle = computed(() => {
+  const rows = mailSendHistory.value
+  if (!rows.length) return 'Отправить заметку на почту'
+  const parts = rows.slice(0, 12).map(formatMailHistoryEntry)
+  return `${parts.join(' · ')} · Открыть окно отправки`
+})
+
+async function refreshMailSendHistory() {
+  mailHistoryFetchError.value = ''
+  const id = note.value?.id ?? props.noteId
+  if (!id) {
+    mailSendHistory.value = []
+    return
+  }
+  if (note.value?.deleted_at) {
+    mailSendHistory.value = []
+    return
+  }
+  try {
+    const rows = await mailApi.listSendHistory(id)
+    mailSendHistory.value = Array.isArray(rows) ? rows : []
+  } catch (e) {
+    mailSendHistory.value = []
+    mailHistoryFetchError.value = errMessage(e)
+  }
+}
+
+/** Совместное использование с email: режим «читатель» — без правок содержимого и метаданных. */
+const canEditSharedNoteContent = computed(() => {
+  const n = note.value
+  const u = auth.user
+  if (!n || !u) return true
+  if (n.owner_id === u.id) return true
+  const role = n.my_access
+  if (role === 'read') return false
+  return true
+})
+
+/** Ненавязчиво показываем, когда именно активен режим читателя (есть явный флаг от API). */
+const sharedReadOnlyHint = computed(
+  () =>
+    !!note.value &&
+    !isTrashed.value &&
+    !!auth.user &&
+    note.value.owner_id !== auth.user.id &&
+    note.value.my_access === 'read',
+)
+
+const noteBodyEditable = computed(
+  () => !!note.value && !isTrashed.value && canEditSharedNoteContent.value,
+)
+
+/** Папки/метки: свои у владельца; у получателя шаринга — только свои (даже режим «чтение»). */
+const folderTagsEditable = computed(() => {
+  const n = note.value
+  const u = auth.user
+  if (!n || !u || isTrashed.value) return false
+  if (isOwner.value) return true
+  return (n.my_access === 'read' || n.my_access === 'edit') && n.owner_id !== u.id
+})
+
+const reminderEditable = computed(() => {
+  const n = note.value
+  if (!n || isTrashed.value) return false
+  if (isOwner.value) return true
+  return n.my_access === 'edit'
+})
 const foldersSorted = computed(() => foldersSortedAlphabetical(folders.value))
 
 const attachedTagObjects = computed(() => {
@@ -211,7 +294,7 @@ function isoToReminderDraft(iso: string | null | undefined): { date: string; tim
 const hasReminderSet = computed(() => !!note.value?.reminder_at)
 
 async function updateReminderAt(iso: string | null) {
-  if (!note.value || !editorEditable.value) return
+  if (!note.value || !reminderEditable.value) return
   saving.value = true
   error.value = ''
   try {
@@ -307,7 +390,7 @@ watch(reminderPanelOpen, async (open) => {
 })
 
 function openReminderDialog() {
-  if (!note.value || !editorEditable.value) return
+  if (!note.value || !reminderEditable.value) return
   if (reminderPanelOpen.value) {
     cancelReminderDialog()
     return
@@ -326,7 +409,7 @@ function cancelReminderDialog() {
 
 async function confirmReminderDialog() {
   reminderFormError.value = ''
-  if (!note.value || !editorEditable.value) return
+  if (!note.value || !reminderEditable.value) return
   const rawDate = reminderDraftDate.value.trim()
   const rawTime = reminderDraftTime.value.trim()
   if (!rawDate || !rawTime) {
@@ -344,14 +427,14 @@ async function confirmReminderDialog() {
 
 async function removeReminderFromDialog() {
   reminderFormError.value = ''
-  if (!note.value || !editorEditable.value) return
+  if (!note.value || !reminderEditable.value) return
   await updateReminderAt(null)
   if (!error.value) reminderPanelOpen.value = false
 }
 
 /** Снять напоминание сразу, без открытия панели (крестик у кнопки). */
 async function clearReminderQuick() {
-  if (!note.value || !editorEditable.value || !hasReminderSet.value) return
+  if (!note.value || !reminderEditable.value || !hasReminderSet.value) return
   reminderPanelOpen.value = false
   reminderFormError.value = ''
   await updateReminderAt(null)
@@ -359,7 +442,7 @@ async function clearReminderQuick() {
 
 /** Системные метки по содержимому / полям заметки (владелец, не корзина). */
 async function syncSystemTag(tagName: string, shouldAttach: boolean) {
-  if (!note.value || !isOwner.value || !editorEditable.value) return
+  if (!note.value || !isOwner.value || !noteBodyEditable.value) return
   let tag = tags.value.find((t) => t.name === tagName)
   if (shouldAttach && !tag) {
     try {
@@ -400,15 +483,24 @@ async function syncPublicLinkTag() {
   await syncSystemTag(PUBLIC_LINK_TAG_NAME, !!publicLink.value)
 }
 
+async function syncEmailShareTag() {
+  await syncSystemTag(EMAIL_SHARE_TAG_NAME, shares.value.length > 0)
+}
+
 async function syncAutoTags() {
   await syncSchemaTag()
   await syncReminderTag()
   await syncAudioTag()
   await syncPublicLinkTag()
+  await syncEmailShareTag()
+}
+
+function shareRecipientLabel(s: NoteShare): string {
+  return (s.sharee_email ?? s.invite_email ?? s.shared_with_user_id) || '—'
 }
 
 async function applyFolderChange() {
-  if (!note.value) return
+  if (!note.value || !folderTagsEditable.value) return
   const want: string | null = folderSelect.value ? folderSelect.value : null
   const cur = note.value.folder_id ?? null
   if (want === cur) return
@@ -442,7 +534,7 @@ const filteredForAttach = computed(() => {
 
 /** Новая метка по имени: создаётся у владельца заметки и прикрепляется (см. POST /tags/by-name). */
 const canOfferCreateTag = computed(() => {
-  if (!editorEditable.value || !note.value) return false
+  if (!folderTagsEditable.value || !note.value) return false
   const q = tagQuery.value.trim()
   if (!q || q.length > 120) return false
   const ql = q.toLowerCase()
@@ -476,12 +568,14 @@ watch(tagQuery, () => {
   tagSuggestionIndex.value = 0
 })
 
-function openMailModal() {
+async function openMailModal() {
   void flushSave()
   modalEmail.value = ''
   modalMsg.value = ''
   mailError.value = ''
+  mailHistoryFetchError.value = ''
   showMailModal.value = true
+  await refreshMailSendHistory()
 }
 
 function closeMailModal() {
@@ -502,6 +596,7 @@ async function sendMailFromModal() {
       to_emails: list,
       extra_message: modalMsg.value.trim() || undefined,
     })
+    await refreshMailSendHistory()
     closeMailModal()
     alert('Письмо отправлено')
   } catch (e) {
@@ -517,6 +612,8 @@ async function load() {
   autoSaveOk.value = false
   fetching.value = true
   error.value = ''
+  mailSendHistory.value = []
+  mailHistoryFetchError.value = ''
   const requestedId = props.noteId
   try {
     const [n, allTags] = await Promise.all([notesApi.get(requestedId), tagsApi.list()])
@@ -547,10 +644,13 @@ async function load() {
     folderSelect.value = n.folder_id ?? ''
     reminderPanelOpen.value = false
     await syncAutoTags()
+    await refreshMailSendHistory()
   } catch (e) {
     if (gen !== loadGen || requestedId !== props.noteId) return
     error.value = errMessage(e)
     note.value = null
+    mailSendHistory.value = []
+    mailHistoryFetchError.value = ''
   } finally {
     if (gen === loadGen) {
       fetching.value = false
@@ -589,7 +689,7 @@ async function refetchNoteIfRemoteNewer() {
 }
 
 async function save() {
-  if (!note.value) return
+  if (!note.value || !noteBodyEditable.value) return
   if (editorTextUnchanged()) return
   saving.value = true
   error.value = ''
@@ -651,14 +751,14 @@ async function goNextNote() {
 }
 
 function scheduleSave() {
-  if (!autoSaveOk.value || isTrashed.value) return
+  if (!autoSaveOk.value || isTrashed.value || !noteBodyEditable.value) return
   if (editorTextUnchanged()) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void save(), 700)
 }
 
 function onTitleFocus() {
-  if (isTrashed.value) return
+  if (isTrashed.value || !noteBodyEditable.value) return
   if (title.value.trim() === DEFAULT_NOTE_TITLE) {
     titleSkipSaveOnce = true
     title.value = ''
@@ -676,6 +776,7 @@ watch([title, contentJson], () => {
     titleSkipSaveOnce = false
     return
   }
+  if (!noteBodyEditable.value) return
   scheduleSave()
 })
 
@@ -697,7 +798,7 @@ async function pickTag(t: Tag) {
 }
 
 async function removeChip(tagId: string) {
-  if (!note.value || !editorEditable.value) return
+  if (!note.value || !folderTagsEditable.value) return
   const tag = tags.value.find((x) => x.id === tagId)
   if (tag?.name === PUBLIC_LINK_TAG_NAME && publicLink.value) {
     publicAccessBusy.value = true
@@ -713,6 +814,24 @@ async function removeChip(tagId: string) {
       error.value = errMessage(e)
     } finally {
       publicAccessBusy.value = false
+    }
+    return
+  }
+  if (tag?.name === EMAIL_SHARE_TAG_NAME && shares.value.length > 0) {
+    if (!confirm('Отключить доступ по email для всех приглашённых?')) return
+    error.value = ''
+    try {
+      await Promise.all(
+        [...shares.value].map((s) => sharesApi.remove(note.value!.id, s.id)),
+      )
+      shares.value = []
+      emailSharesExpanded.value = false
+      await syncEmailShareTag()
+      emitRefresh()
+    } catch (e) {
+      error.value = errMessage(e)
+      shares.value = await sharesApi.list(note.value.id)
+      await syncEmailShareTag()
     }
     return
   }
@@ -771,6 +890,7 @@ function onTagSuggestionArrowUp(e: KeyboardEvent) {
 }
 
 function onTagsBlockDragEnter(e: DragEvent) {
+  if (!folderTagsEditable.value) return
   const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
   if (!isTagAttachDragTypes(types)) return
   e.preventDefault()
@@ -778,6 +898,7 @@ function onTagsBlockDragEnter(e: DragEvent) {
 }
 
 function onTagsBlockDragOver(e: DragEvent) {
+  if (!folderTagsEditable.value) return
   const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
   if (!isTagAttachDragTypes(types)) return
   e.preventDefault()
@@ -795,7 +916,7 @@ function onTagsBlockDragLeave(e: DragEvent) {
 async function onTagsBlockDrop(e: DragEvent) {
   e.preventDefault()
   tagDropHover.value = false
-  if (!note.value || isTrashed.value || !editorEditable.value) return
+  if (!note.value || isTrashed.value || !folderTagsEditable.value) return
   const tagIds = readDroppedTagIds(e)
   if (!tagIds.length) return
   const attached = new Set(note.value.tag_ids)
@@ -868,6 +989,7 @@ async function addShare() {
     })
     shareEmail.value = ''
     shares.value = await sharesApi.list(note.value.id)
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -878,6 +1000,21 @@ async function removeShare(s: NoteShare) {
   try {
     await sharesApi.remove(note.value.id, s.id)
     shares.value = await sharesApi.list(note.value.id)
+    await syncAutoTags()
+  } catch (e) {
+    error.value = errMessage(e)
+  }
+}
+
+async function updateShareRole(s: NoteShare, role: string) {
+  if (!note.value) return
+  const r = role === 'editor' ? 'editor' : 'viewer'
+  if (s.role === r) return
+  try {
+    const updated = await sharesApi.update(note.value.id, s.id, { role: r })
+    const i = shares.value.findIndex((x) => x.id === s.id)
+    if (i >= 0) shares.value[i] = updated
+    await syncAutoTags()
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1059,6 +1196,7 @@ watch(
             v-if="!isTrashed && !isOwner"
             type="button"
             class="share-hub-tile share-hub-tile-mail share-mail-bar"
+            :title="mailHistoryTitle"
             @click="openMailModal"
           >
             <span class="share-hub-ico" aria-hidden="true">✉</span>
@@ -1116,6 +1254,7 @@ watch(
       <div v-if="isTrashed" class="trash-banner">
         Заметка в корзине — редактирование отключено. Восстановите или удалите навсегда.
       </div>
+      <p v-else-if="sharedReadOnlyHint" class="readonly-share-hint muted small">Только чтение</p>
       <p v-if="error" class="err">{{ error }}</p>
       <template v-if="fetching && !note">
         <p class="muted load-hint-editor">Загрузка…</p>
@@ -1127,7 +1266,7 @@ watch(
           class="title-input"
           type="text"
           placeholder="Заголовок"
-          :readonly="isTrashed"
+          :readonly="!noteBodyEditable"
           @focus="onTitleFocus"
           @blur="onTitleBlur"
         />
@@ -1140,7 +1279,7 @@ watch(
           @dragleave="onTagsBlockDragLeave"
           @drop="onTagsBlockDrop"
         >
-          <div v-if="editorEditable" class="tags-inline-row">
+          <div v-if="folderTagsEditable" class="tags-inline-row">
             <span v-for="t in attachedTagObjects" :key="t.id" class="tag-chip tag-chip-inline">
               {{ t.name }}
               <button type="button" class="chip-x chip-x-inline" aria-label="Убрать метку" @click="removeChip(t.id)">
@@ -1204,13 +1343,14 @@ watch(
               id="folder-sel-col"
               v-model="folderSelect"
               class="folder-select"
+              :disabled="!folderTagsEditable"
               @change="applyFolderChange"
             >
               <option value="">Не в папке (корень)</option>
               <option v-for="f in foldersSorted" :key="f.id" :value="f.id">{{ f.name }}</option>
             </select>
           </div>
-          <div v-if="editorEditable" class="reminder-compact">
+          <div v-if="reminderEditable" class="reminder-compact">
             <div class="reminder-compact-inner">
               <button
                 ref="reminderButtonRef"
@@ -1237,17 +1377,22 @@ watch(
               </button>
             </div>
           </div>
+          <div v-else-if="hasReminderSet && !reminderEditable" class="reminder-compact reminder-compact--readonly">
+            <span class="reminder-readonly-sum muted small">
+              Напоминание: {{ fmtCompactMsk(note.reminder_at) }}
+            </span>
+          </div>
         </div>
 
         <NoteEditor
           v-model:contentJson="contentJson"
-          :editable="editorEditable"
+          :editable="noteBodyEditable"
           :note-id="note?.id ?? null"
         />
 
         <section v-if="isOwner && !isTrashed" class="share-hub share-hub--after-editor" aria-label="Обмен и доступ">
           <div class="share-hub-toolbar">
-            <button type="button" class="share-hub-tile share-hub-tile-mail" @click="openMailModal">
+            <button type="button" class="share-hub-tile share-hub-tile-mail" :title="mailHistoryTitle" @click="openMailModal">
               <span class="share-hub-ico" aria-hidden="true">✉</span>
               <span class="share-hub-tile-text">По почте</span>
             </button>
@@ -1257,6 +1402,9 @@ watch(
               <span v-if="publicLink && !publicShareExpanded" class="share-hub-role-pill">{{
                 publicRole === 'editor' ? 'Редактирование' : 'Чтение'
               }}</span>
+              <span v-if="shares.length && !emailSharesExpanded" class="share-hub-role-pill share-hub-role-pill--email">
+                Доступ по email
+              </span>
               <label class="public-switch public-switch--compact">
                 <input
                   type="checkbox"
@@ -1331,16 +1479,24 @@ watch(
             <div class="share-form-row">
               <input v-model="shareEmail" class="share-input" type="email" placeholder="Email пользователя" />
               <select v-model="shareRole" class="share-select">
-                <option value="viewer">Читатель</option>
-                <option value="editor">Редактор</option>
+                <option value="viewer">Чтение</option>
+                <option value="editor">Редактирование</option>
               </select>
               <button type="button" class="share-hub-btn-secondary" @click="addShare">Добавить</button>
             </div>
             <ul v-if="shares.length" class="share-email-list">
               <li v-for="s in shares" :key="s.id" class="share-email-item">
-                <span class="share-email-who">{{ s.shared_with_user_id || s.invite_email }}</span>
-                <span class="share-email-role">{{ s.role }}</span>
-                <button type="button" class="linkish" @click="removeShare(s)">Убрать</button>
+                <span class="share-email-who">{{ shareRecipientLabel(s) }}</span>
+                <select
+                  class="share-access-select"
+                  :value="s.role === 'editor' ? 'editor' : 'viewer'"
+                  aria-label="Доступ"
+                  @change="updateShareRole(s, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="viewer">Чтение</option>
+                  <option value="editor">Редактирование</option>
+                </select>
+                <button type="button" class="linkish share-remove-btn" @click="removeShare(s)">Убрать</button>
               </li>
             </ul>
             <p v-else class="muted small share-email-empty">Пока никого не приглашали</p>
@@ -1351,7 +1507,7 @@ watch(
 
       <Teleport to="body">
         <div
-          v-show="reminderPanelOpen && editorEditable"
+          v-show="reminderPanelOpen && reminderEditable"
           ref="reminderPopoverRef"
           class="reminder-popover-layer"
           :style="reminderPopoverStyle"
@@ -1402,12 +1558,17 @@ watch(
       <div v-if="showMailModal" class="modal-backdrop share-modal-backdrop" @click.self="closeMailModal">
         <div class="modal share-modal" role="dialog" aria-labelledby="mail-title">
           <h2 id="mail-title">Отправить заметку на почту</h2>
-          <p class="muted small share-modal-lead">
-            Укажите email получателя (несколько — через запятую). Нужен SMTP в настройках API
-            (<code>/api/users/me/smtp</code>).
-          </p>
+          <p v-if="mailHistoryFetchError" class="err">{{ mailHistoryFetchError }}</p>
+          <ul v-if="mailSendHistory.length" class="mail-send-history" aria-label="История отправок">
+            <li v-for="row in mailSendHistory" :key="row.id">{{ formatMailHistoryEntry(row) }}</li>
+          </ul>
           <label class="modal-label">Email</label>
-          <input v-model="modalEmail" type="text" class="modal-input" placeholder="name@example.com" />
+          <input
+            v-model="modalEmail"
+            type="text"
+            class="modal-input"
+            placeholder="Один или несколько через запятую"
+          />
           <label class="modal-label">Сообщение (необязательно)</label>
           <textarea v-model="modalMsg" class="modal-textarea" rows="3" placeholder="Текст к письму" />
           <p v-if="mailError" class="err">{{ mailError }}</p>
@@ -1563,6 +1724,11 @@ watch(
   margin-bottom: 0.75rem;
   font-size: 0.82rem;
 }
+.readonly-share-hint {
+  margin: -0.2rem 0 0.6rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
 .note-dates {
   margin: 0 0 0.65rem;
 }
@@ -1617,6 +1783,14 @@ watch(
   align-items: center;
   gap: 0.15rem;
   max-width: 100%;
+}
+.reminder-compact--readonly {
+  padding: 0.22rem 0;
+  align-self: center;
+}
+.reminder-readonly-sum {
+  display: inline-block;
+  font-size: 0.72rem;
 }
 .reminder-clear-x {
   flex: 0 0 auto;
@@ -1828,6 +2002,10 @@ watch(
   background: transparent;
   color: inherit;
 }
+.title-input:read-only {
+  cursor: default;
+  opacity: 0.92;
+}
 .title-extras.tags-block {
   margin-bottom: 0.55rem;
 }
@@ -2007,6 +2185,10 @@ watch(
   background: rgba(37, 99, 235, 0.1);
   color: #1d4ed8;
 }
+.share-hub-role-pill--email {
+  background: rgba(5, 150, 105, 0.12);
+  color: #047857;
+}
 .share-hub-expand {
   margin-left: auto;
   display: inline-flex;
@@ -2150,11 +2332,22 @@ watch(
   min-width: 0;
   word-break: break-all;
 }
-.share-email-role {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: #64748b;
-  text-transform: lowercase;
+.share-access-select {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
+  padding: 0.28rem 0.45rem;
+  border-radius: 7px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  font-size: 0.78rem;
+  background: #fff;
+  color: #334155;
+}
+.share-access-select:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 1px;
+}
+.share-remove-btn {
+  flex-shrink: 0;
 }
 .share-email-empty {
   margin: 0.2rem 0 0;
@@ -2546,8 +2739,17 @@ code {
     0 0 0 1px rgba(255, 255, 255, 0.8) inset;
   max-width: 440px;
 }
-.share-modal-lead {
+.mail-send-history {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0.35rem 0 0.65rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.8rem;
   line-height: 1.45;
+  color: #475569;
+}
+.mail-send-history li {
+  padding: 0.2rem 0;
 }
 .share-mail-bar {
   font-size: 0.78rem;

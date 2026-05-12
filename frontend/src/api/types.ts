@@ -39,6 +39,8 @@ export interface Note {
   accent_color: string
   reminder_at: string | null
   tag_ids: string[]
+  /** Для авторизованного пользователя относительно этой заметки (общий доступ). */
+  my_access?: 'owner' | 'edit' | 'read' | null
 }
 
 export interface Folder {
@@ -74,6 +76,8 @@ export interface NoteShare {
   note_id: string
   shared_with_user_id: string | null
   invite_email: string | null
+  /** Итоговый email для UI (сервер может подставить email профиля, если только user_id). */
+  sharee_email?: string | null
   role: string
   created_at: string
 }
@@ -82,6 +86,14 @@ export interface NotePublicLink {
   token: string
   role: string
   created_at: string
+}
+
+/** Элемент GET /api/mail/notes/:id/send-history */
+export interface NoteMailSendHistoryRow {
+  id: string
+  to_emails: string[]
+  sent_at: string
+  sender_email: string
 }
 
 export interface PublicNotePayload {
