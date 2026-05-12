@@ -82,6 +82,8 @@ EM_NOTE_DEPLOY_MODE=prod bash deploy/vps-update.sh
 
 Если в репозитории на сервере старый скрипт, сначала: `git pull --ff-only`, потом снова `bash deploy/vps-update.sh`.
 
+**Ничего не меняется в браузере:** на сервере выполните **`bash deploy/vps-diagnose.sh`** и пришлите вывод (или сами проверьте: дата образа `em-note-web`, совпадает ли режим GHCR vs prod). Частые причины: не выполнялся `docker pull` / скрипт; Actions ещё не зелёный; на VPS другой каталог или используется только `docker-compose.prod.yml` без `--build`.
+
 ### Сборка на сервере (`docker-compose.prod.yml`)
 
 ```bash

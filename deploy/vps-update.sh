@@ -73,10 +73,14 @@ case "$MODE" in
       exit 1
     fi
     echo "=== Важно: дождитесь в GitHub успешного workflow «Publish Docker images», иначе подтянется старый :main ==="
-    echo "=== docker compose pull ==="
-    docker compose -f docker-compose.ghcr.yml --env-file .env pull
-    echo "=== docker compose up -d ==="
-    docker compose -f docker-compose.ghcr.yml --env-file .env up -d
+    echo "=== docker compose: подтянуть образы и перезапустить ==="
+    # compose v2.22+: --pull always; иначе явный pull + up -d
+    if docker compose up -d --help 2>&1 | grep -q '\-\-pull'; then
+      docker compose -f docker-compose.ghcr.yml --env-file .env up -d --pull always
+    else
+      docker compose -f docker-compose.ghcr.yml --env-file .env pull
+      docker compose -f docker-compose.ghcr.yml --env-file .env up -d
+    fi
     echo "=== образ web (после pull) ==="
     OWN=$(grep -E '^GHCR_OWNER=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \r' || true)
     ITAG=$(grep -E '^IMAGE_TAG=' .env 2>/dev/null | cut -d= -f2- | tr -d ' \r' || true)
