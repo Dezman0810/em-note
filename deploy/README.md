@@ -62,6 +62,26 @@ sudo I_UNDERSTAND_WIPE=yes PUBLIC_IP=ВАШ_IP bash deploy/vps-fresh-deploy.sh
 
 ## 5. Обновление (без сноса данных)
 
+### Одна команда на VPS (рекомендуется)
+
+После **`git push`** в `main` подождите **успешный** workflow **Publish Docker images** в GitHub Actions (**5–15 минут**), затем на сервере:
+
+```bash
+cd /opt/em-note   # каталог с клоном репозитория
+bash deploy/vps-update.sh
+```
+
+Скрипт делает **`git pull`**, затем либо **`docker compose pull` + `up`** (образы GHCR), либо **`up -d --build`** (локальная сборка `docker-compose.prod.yml`) — в зависимости от `EM_NOTE_DEPLOY_MODE` или авто-определения (см. комментарии в `deploy/vps-update.sh`).
+
+Принудительно только GHCR или только prod:
+
+```bash
+EM_NOTE_DEPLOY_MODE=ghcr bash deploy/vps-update.sh
+EM_NOTE_DEPLOY_MODE=prod bash deploy/vps-update.sh
+```
+
+Если в репозитории на сервере старый скрипт, сначала: `git pull --ff-only`, потом снова `bash deploy/vps-update.sh`.
+
 ### Сборка на сервере (`docker-compose.prod.yml`)
 
 ```bash
@@ -71,19 +91,19 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ### Образы из GHCR (`docker-compose.ghcr.yml`)
 
-После **`git push`** в `main` GitHub Actions **пересобирает** `em-note-api` и `em-note-web` и обновляет тег **`main`** (обычно **5–15 минут**). Если на VPS сразу сделать только `docker compose pull`, можно скачать **ещё старый** `web`, пока workflow не закончился — новый UI (таблицы и т.д.) не появится.
+После **`git push`** в `main` GitHub Actions **пересобирает** `em-note-api` и `em-note-web` и обновляет тег **`main`**. Если на VPS сразу сделать только `docker compose pull`, можно скачать **ещё старый** `web`, пока workflow не закончился — новый UI не появится.
 
 1. Убедитесь в репозитории: **Actions** → последний run **Publish Docker images** — **успешно**.
-2. На сервере:
+2. На сервере (вручную, если не используете `vps-update.sh`):
 
 ```bash
 cd /opt/em-note   # или ваш путь
 git pull --ff-only
-docker compose -p em-note-prod -f docker-compose.ghcr.yml --env-file .env pull
-docker compose -p em-note-prod -f docker-compose.ghcr.yml --env-file .env up -d
+docker compose -f docker-compose.ghcr.yml --env-file .env pull
+docker compose -f docker-compose.ghcr.yml --env-file .env up -d
 ```
 
-При сомнениях повторите `pull` + `up -d` для сервиса `web` через несколько минут. В браузере при проверке сделайте **жёсткое обновление** (Ctrl+F5), чтобы не кешировался старый JS.
+В `docker-compose.ghcr.yml` уже задано `name: em-note-prod` — отдельный флаг `-p` обычно не нужен. При сомнениях повторите `pull` + `up -d` через несколько минут после зелёного Actions. В браузере сделайте **жёсткое обновление** (Ctrl+F5).
 
 ## 6. HTTPS
 
