@@ -20,6 +20,8 @@ const TOKEN_STORAGE_KEY = 'note_token'
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '',
   headers: { 'Content-Type': 'application/json' },
+  /* Иначе «молчание» сервера/сети оставляет вход в состоянии ожидания без ошибки и без перехода. */
+  timeout: 30_000,
 })
 
 /** Всегда подставлять JWT из localStorage — надёжнее, чем только axios.defaults (админка и т.д.). */
@@ -43,6 +45,7 @@ export function setAuthToken(token: string | null) {
 
 export function errMessage(e: unknown): string {
   if (isAxiosError(e)) {
+    if (e.code === 'ECONNABORTED') return 'Превышено время ожидания сервера. Проверьте сеть и попробуйте снова.'
     const d = e.response?.data as { detail?: string | object } | undefined
     if (typeof d?.detail === 'string') return d.detail
     if (Array.isArray(d?.detail)) return JSON.stringify(d.detail)

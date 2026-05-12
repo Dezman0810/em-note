@@ -5,6 +5,12 @@ import NoteEditorColumn from '../components/NoteEditorColumn.vue'
 import AdminUsersModal from '../components/AdminUsersModal.vue'
 import ReminderCalendar from '../components/ReminderCalendar.vue'
 import { errMessage, foldersApi, notesApi, tagsApi } from '../api/client'
+import {
+  MIME_TAG_ID,
+  MIME_TAG_IDS_JSON,
+  isTagAttachDragTypes,
+  readDroppedTagIds,
+} from '../utils/dndTags'
 import type { Folder, FolderNoteCounts, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
@@ -232,7 +238,6 @@ const reminderRefreshSignal = ref(0)
 const editorSyncSignal = ref(0)
 
 const MIME_NOTE_ID = 'application/x-em-note-id'
-const MIME_TAG_ID = 'application/x-em-note-tag-id'
 
 function onNoteDragStart(e: DragEvent, noteId: string) {
   if (folderViewTrash.value) return
@@ -267,22 +272,25 @@ async function onFolderDrop(e: DragEvent, folderKey: string) {
 
 function onTagDragStart(e: DragEvent, tagId: string) {
   e.dataTransfer?.setData(MIME_TAG_ID, tagId)
+  e.dataTransfer?.setData(MIME_TAG_IDS_JSON, JSON.stringify([tagId]))
   e.dataTransfer!.effectAllowed = 'copy'
 }
 
 function onNoteRowDragOver(e: DragEvent) {
   const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
-  if (!types.includes(MIME_TAG_ID)) return
+  if (!isTagAttachDragTypes(types)) return
   e.preventDefault()
   e.dataTransfer!.dropEffect = 'copy'
 }
 
 async function onNoteRowDrop(e: DragEvent, noteId: string) {
   e.preventDefault()
-  const tagId = e.dataTransfer?.getData(MIME_TAG_ID)
-  if (!tagId) return
+  const tagIds = readDroppedTagIds(e)
+  if (!tagIds.length) return
   try {
-    await notesApi.attachTag(noteId, tagId)
+    for (const tagId of tagIds) {
+      await notesApi.attachTag(noteId, tagId)
+    }
     error.value = ''
     await load()
     reminderRefreshSignal.value++

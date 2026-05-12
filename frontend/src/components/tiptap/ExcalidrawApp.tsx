@@ -213,6 +213,40 @@ function createClipboardFooter(hostRef: RefObject<HTMLDivElement | null>) {
   )
 }
 
+function scrollSchemaToContent(hostRef: RefObject<HTMLDivElement | null>) {
+  const root = hostRef.current
+  const api = root ? excalidrawGetApiForPasteRoot(root) : null
+  if (!api) return
+  api.scrollToContent(api.getSceneElements(), { animate: true })
+}
+
+/** Нижняя полоса: буфер + «к содержимому» или только текстовая кнопка в режиме только чтения. */
+function createEmbedFooter(hostRef: RefObject<HTMLDivElement | null>, clipboard: boolean) {
+  const onScrollClick = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    e.preventDefault()
+    scrollSchemaToContent(hostRef)
+  }
+  const scrollBtn = createElement(
+    'button',
+    {
+      type: 'button',
+      className: 'excal-scroll-schema-btn',
+      title:
+        'Центрировать вид по нарисованным объектам на холсте, если камера уехала в пустоту (масштаб не меняется)',
+      'aria-label': 'К содержимому схемы',
+      onClick: onScrollClick,
+    },
+    'К содержимому схемы'
+  )
+  return createElement(
+    'div',
+    { className: 'excal-embed-footer-actions' },
+    clipboard ? createClipboardFooter(hostRef) : null,
+    scrollBtn
+  )
+}
+
 function selectedIdsFromAppState(selectedElementIds: unknown): Set<string> {
   if (!selectedElementIds || typeof selectedElementIds !== 'object') return new Set()
   const out = new Set<string>()
@@ -627,12 +661,17 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   )
 
   const excalChildren = readOnly
-    ? customMainMenu
+    ? createElement(
+        Fragment,
+        null,
+        customMainMenu,
+        createElement(Footer, null, createEmbedFooter(hostRef, false))
+      )
     : createElement(
         Fragment,
         null,
         customMainMenu,
-        createElement(Footer, null, createClipboardFooter(hostRef))
+        createElement(Footer, null, createEmbedFooter(hostRef, true))
       )
 
   const uiOptions = useMemo(
@@ -663,7 +702,8 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
       initialData,
       onChange,
       excalidrawAPI,
-      detectScroll: false,
+      /** Иначе после scroll колонки редактора offsetTop отстаёт — фигуры появляются выше точки клика. */
+      detectScroll: true,
       viewModeEnabled: readOnly,
       UIOptions: uiOptions,
       /** Убираем кластер справа сверху (в т.ч. кнопку «?» / справка). */

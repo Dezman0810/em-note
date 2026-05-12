@@ -4,18 +4,48 @@ import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import ExcalidrawNodeView from './ExcalidrawNodeView.vue'
 import { DEFAULT_EXCALIDRAW_SCENE } from './excalidrawDefaultScene'
 
-/** Область холста в заметке: шапка блока снаружи `.excal-fullscreen-shell`. */
-function eventIsOverExcalidrawDrawingUi(event: Event, target: Element): boolean {
+/**
+ * Область рисования Excalidraw зум/рамка/канва — события не отдаём ProseMirror иначе
+ * блок целиком уезжает вместо выделения и ломаются ЛКМ/ПКМ как в полноэкране.
+ *
+ * `.excal-host` держится отдельно: часть узлов деревa (слои поверх канвы) может
+ * не давать успешный `closest(...)` без composedPath().
+ */
+function eventIsOverExcalidrawEmbeddedUi(event: Event, target: Element): boolean {
   if (target.closest('[data-excalidraw-paste-root]')) return true
-  /* paste-root — потомок .excal-host; в :fullscreen target часто retarget на shell/host без предка paste-root */
+  /* paste-root — потомок .excal-host; в :fullscreen target часто retarget на shell/host */
   if (target.closest('.excal-fullscreen-shell')) return true
+  if (target.closest('.excal-host')) return true
   if (typeof event.composedPath === 'function') {
-    return event.composedPath().some(
-      (n) =>
-        n instanceof Element &&
-        (n.hasAttribute('data-excalidraw-paste-root') || n.classList.contains('excal-fullscreen-shell'))
-    )
+    return event.composedPath().some((node) => {
+      if (!(node instanceof Element)) return false
+      if (node.closest('[data-excalidraw-paste-root]')) return true
+      if (node.closest('.excal-fullscreen-shell')) return true
+      if (node.closest('.excal-host')) return true
+      return (
+        node.hasAttribute?.('data-excalidraw-paste-root') ||
+        node.classList?.contains?.('excal-fullscreen-shell') ||
+        node.classList?.contains?.('excal-host')
+      )
+    })
   }
+  return false
+}
+
+function interactiveInHeadOrEditor(target: Element): boolean {
+  const tag = target.tagName
+  if (
+    tag === 'BUTTON' ||
+    tag === 'INPUT' ||
+    tag === 'SELECT' ||
+    tag === 'TEXTAREA' ||
+    target.closest('button') ||
+    target.closest('.excal-import') ||
+    target.closest('label.excal-import')
+  ) {
+    return true
+  }
+  if ((target as HTMLElement).isContentEditable) return true
   return false
 }
 
@@ -31,7 +61,8 @@ export const ExcalidrawBlock = Node.create({
   name: 'excalidrawBlock',
   group: 'block',
   atom: true,
-  draggable: true,
+  /** Перетаскивание блока отключено: ломало ЛКМ/ПКМ на холсте. Перемещение — Вырезать / Вставить. */
+  draggable: false,
   isolating: true,
 
   addAttributes() {
@@ -63,23 +94,21 @@ export const ExcalidrawBlock = Node.create({
   addNodeView() {
     return VueNodeViewRenderer(ExcalidrawNodeView, {
       /**
-       * По умолчанию TipTap для selectable atom даёт ProseMirror обработать mousedown — выделяется
-       * весь блок схемы, а не фигуры внутри Excalidraw (ломается Ctrl/Cmd+клик и обычный клик по холсту).
-       * Внутри paste-root события полностью остаются у Excalidraw.
+       * Холст / UI Excalidraw — события не отдаём ProseMirror (рисование, рамка, ПКМ).
+       * Шапка: клик по фону (не по кнопкам/импорту) — отдаём PM, чтобы можно было выделить узел для Вырезать.
+       * Перетаскивание узла выключено (draggable: false).
        */
       stopEvent: ({ event }) => {
         const t = event.target
         if (!(t instanceof Element)) return false
-        if (eventIsOverExcalidrawDrawingUi(event, t)) return true
 
-        const el = t as HTMLElement
-        const tag = el.tagName
-        if (tag === 'LABEL' || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
-          return true
-        }
-        if (el.isContentEditable) return true
+        if (eventIsOverExcalidrawEmbeddedUi(event, t)) return true
 
-        return false
+        if (interactiveInHeadOrEditor(t)) return true
+
+        if (t.closest('.excalidraw-node-head')) return false
+
+        return true
       },
     })
   },

@@ -8,6 +8,12 @@ import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import {
+  isTagAttachDragTypes,
+  MIME_TAG_ID,
+  MIME_TAG_IDS_JSON,
+  readDroppedTagIds,
+} from '../utils/dndTags'
+import {
   isStrictDescendantOf,
   tagsWithChildrenSet,
   visibleTagsForNav,
@@ -147,6 +153,8 @@ const error = ref('')
 
 const selectedTagId = ref<string | null>(null)
 const activeNoteId = ref<string | null>(null)
+/** Синхронизация редактора при DnD метки на строку заметки (как в NotesView). */
+const editorSyncSignal = ref(0)
 const notes = ref<Note[]>([])
 const folders = ref<Folder[]>([])
 
@@ -396,6 +404,41 @@ function readPayloadFromDrag(e: DragEvent): string[] {
   return []
 }
 
+function bumpEditorIfOpen(noteId: string) {
+  if (noteId === activeNoteId.value) editorSyncSignal.value++
+}
+
+function onFilterTagDragStart(e: DragEvent, tagId: string) {
+  e.stopPropagation()
+  e.dataTransfer?.setData(MIME_TAG_ID, tagId)
+  e.dataTransfer?.setData(MIME_TAG_IDS_JSON, JSON.stringify([tagId]))
+  e.dataTransfer!.effectAllowed = 'copy'
+}
+
+function onNoteTagAttachDragOver(e: DragEvent) {
+  const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
+  if (!isTagAttachDragTypes(types)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
+}
+
+async function onNoteTagAttachDrop(e: DragEvent, noteId: string) {
+  e.preventDefault()
+  const tagIds = readDroppedTagIds(e)
+  if (!tagIds.length) return
+  try {
+    for (const tagId of tagIds) {
+      await notesApi.attachTag(noteId, tagId)
+    }
+    error.value = ''
+    await load()
+    await loadNotes()
+    bumpEditorIfOpen(noteId)
+  } catch (err) {
+    error.value = errMessage(err)
+  }
+}
+
 function openNote(id: string) {
   activeNoteId.value = id
   syncQuery()
@@ -632,6 +675,8 @@ function onDragStart(t: Tag, e: DragEvent) {
   } catch {
     e.dataTransfer?.setData('text/plain', (ids[0] ?? t.id) || '')
   }
+  e.dataTransfer?.setData(MIME_TAG_ID, ids[0] ?? t.id)
+  e.dataTransfer?.setData(MIME_TAG_IDS_JSON, JSON.stringify(ids))
   e.dataTransfer!.effectAllowed = 'move'
 }
 
@@ -789,6 +834,8 @@ onBeforeUnmount(() => {
                 class="folder-filter tag-filter tag-sidebar-row"
                 :class="{ on: selectedTagId === t.id }"
                 :style="{ paddingLeft: (0.35 + Math.max(0, t.depth - 1) * 0.55) + 'rem' }"
+                draggable="true"
+                @dragstart="onFilterTagDragStart($event, t.id)"
                 @click="pickTagFromSidebar(t.id)"
               >
                 <span
@@ -933,6 +980,8 @@ onBeforeUnmount(() => {
                   :class="{ current: n.id === activeNoteId }"
                   :title="noteRowTitle(n)"
                   @click="openNote(n.id)"
+                  @dragover="onNoteTagAttachDragOver"
+                  @drop="onNoteTagAttachDrop($event, n.id)"
                 >
                   <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                   <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
@@ -968,6 +1017,7 @@ onBeforeUnmount(() => {
           :key="activeNoteId"
           :note-id="activeNoteId"
           :sorted-note-ids="sortedNotes.map((n) => n.id)"
+          :editor-sync-signal="editorSyncSignal"
           @refresh="onEditorRefresh"
         />
         <div v-else class="editor-placeholder">

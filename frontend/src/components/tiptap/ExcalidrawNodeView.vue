@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue'
 import { createRoot } from 'react-dom/client'
 import * as React from 'react'
 import { ExcalidrawApp } from './ExcalidrawApp'
@@ -22,9 +30,77 @@ watch(
 )
 const hostRef = ref<HTMLDivElement | null>(null)
 const fullscreenShellRef = ref<HTMLElement | null>(null)
+/** Нативный Fullscreen API для оболочки схемы (без fallback fixed). */
+const shellInNativeFullscreen = ref(false)
 const fullscreenFallback = ref(false)
 const sceneKey = ref(0)
 let reactRoot: ReturnType<typeof createRoot> | null = null
+
+/** Почти на весь экран в окне браузера: перекрывает и шапку приложения (поиск, админка). */
+const noteWideUi = ref(false)
+const noteWideInset = reactive({ top: 0, left: 0, width: 0, height: 0 })
+
+const noteWideShellStyle = computed(() => {
+  if (!noteWideUi.value) return {} as Record<string, string>
+  const n = noteWideInset
+  return {
+    top: `${n.top}px`,
+    left: `${n.left}px`,
+    width: `${n.width}px`,
+    height: `${n.height}px`,
+  }
+})
+
+function updateNoteWideInset() {
+  if (!noteWideUi.value) return
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null
+  if (vv) {
+    noteWideInset.top = vv.offsetTop
+    noteWideInset.left = vv.offsetLeft
+    noteWideInset.width = vv.width
+    noteWideInset.height = vv.height
+    return
+  }
+  const d = document.documentElement
+  noteWideInset.top = 0
+  noteWideInset.left = 0
+  noteWideInset.width = d.clientWidth
+  noteWideInset.height = d.clientHeight
+}
+
+function teardownNoteWideLayout() {
+  if (typeof window === 'undefined') return
+  window.removeEventListener('resize', updateNoteWideInset)
+  window.removeEventListener('scroll', updateNoteWideInset, true)
+  const vv = window.visualViewport
+  if (vv) {
+    vv.removeEventListener('resize', updateNoteWideInset)
+    vv.removeEventListener('scroll', updateNoteWideInset)
+  }
+}
+
+function setupNoteWideLayout() {
+  teardownNoteWideLayout()
+  if (!noteWideUi.value || typeof window === 'undefined') return
+  const vv = window.visualViewport
+  if (vv) {
+    vv.addEventListener('resize', updateNoteWideInset)
+    vv.addEventListener('scroll', updateNoteWideInset)
+  }
+  window.addEventListener('resize', updateNoteWideInset)
+  window.addEventListener('scroll', updateNoteWideInset, true)
+  updateNoteWideInset()
+}
+
+/** Верхняя панель с «На всю рабочую область» / «На весь экран» скрыта в режиме полного экрана схемы (выход — Esc или системная кнопка браузера). */
+const hideExcTopBarWhileFullscreen = computed(
+  () => fullscreenFallback.value || shellInNativeFullscreen.value
+)
+
+function syncShellNativeFullscreenFlag() {
+  const el = fullscreenShellRef.value
+  shellInNativeFullscreen.value = !!(el && document.fullscreenElement === el)
+}
 
 const scene = computed(() => (props.node.attrs.scene as string) || '{}')
 
@@ -94,6 +170,9 @@ watch(
       mountReact()
     } else {
       unmountReact()
+      noteWideUi.value = false
+      teardownNoteWideLayout()
+      shellInNativeFullscreen.value = false
       if (fullscreenShellRef.value && document.fullscreenElement === fullscreenShellRef.value) {
         void document.exitFullscreen()
       }
@@ -120,8 +199,11 @@ watch(excalReadOnly, () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onExcalFullscreenEscape, true)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
+  teardownNoteWideLayout()
   unmountReact()
+  shellInNativeFullscreen.value = false
   if (fullscreenShellRef.value && document.fullscreenElement === fullscreenShellRef.value) {
     void document.exitFullscreen()
   }
@@ -135,24 +217,52 @@ function isFullscreenUi() {
   return document.fullscreenElement === el || fullscreenFallback.value
 }
 
+async function exitFullscreenIfNeeded() {
+  const el = fullscreenShellRef.value
+  if (!el) return
+  if (document.fullscreenElement === el) {
+    try {
+      await document.exitFullscreen()
+    } catch {
+      /* ignore */
+    }
+  }
+  fullscreenFallback.value = false
+  shellInNativeFullscreen.value = false
+  document.body.style.overflow = ''
+}
+
+watch(noteWideUi, async (on) => {
+  if (typeof document === 'undefined') return
+  if (on) {
+    await exitFullscreenIfNeeded()
+    document.body.style.overflow = 'hidden'
+    await nextTick()
+    setupNoteWideLayout()
+    return
+  }
+  teardownNoteWideLayout()
+  document.body.style.overflow = ''
+})
+
+function toggleNoteWide() {
+  noteWideUi.value = !noteWideUi.value
+}
+
 async function toggleFullscreen() {
   const el = fullscreenShellRef.value
   if (!el) return
   if (isFullscreenUi()) {
-    if (document.fullscreenElement === el) {
-      try {
-        await document.exitFullscreen()
-      } catch {
-        /* ignore */
-      }
-    }
-    fullscreenFallback.value = false
-    document.body.style.overflow = ''
+    await exitFullscreenIfNeeded()
     return
+  }
+  if (noteWideUi.value) {
+    noteWideUi.value = false
   }
   if (typeof el.requestFullscreen === 'function') {
     try {
       await el.requestFullscreen()
+      syncShellNativeFullscreenFlag()
     } catch {
       fullscreenFallback.value = true
       document.body.style.overflow = 'hidden'
@@ -166,14 +276,30 @@ async function toggleFullscreen() {
 function onFullscreenChange() {
   const el = fullscreenShellRef.value
   if (!el) return
+  syncShellNativeFullscreenFlag()
   if (document.fullscreenElement !== el) {
     fullscreenFallback.value = false
     document.body.style.overflow = ''
   }
 }
 
+function onExcalFullscreenEscape(ev: KeyboardEvent) {
+  if (ev.key !== 'Escape') return
+  const el = fullscreenShellRef.value
+  if (!el) return
+  const inOurFullscreen =
+    fullscreenFallback.value ||
+    shellInNativeFullscreen.value ||
+    document.fullscreenElement === el
+  if (!inOurFullscreen) return
+  ev.stopPropagation()
+  void exitFullscreenIfNeeded()
+}
+
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('keydown', onExcalFullscreenEscape, true)
+  syncShellNativeFullscreenFlag()
 })
 
 function toggle() {
@@ -206,7 +332,7 @@ function onImportFile(ev: Event) {
 </script>
 
 <template>
-  <NodeViewWrapper class="excalidraw-node">
+  <NodeViewWrapper class="excalidraw-node" :class="{ 'excalidraw-node--note-wide': noteWideUi }">
     <div class="excalidraw-node-head">
       <button type="button" class="excal-toggle excal-toggle-main" @click="toggle">
         {{ expanded ? '▼ Свернуть' : '▶ Схема' }}
@@ -221,12 +347,29 @@ function onImportFile(ev: Event) {
       v-show="expanded"
       ref="fullscreenShellRef"
       class="excal-fullscreen-shell"
-      :class="{ 'excal-fullscreen-shell--fallback': fullscreenFallback }"
+      :class="{
+        'excal-fullscreen-shell--fallback': fullscreenFallback && !noteWideUi,
+        'excal-fullscreen-shell--note-wide': noteWideUi,
+      }"
+      :style="noteWideShellStyle"
     >
-      <div class="excal-innerbar">
+      <div v-show="!hideExcTopBarWhileFullscreen" class="excal-innerbar">
         <div class="excal-innerbar-spacer" />
-        <button type="button" class="excal-fs-btn" @click="toggleFullscreen">
-          {{ isFullscreenUi() ? 'Выйти из полноэкранного' : 'На весь экран' }}
+        <button
+          type="button"
+          class="excal-fs-btn"
+          title="Почти во весь экран в окне браузера (вместе со шапкой приложения — поиск, админка). Не браузерный F11 и не режим только схемы."
+          @click="toggleNoteWide"
+        >
+          {{ noteWideUi ? 'Свернуть рабочую область' : 'На всю рабочую область' }}
+        </button>
+        <button
+          type="button"
+          class="excal-fs-btn"
+          title="Только схема на весь экран; верхняя панель скрыта. Выход — Esc"
+          @click="toggleFullscreen"
+        >
+          На весь экран
         </button>
       </div>
       <div ref="hostRef" class="excal-host" />
@@ -274,11 +417,25 @@ function onImportFile(ev: Event) {
 .excal-fullscreen-shell:fullscreen {
   background: var(--panel);
 }
+.excalidraw-node--note-wide {
+  overflow: visible !important;
+  position: relative;
+  z-index: 9999;
+}
 .excal-fullscreen-shell--fallback {
   position: fixed;
   inset: 0;
   z-index: 10000;
   box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.45);
+}
+.excal-fullscreen-shell--note-wide {
+  position: fixed;
+  z-index: 10000;
+  max-height: none !important;
+  margin: 0;
+  flex: unset;
+  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.28);
+  border-radius: 0;
 }
 .excal-innerbar {
   display: flex;
@@ -307,6 +464,30 @@ function onImportFile(ev: Event) {
   border-color: var(--accent);
   color: var(--accent);
 }
+.excal-host :deep(.excal-embed-footer-actions) {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+.excal-host :deep(.excal-scroll-schema-btn) {
+  padding: 0.32rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: #fff;
+  color: #1e293b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.excal-host :deep(.excal-scroll-schema-btn:hover) {
+  border-color: rgba(100, 116, 139, 0.65);
+  background: #f8fafc;
+}
+
 .excal-import {
   cursor: pointer;
 }
@@ -326,8 +507,14 @@ function onImportFile(ev: Event) {
   border: 0;
 }
 .excal-host {
-  height: min(520px, 70vh);
-  min-height: 280px;
+  height: min(598px, 80.5vh);
+  min-height: 322px;
+}
+.excal-fullscreen-shell--note-wide .excal-host {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  max-height: none;
 }
 .excal-fullscreen-shell:fullscreen .excal-host,
 .excal-fullscreen-shell--fallback .excal-host {

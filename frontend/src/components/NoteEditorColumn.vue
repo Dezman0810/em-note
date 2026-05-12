@@ -11,6 +11,7 @@ import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
 import { contentHasAudio, contentHasExcalidraw } from '../utils/tiptapContent'
 import { foldersSortedAlphabetical } from '../utils/folders'
+import { isTagAttachDragTypes, readDroppedTagIds } from '../utils/dndTags'
 
 const props = defineProps<{
   noteId: string | null
@@ -45,6 +46,10 @@ const autoSaveOk = ref(false)
 
 const tagQuery = ref('')
 const tagFocus = ref(false)
+/** Подсвеченный пункт в выпадающем списке меток (стрелки, hover, Tab/Enter выбирают его). */
+const tagSuggestionIndex = ref(0)
+/** Подсветка строки меток при DnD из сайдбара. */
+const tagDropHover = ref(false)
 
 const folders = ref<Folder[]>([])
 const folderSelect = ref('')
@@ -452,6 +457,25 @@ const tagSuggestionsOpen = computed(
     (filteredForAttach.value.length > 0 || canOfferCreateTag.value)
 )
 
+/** Число пунктов списка: существующие метки + опционально «Создать…». */
+const tagSuggestionCount = computed(() => {
+  let n = filteredForAttach.value.length
+  if (canOfferCreateTag.value) n++
+  return n
+})
+
+watch(tagSuggestionCount, (n) => {
+  if (n === 0) {
+    tagSuggestionIndex.value = 0
+    return
+  }
+  if (tagSuggestionIndex.value >= n) tagSuggestionIndex.value = n - 1
+})
+
+watch(tagQuery, () => {
+  tagSuggestionIndex.value = 0
+})
+
 function openMailModal() {
   void flushSave()
   modalEmail.value = ''
@@ -666,7 +690,6 @@ async function pickTag(t: Tag) {
   try {
     note.value = await notesApi.attachTag(note.value.id, t.id)
     tagQuery.value = ''
-    tagFocus.value = false
     emitRefresh()
   } catch (e) {
     error.value = errMessage(e)
@@ -714,17 +737,87 @@ async function createAndAttachTag() {
       )
     }
     tagQuery.value = ''
-    tagFocus.value = false
     emitRefresh()
   } catch (e) {
     error.value = errMessage(e)
   }
 }
 
-function pickFirstSuggestion() {
-  const first = filteredForAttach.value[0]
-  if (first) void pickTag(first)
-  else if (canOfferCreateTag.value) void createAndAttachTag()
+function pickActiveTagSuggestion() {
+  const tags = filteredForAttach.value
+  const nTags = tags.length
+  const n = tagSuggestionCount.value
+  if (n === 0) return
+  const i = Math.min(tagSuggestionIndex.value, n - 1)
+  if (i < nTags) {
+    void pickTag(tags[i]!)
+    return
+  }
+  void createAndAttachTag()
+}
+
+function onTagSuggestionArrowDown(e: KeyboardEvent) {
+  const n = tagSuggestionCount.value
+  if (!tagSuggestionsOpen.value || n === 0) return
+  e.preventDefault()
+  tagSuggestionIndex.value = (tagSuggestionIndex.value + 1) % n
+}
+
+function onTagSuggestionArrowUp(e: KeyboardEvent) {
+  const n = tagSuggestionCount.value
+  if (!tagSuggestionsOpen.value || n === 0) return
+  e.preventDefault()
+  tagSuggestionIndex.value = (tagSuggestionIndex.value - 1 + n) % n
+}
+
+function onTagsBlockDragEnter(e: DragEvent) {
+  const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
+  if (!isTagAttachDragTypes(types)) return
+  e.preventDefault()
+  tagDropHover.value = true
+}
+
+function onTagsBlockDragOver(e: DragEvent) {
+  const types = e.dataTransfer?.types ? [...e.dataTransfer.types] : []
+  if (!isTagAttachDragTypes(types)) return
+  e.preventDefault()
+  e.dataTransfer!.dropEffect = 'copy'
+  tagDropHover.value = true
+}
+
+function onTagsBlockDragLeave(e: DragEvent) {
+  const el = e.currentTarget as HTMLElement
+  const rel = e.relatedTarget as Node | null
+  if (rel && el.contains(rel)) return
+  tagDropHover.value = false
+}
+
+async function onTagsBlockDrop(e: DragEvent) {
+  e.preventDefault()
+  tagDropHover.value = false
+  if (!note.value || isTrashed.value || !editorEditable.value) return
+  const tagIds = readDroppedTagIds(e)
+  if (!tagIds.length) return
+  const attached = new Set(note.value.tag_ids)
+  try {
+    let n = note.value
+    for (const tagId of tagIds) {
+      if (attached.has(tagId)) continue
+      n = await notesApi.attachTag(n.id, tagId)
+      attached.add(tagId)
+    }
+    note.value = n
+    emitRefresh()
+  } catch (err) {
+    error.value = errMessage(err)
+  }
+}
+
+function onTagSuggestionTab(e: KeyboardEvent) {
+  if (e.shiftKey) return
+  if (!tagSuggestionsOpen.value || tagSuggestionCount.value === 0) return
+  e.preventDefault()
+  pickActiveTagSuggestion()
 }
 
 async function removeNote() {
@@ -946,16 +1039,6 @@ watch(
 
 <template>
   <div class="editor-column" :class="{ 'editor-column--focus': editorFocusMode }">
-    <button
-      v-if="editorFocusMode && note"
-      type="button"
-      class="editor-focus-exit-float"
-      aria-label="Вернуть обычный вид с колонками списка"
-      title="Вернуть обычный вид колонок (Esc)"
-      @click="exitEditorFocusMode"
-    >
-      Обычный режим
-    </button>
     <template v-if="!noteId">
       <div class="editor-placeholder">
         <p class="ph-title">Заметка не выбрана</p>
@@ -1013,14 +1096,20 @@ watch(
             </button>
           </div>
           <button
-            v-if="note && !isTrashed && !editorFocusMode"
+            v-if="note && !isTrashed"
             type="button"
             class="btn-editor-focus"
-            aria-label="Показать только заметку на весь экран"
-            title="Только заметка на весь экран"
+            :aria-label="
+              editorFocusMode
+                ? 'Вернуть обычный вид с колонками списка'
+                : 'Показать только заметку на весь экран'
+            "
+            :title="
+              editorFocusMode ? 'Вернуть обычный вид колонок (можно Esc)' : 'Только заметка на весь экран'
+            "
             @click="toggleEditorFocusMode"
           >
-            На весь экран
+            {{ editorFocusMode ? 'Обычный режим' : 'На весь экран' }}
           </button>
         </div>
       </header>
@@ -1042,7 +1131,15 @@ watch(
           @focus="onTitleFocus"
           @blur="onTitleBlur"
         />
-        <div v-if="!isTrashed" class="title-extras tags-block">
+        <div
+          v-if="!isTrashed"
+          class="title-extras tags-block"
+          :class="{ 'tags-block--drop': tagDropHover }"
+          @dragenter="onTagsBlockDragEnter"
+          @dragover="onTagsBlockDragOver"
+          @dragleave="onTagsBlockDragLeave"
+          @drop="onTagsBlockDrop"
+        >
           <div v-if="editorEditable" class="tags-inline-row">
             <span v-for="t in attachedTagObjects" :key="t.id" class="tag-chip tag-chip-inline">
               {{ t.name }}
@@ -1059,13 +1156,18 @@ watch(
                 autocomplete="off"
                 @focus="tagFocus = true"
                 @blur="onTagBlur"
-                @keydown.enter.prevent="pickFirstSuggestion"
+                @keydown.enter.prevent="pickActiveTagSuggestion"
+                @keydown.down="onTagSuggestionArrowDown"
+                @keydown.up="onTagSuggestionArrowUp"
+                @keydown.tab="onTagSuggestionTab"
               />
               <ul v-if="tagSuggestionsOpen" class="suggestions suggestions-pop">
                 <li
-                  v-for="t in filteredForAttach"
+                  v-for="(t, si) in filteredForAttach"
                   :key="t.id"
                   class="suggestion suggestion-compact"
+                  :class="{ 'suggestion-active': si === tagSuggestionIndex }"
+                  @mouseenter="tagSuggestionIndex = si"
                   @mousedown.prevent="pickTag(t)"
                 >
                   {{ t.name }}
@@ -1073,6 +1175,8 @@ watch(
                 <li
                   v-if="canOfferCreateTag"
                   class="suggestion suggestion-create suggestion-compact"
+                  :class="{ 'suggestion-active': filteredForAttach.length === tagSuggestionIndex }"
+                  @mouseenter="tagSuggestionIndex = filteredForAttach.length"
                   @mousedown.prevent="createAndAttachTag()"
                 >
                   <span class="create-icon" aria-hidden="true">+</span>
@@ -1359,28 +1463,6 @@ watch(
 .btn-editor-focus:hover {
   border-color: rgba(37, 99, 235, 0.35);
   color: var(--accent);
-}
-.editor-focus-exit-float {
-  position: fixed;
-  top: max(3rem, calc(env(safe-area-inset-top, 0px) + 2.75rem));
-  right: max(0.6rem, env(safe-area-inset-right, 0px));
-  z-index: 3100;
-  font: inherit;
-  font-size: 0.76rem;
-  font-weight: 600;
-  padding: 0.34rem 0.58rem;
-  border-radius: 8px;
-  border: 1px solid rgba(59, 91, 140, 0.32);
-  background: #fff;
-  color: #3d5a85;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.1);
-  -webkit-font-smoothing: antialiased;
-}
-.editor-focus-exit-float:hover {
-  background: rgba(90, 110, 150, 0.08);
-  border-color: rgba(59, 91, 140, 0.42);
-  color: #2d4a6f;
 }
 .bar-note-nav {
   display: inline-flex;
@@ -1748,6 +1830,11 @@ watch(
 }
 .title-extras.tags-block {
   margin-bottom: 0.55rem;
+}
+.title-extras.tags-block.tags-block--drop {
+  outline: 2px dashed rgba(37, 99, 235, 0.55);
+  outline-offset: 3px;
+  border-radius: 12px;
 }
 .tags-inline-row {
   display: flex;
@@ -2299,7 +2386,8 @@ watch(
   border-radius: 8px;
   color: #334155;
 }
-.suggestion:hover {
+.suggestion:hover,
+.suggestion-active {
   background: #f1f5f9;
 }
 .suggestion-create {
@@ -2312,7 +2400,8 @@ watch(
   font-weight: 500;
   color: var(--accent);
 }
-.suggestion-create:hover {
+.suggestion-create:hover,
+.suggestion-create.suggestion-active {
   background: rgba(37, 99, 235, 0.06);
 }
 .create-icon {

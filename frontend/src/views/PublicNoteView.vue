@@ -184,26 +184,28 @@ onBeforeUnmount(async () => {
     <p v-if="loading" class="muted">Загрузка…</p>
     <p v-else-if="error" class="err">{{ error }}</p>
     <template v-else-if="note">
-      <input
-        v-model="title"
-        class="title-input"
-        type="text"
-        placeholder="Заголовок"
-        :readonly="!canEdit"
-        @focus="onTitleFocus"
-        @blur="onTitleBlur"
-      />
-      <p v-if="!publicFocusMode" class="muted small meta-line">
-        Режим ссылки: {{ role === 'editor' ? 'редактирование' : 'только чтение' }}
-        <span v-if="saving"> · Сохранение…</span>
-      </p>
-      <p v-else-if="saving" class="muted small meta-line">Сохранение…</p>
-      <NoteEditor
-        v-model:contentJson="contentJson"
-        :editable="canEdit"
-        :note-id="note?.id ?? null"
-        :public-token="token"
-      />
+      <div ref="workspaceBodyElRef" class="public-workspace-body">
+        <input
+          v-model="title"
+          class="title-input"
+          type="text"
+          placeholder="Заголовок"
+          :readonly="!canEdit"
+          @focus="onTitleFocus"
+          @blur="onTitleBlur"
+        />
+        <p v-if="!publicFocusMode" class="muted small meta-line">
+          Режим ссылки: {{ role === 'editor' ? 'редактирование' : 'только чтение' }}
+          <span v-if="saving"> · Сохранение…</span>
+        </p>
+        <p v-else-if="saving" class="muted small meta-line">Сохранение…</p>
+        <NoteEditor
+          v-model:contentJson="contentJson"
+          :editable="canEdit"
+          :note-id="note?.id ?? null"
+          :public-token="token"
+        />
+      </div>
     </template>
   </div>
 </template>
@@ -217,6 +219,14 @@ onBeforeUnmount(async () => {
   min-height: 100vh;
   box-sizing: border-box;
   background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.public-workspace-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .public-wrap--focus {
   max-width: none;

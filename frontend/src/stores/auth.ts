@@ -5,6 +5,9 @@ import type { User } from '../api/types'
 
 const TOKEN_KEY = 'note_token'
 
+/** Устаревший ответ fetchMe не должен сбрасывать токен после успешного login (параллельные запросы /me). */
+let authEpoch = 0
+
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
@@ -26,6 +29,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(email: string, password: string) {
+    authEpoch++
     const data = await authApi.login({ email: normalizeEmail(email), password })
     persistToken(data.access_token)
     user.value = await authApi.me()
@@ -38,21 +42,28 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function fetchMe() {
+    const epoch = authEpoch
     if (!token.value) {
       loaded.value = true
       return
     }
     try {
-      user.value = await authApi.me()
+      const me = await authApi.me()
+      if (authEpoch !== epoch) return
+      user.value = me
     } catch {
+      if (authEpoch !== epoch) return
       persistToken(null)
       user.value = null
     } finally {
-      loaded.value = true
+      if (authEpoch === epoch) {
+        loaded.value = true
+      }
     }
   }
 
   function logout() {
+    authEpoch++
     persistToken(null)
     user.value = null
   }
