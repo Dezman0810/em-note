@@ -82,6 +82,26 @@ EM_NOTE_DEPLOY_MODE=prod bash deploy/vps-update.sh
 
 Если в репозитории на сервере старый скрипт, сначала: `git pull --ff-only`, потом снова `bash deploy/vps-update.sh`.
 
+### Обновление с вашего ПК по SSH (ключ Timeweb)
+
+На **Windows** в PowerShell из корня клона `em-note` (подставьте IP VPS):
+
+```powershell
+.\deploy\remote-update-vps.ps1 -VpsHost 85.198.83.132
+```
+
+По умолчанию используется ключ **`%USERPROFILE%\.ssh\id_ed25519_timeweb`**. Другой ключ: `-SshKey "D:\keys\my_ed25519"`. Режим деплоя: `-DeployMode ghcr` или `prod` (по умолчанию `auto`, как в `vps-update.sh`). Пользователь SSH: `-VpsUser root`. Каталог на сервере: `-InstallDir /opt/em-note`.
+
+В **Git Bash / Linux**:
+
+```bash
+export VPS_HOST=85.198.83.132
+export SSH_KEY="$HOME/.ssh/id_ed25519_timeweb"   # по умолчанию так же
+bash deploy/remote-update-vps.sh
+```
+
+На VPS в каталоге проекта должен быть **клон по SSH или HTTPS с `git pull`**, и уже один раз настроенный `.env` и Docker, как в разделах выше. Первый коннект: при необходимости примите fingerprint хоста (в скрипте используется `StrictHostKeyChecking=accept-new`).
+
 **Ничего не меняется в браузере:** на сервере выполните **`bash deploy/vps-diagnose.sh`** и пришлите вывод (или сами проверьте: дата образа `em-note-web`, совпадает ли режим GHCR vs prod). Частые причины: не выполнялся `docker pull` / скрипт; Actions ещё не зелёный; на VPS другой каталог или используется только `docker-compose.prod.yml` без `--build`.
 
 ### Сборка на сервере (`docker-compose.prod.yml`)
