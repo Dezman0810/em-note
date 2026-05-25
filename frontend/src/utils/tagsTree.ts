@@ -82,3 +82,56 @@ export function visibleTagsForNav(flat: Tag[], collapsedTagIds: Record<string, b
   dfs(null, false)
   return out
 }
+
+/** Корни + все предки в дереве по списку id (для путей фильтров в сайдбаре). */
+export function tagNavAncestorClosure(flat: Tag[], seedIds: Iterable<string>): Set<string> {
+  const byId = new Map(flat.map((t) => [t.id, t]))
+  const out = new Set<string>()
+  for (const tid of seedIds) {
+    let cur: string | null = tid
+    while (cur) {
+      out.add(cur)
+      cur = byId.get(cur)?.parent_id ?? null
+    }
+  }
+  return out
+}
+
+/** Метки на заметках плюс все предки в дереве — чтобы в сайдбаре показать только релевантные ветки. */
+export function tagNavIdsRelevantToNotes(
+  flat: Tag[],
+  notes: ReadonlyArray<{ tag_ids?: string[] }>,
+): Set<string> {
+  const seeds: string[] = []
+  for (const n of notes) {
+    for (const tid of n.tag_ids ?? []) seeds.push(tid)
+  }
+  return tagNavAncestorClosure(flat, seeds)
+}
+
+/**
+ * Счётчики поддеревьев меток по списку заметок — та же модель, что у GET /tags/counts:
+ * заметку учитываем у метки R, если у заметки есть прикреплённая метка из поддерева R (вверх по цепочке предков).
+ */
+export function tagCountsFromNoteList(
+  flat: Tag[],
+  notes: ReadonlyArray<{ tag_ids?: string[] }>,
+): Record<string, number> {
+  const byId = new Map(flat.map((t) => [t.id, t]))
+  const counts: Record<string, number> = {}
+  for (const t of flat) counts[t.id] = 0
+
+  for (const n of notes) {
+    const seen = new Set<string>()
+    for (const tid of n.tag_ids ?? []) {
+      let cur: string | null = tid
+      while (cur) {
+        if (seen.has(cur)) break
+        seen.add(cur)
+        counts[cur] = (counts[cur] ?? 0) + 1
+        cur = byId.get(cur)?.parent_id ?? null
+      }
+    }
+  }
+  return counts
+}

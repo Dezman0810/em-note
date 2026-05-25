@@ -16,7 +16,14 @@ import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
-import { isDescendantTag, tagsWithChildrenSet, visibleTagsForNav } from '../utils/tagsTree'
+import {
+  isDescendantTag,
+  tagCountsFromNoteList,
+  tagNavAncestorClosure,
+  tagNavIdsRelevantToNotes,
+  tagsWithChildrenSet,
+  visibleTagsForNav,
+} from '../utils/tagsTree'
 
 const adminUsersOpen = ref(false)
 
@@ -316,6 +323,22 @@ const isAllFoldersScope = computed(
 )
 const tags = ref<Tag[]>([])
 const tagCountById = ref<Record<string, number>>({})
+/** В скобках у меток: при поиске/фильтре по меткам — по текущему списку заметок; иначе с сервера (область папок). */
+const tagCountByIdForSidebar = computed(() => {
+  if (folderViewTrash.value || !listRefinementBeyondFolders.value) return tagCountById.value
+  return tagCountsFromNoteList(tags.value, notes.value)
+})
+
+/** Скобки у строки метки: при уточнении списка — «в этом списке» из «в области папок» (как у «Все метки»). */
+function tagRowParenText(tagId: string): string {
+  if (folderViewTrash.value || !listRefinementBeyondFolders.value) {
+    return String(tagCountById.value[tagId] ?? 0)
+  }
+  const narrowed = tagCountByIdForSidebar.value[tagId] ?? 0
+  const inFolderScope = tagCountById.value[tagId] ?? 0
+  return `${narrowed} из ${inFolderScope}`
+}
+
 const folderNoteCounts = ref<FolderNoteCounts | null>(null)
 const foldersListExpanded = ref(readBoolKey(FOLDERS_LIST_EXPANDED_KEY, true))
 const tagsListExpanded = ref(readBoolKey(TAGS_LIST_EXPANDED_KEY, true))
@@ -462,11 +485,68 @@ const filterTagsMatchAll = ref(false)
 const tagPlusButtonTitle =
   'Выбрать ветку в фильтре «+» (ещё раз — убрать). Несколько «+»: достаточно любой из выбранных (ИЛИ). Строгий И по веткам — кнопка «∧».'
 const tagsRenderedInSidebar = computed(() => {
-  const nav = tagsVisibleInSidebar.value
+  let nav = tagsVisibleInSidebar.value
+  /* Узкое дерево только при включённой галочке «с заметками» и при поиске/фильтре меток: метки (+ предки), коснувшиеся текущего списка; скобки «n из N» у «Все метки» не от этого. */
+  if (
+    tagsSidebarOnlyWithNotes.value &&
+    listRefinementBeyondFolders.value &&
+    !folderViewTrash.value &&
+    tags.value.length
+  ) {
+    if (notes.value.length === 0) {
+      const seeds = [
+        ...filterTagIds.value,
+        ...filterConjunctTagIds.value,
+        ...filterExcludeTagIds.value,
+        ...filterExcludeUndoTagIds.value,
+      ]
+      nav = seeds.length
+        ? nav.filter((t) => tagNavAncestorClosure(tags.value, seeds).has(t.id))
+        : []
+    } else {
+      const rel = new Set(tagNavIdsRelevantToNotes(tags.value, notes.value))
+      const filterSeeds = [
+        ...filterTagIds.value,
+        ...filterConjunctTagIds.value,
+        ...filterExcludeTagIds.value,
+        ...filterExcludeUndoTagIds.value,
+      ]
+      for (const id of tagNavAncestorClosure(tags.value, filterSeeds)) rel.add(id)
+      nav = nav.filter((t) => rel.has(t.id))
+    }
+  }
   if (!tagsSidebarOnlyWithNotes.value) return nav
-  const counts = tagCountById.value
-  return nav.filter((t) => (counts[String(t.id)] ?? 0) > 0)
+  const counts = tagCountByIdForSidebar.value
+  return nav.filter((t) => {
+    if ((counts[String(t.id)] ?? 0) > 0) return true
+    /* «−» / снятие с исключения / «+» / «∧» при нуле счётчика оставляем в списке — видно активный фильтр */
+    if (tagRowMinusPressed(t.id)) return true
+    if (tagRowSubtreeExcluded(t.id)) return true
+    if (filterTagIds.value.includes(t.id)) return true
+    if (filterConjunctTagIds.value.includes(t.id)) return true
+    return false
+  })
 })
+
+const tagNameById = computed(() => {
+  const m = new Map<string, string>()
+  for (const t of tags.value) m.set(t.id, t.name)
+  return m
+})
+
+/** Имена меток заметки для строки списка (по алфавиту; только известный справочнику сайдбара id). */
+function noteRowTagItems(n: Note): { id: string; label: string }[] {
+  const ids = n.tag_ids ?? []
+  if (!ids.length) return []
+  const m = tagNameById.value
+  const out: { id: string; label: string }[] = []
+  for (const id of ids) {
+    const label = m.get(id)
+    if (label) out.push({ id, label })
+  }
+  out.sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+  return out
+}
 
 const folderScopeUiLabel = computed(() => {
   if (folderViewTrash.value) return 'Корзина'
@@ -1333,6 +1413,14 @@ function noteRowTooltip(n: Note): string {
   if (bodyTip) {
     lines.push('', bodyTip)
   }
+  if (n.folder_id && !folderViewTrash.value) {
+    const fn = folders.value.find((x) => x.id === n.folder_id)?.name
+    if (fn) lines.push('', `Папка: ${fn}`)
+  }
+  const tagLabels = noteRowTagItems(n)
+  if (tagLabels.length) {
+    lines.push('', `Метки: ${tagLabels.map((t) => t.label).join(', ')}`)
+  }
   lines.push('', ...noteRowDatesLines(n))
   return lines.join('\n')
 }
@@ -1945,7 +2033,7 @@ onBeforeUnmount(() => {
                         −
                       </button>
                     </div>
-                    <span class="tag-count">({{ tagCountById[t.id] ?? 0 }})</span>
+                    <span class="tag-count">({{ tagRowParenText(t.id) }})</span>
                   </div>
                 </div>
               </div>
@@ -2069,9 +2157,20 @@ onBeforeUnmount(() => {
                 <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                 <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
                 <span class="meta">
-                  <span v-if="n.folder_id && !folderViewTrash" class="folder-badge">{{
-                    folders.find((x) => x.id === n.folder_id)?.name
-                  }}</span>
+                  <span
+                    v-if="(n.folder_id && !folderViewTrash) || noteRowTagItems(n).length"
+                    class="note-list-badges"
+                  >
+                    <span v-if="n.folder_id && !folderViewTrash" class="folder-badge">{{
+                      folders.find((x) => x.id === n.folder_id)?.name
+                    }}</span>
+                    <span
+                      v-for="tagRow in noteRowTagItems(n)"
+                      :key="tagRow.id"
+                      class="note-tag-badge"
+                      >{{ tagRow.label }}</span
+                    >
+                  </span>
                   <span class="dates dates-compact">
                     <template v-if="folderViewTrash && n.deleted_at">
                       <span class="meta-prefix">Удал.</span>
@@ -3839,14 +3938,36 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   gap: 0.12rem;
 }
+.note-list-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.22rem;
+  max-width: 100%;
+}
+.note-tag-badge {
+  font-size: 0.54rem;
+  font-weight: 500;
+  padding: 0.05rem 0.32rem;
+  border-radius: 6px;
+  background: rgba(248, 250, 252, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  color: #697586;
+  line-height: 1.25;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .folder-badge {
   font-size: 0.58rem;
   font-weight: 500;
   padding: 0.08rem 0.35rem;
   border-radius: 999px;
-  background: rgba(241, 245, 249, 0.95);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  color: #64748b;
+  /* Чуть более тёплая «папочная» заливка, чтобы не смешивать с нейтральными чипами меток */
+  background: rgba(238, 242, 255, 0.98);
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  color: #4c5692;
 }
 .err {
   color: var(--danger);
