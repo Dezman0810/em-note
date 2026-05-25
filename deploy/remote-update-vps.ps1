@@ -28,20 +28,20 @@ if (-not (Test-Path -LiteralPath $SshKey)) {
   Write-Error "SSH-ключ не найден: $SshKey. Укажите -SshKey или положите ключ по этому пути."
 }
 
-$line = "cd '$InstallDir' && git pull --ff-only"
+$remotePrefix = "cd $($InstallDir) && git pull --ff-only && "
 if ($DeployMode -ne "auto") {
-  $line += " && EM_NOTE_DEPLOY_MODE=$DeployMode bash deploy/vps-update.sh"
+  $remoteCmd = "${remotePrefix}EM_NOTE_DEPLOY_MODE=$DeployMode bash deploy/vps-update.sh"
 } else {
-  $line += " && bash deploy/vps-update.sh"
+  $remoteCmd = "${remotePrefix}bash deploy/vps-update.sh"
 }
 
 Write-Host "SSH: $VpsUser@$VpsHost (key: $SshKey)" -ForegroundColor Cyan
-Write-Host "Remote: $line" -ForegroundColor Gray
+Write-Host "Remote: $remoteCmd" -ForegroundColor Gray
 
 & ssh -i $SshKey -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new `
-  "$VpsUser@$VpsHost" "bash -lc `"$line`""
+  "$VpsUser@$VpsHost" $remoteCmd
 
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
-Write-Host "Готово." -ForegroundColor Green
+Write-Host "Done." -ForegroundColor Green

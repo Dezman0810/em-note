@@ -20,7 +20,9 @@ export const RichClipboardPasteFix = Extension.create({
           handlePaste(view: EditorView, event: ClipboardEvent): boolean {
             const cd = event.clipboardData
             if (!cd) return false
-            if (event.shiftKey) return false
+            // DOM: ClipboardEvent в lib DOM не содержит shiftKey; в браузере для paste он бывает наследием UIEvent — проверка опционально
+            const ev = event as ClipboardEvent & { shiftKey?: boolean }
+            if (ev.shiftKey) return false
             if (cd.files?.length) return false
 
             const $from = view.state.selection.$anchor

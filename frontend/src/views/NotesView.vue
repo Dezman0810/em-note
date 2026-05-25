@@ -102,8 +102,8 @@ const showSidebarCollapsedRail = computed(
   () => sidebarNavFullyCollapsed.value && !isNarrowLayout.value
 )
 
-const foldersAsideOuterStyle = computed<Record<string, string | number>>(() => {
-  if (isNarrowLayout.value) return {}
+const foldersAsideOuterStyle = computed((): Record<string, string | number> => {
+  if (isNarrowLayout.value) return {} as Record<string, string | number>
   if (showSidebarCollapsedRail.value) {
     return { width: `${RAIL_ASIDE_WIDTH_PX}px`, flexShrink: '0' }
   }
@@ -129,9 +129,9 @@ const showNotesListCollapsedRail = computed(
   () => notesListColFullyCollapsed.value && !isNarrowLayout.value
 )
 
-const notesListColOuterStyle = computed<Record<string, string | number>>(() => {
-  if (isNarrowLayout.value) return {}
-  if (showNotesListCollapsedRail.value) return {}
+const notesListColOuterStyle = computed((): Record<string, string | number> => {
+  if (isNarrowLayout.value) return {} as Record<string, string | number>
+  if (showNotesListCollapsedRail.value) return {} as Record<string, string | number>
   return { width: `${colListPx.value}px`, flexShrink: '0' }
 })
 
