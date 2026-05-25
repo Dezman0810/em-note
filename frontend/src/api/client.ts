@@ -94,10 +94,17 @@ export type NotesListParams = {
   exclude_tag_undo_id?: string | string[]
   /** Заметки из этих папок скрыть из списка (повтор `exclude_folder_id` в query). */
   exclude_folder_id?: string | string[]
+  /**
+   * Блок ∧ отдельно от «+»: каждый conjunct_tag_id — поддерево; между ними всегда И.
+   */
+  conjunct_tag_id?: string | string[]
+  /** Если true и несколько `tag_id`: заметка должна содержать все выбранные поддеревья (И). */
+  tag_match_all?: boolean
 }
 
 const REPEAT_QUERY_KEYS = new Set([
   'tag_id',
+  'conjunct_tag_id',
   'folder_id',
   'exclude_tag_id',
   'exclude_tag_undo_id',
@@ -215,6 +222,9 @@ export type NoteFilterPresetWriteBody = {
   tag_ids?: string[]
   exclude_tag_ids?: string[]
   exclude_tag_undo_ids?: string[]
+  conjunct_tag_ids?: string[]
+  tag_nav_collapsed_ids?: string[]
+  tag_match_all?: boolean
 }
 
 export const noteFilterPresetsApi = {

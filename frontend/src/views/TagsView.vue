@@ -800,7 +800,9 @@ onBeforeUnmount(() => {
   <div class="workspace">
     <header class="workspace-header">
       <div class="header-left">
-        <h1 class="logo">Note</h1>
+        <h1 class="logo logo-wordmark" lang="ru">
+          <span class="logo-brand"><span class="logo-brand-accent">Em</span><span class="logo-brand-dash">-</span><span>Note</span></span>
+        </h1>
         <span class="header-sub">Метки</span>
       </div>
       <div class="actions">
@@ -1066,14 +1068,32 @@ onBeforeUnmount(() => {
 }
 .header-left {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
 }
 .logo {
   margin: 0;
-  font-size: 0.9375rem;
+  line-height: 1.05;
+}
+.logo-wordmark {
+  font-family: 'Sora', 'Inter', system-ui, sans-serif;
+  font-size: 1.375rem;
   font-weight: 700;
+  letter-spacing: -0.055em;
   color: #0f172a;
+}
+.logo-brand {
+  display: inline-flex;
+  align-items: baseline;
+}
+.logo-brand-accent {
+  color: var(--accent, #2563eb);
+  font-weight: 700;
+}
+.logo-brand-dash {
+  color: #64748b;
+  font-weight: 600;
+  margin: 0 0.02em;
 }
 .header-sub {
   font-size: 0.68rem;

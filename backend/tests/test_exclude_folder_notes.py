@@ -40,3 +40,30 @@ async def test_exclude_folder_removes_own_notes(client: AsyncClient) -> None:
     ids = {n["id"] for n in r.json()}
     assert nk_id in ids
     assert nh_id not in ids
+
+
+async def test_exclude_folder_keeps_unfoldered_notes(client: AsyncClient) -> None:
+    """Без папки (folder_id NULL): исключить «папочные» — не фильтровать из-за UNKNOWN в SQL IN."""
+    h = await _headers(client, email="unfldex@test.com")
+
+    b = await client.post("/api/folders", json={"name": "Box"}, headers=h)
+    assert b.status_code == 201, b.text
+    box_id = b.json()["id"]
+
+    n_box = await client.post(
+        "/api/notes", json={"title": "В папке", "content_json": "{}", "folder_id": box_id}, headers=h
+    )
+    assert n_box.status_code == 201, n_box.text
+    n_box_id = n_box.json()["id"]
+
+    n_root = await client.post(
+        "/api/notes", json={"title": "Без папки", "content_json": "{}"}, headers=h
+    )
+    assert n_root.status_code == 201, n_root.text
+    n_root_id = n_root.json()["id"]
+
+    r = await client.get("/api/notes", params={"exclude_folder_id": box_id}, headers=h)
+    assert r.status_code == 200, r.text
+    ids = {n["id"] for n in r.json()}
+    assert n_root_id in ids
+    assert n_box_id not in ids

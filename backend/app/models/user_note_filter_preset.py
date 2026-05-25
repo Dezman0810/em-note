@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,6 +33,12 @@ class UserNoteFilterPreset(Base):
     tag_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     exclude_tag_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     exclude_tag_undo_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    """Корни меток для блока ∧: все поддеревья должны выполняться (пересечение)."""
+    conjunct_tag_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    """id меток, свёрнутых в дереве сайдбара при сохранении набора фильтров."""
+    tag_nav_collapsed_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    """Если true — заметка должна содержать все выбранные «+» метки (поддеревья пересечением)."""
+    tag_match_all: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

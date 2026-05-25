@@ -28,6 +28,9 @@ class _PresetFilterFieldsMixin(BaseModel):
     tag_ids: list[uuid.UUID] = Field(default_factory=list)
     exclude_tag_ids: list[uuid.UUID] = Field(default_factory=list)
     exclude_tag_undo_ids: list[uuid.UUID] = Field(default_factory=list)
+    conjunct_tag_ids: list[uuid.UUID] = Field(default_factory=list)
+    tag_nav_collapsed_ids: list[uuid.UUID] = Field(default_factory=list)
+    tag_match_all: bool = False
 
     @field_validator(
         "folder_ids",
@@ -35,6 +38,8 @@ class _PresetFilterFieldsMixin(BaseModel):
         "tag_ids",
         "exclude_tag_ids",
         "exclude_tag_undo_ids",
+        "conjunct_tag_ids",
+        "tag_nav_collapsed_ids",
         mode="after",
     )
     @classmethod
@@ -56,6 +61,9 @@ class FilterPresetUpdate(BaseModel):
     tag_ids: list[uuid.UUID] | None = None
     exclude_tag_ids: list[uuid.UUID] | None = None
     exclude_tag_undo_ids: list[uuid.UUID] | None = None
+    conjunct_tag_ids: list[uuid.UUID] | None = None
+    tag_nav_collapsed_ids: list[uuid.UUID] | None = None
+    tag_match_all: bool | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -65,6 +73,8 @@ class FilterPresetUpdate(BaseModel):
         "tag_ids",
         "exclude_tag_ids",
         "exclude_tag_undo_ids",
+        "conjunct_tag_ids",
+        "tag_nav_collapsed_ids",
         mode="after",
     )
     @classmethod
@@ -86,6 +96,9 @@ class FilterPresetRead(BaseModel):
     tag_ids: list[uuid.UUID] = Field(default_factory=list)
     exclude_tag_ids: list[uuid.UUID] = Field(default_factory=list)
     exclude_tag_undo_ids: list[uuid.UUID] = Field(default_factory=list)
+    conjunct_tag_ids: list[uuid.UUID] = Field(default_factory=list)
+    tag_nav_collapsed_ids: list[uuid.UUID] = Field(default_factory=list)
+    tag_match_all: bool = False
     sort_order: int
     created_at: UtcDatetime
     updated_at: UtcDatetime
@@ -98,6 +111,8 @@ class FilterPresetRead(BaseModel):
         "tag_ids",
         "exclude_tag_ids",
         "exclude_tag_undo_ids",
+        "conjunct_tag_ids",
+        "tag_nav_collapsed_ids",
         mode="before",
     )
     @classmethod

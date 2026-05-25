@@ -96,6 +96,108 @@ async def test_notes_filter_multiple_tags_or_union(client: AsyncClient) -> None:
     assert got == {n1_id, n2_id}
 
 
+async def test_conjunct_tag_id_requires_each_subtree(client: AsyncClient) -> None:
+    """conjunct_tag_id: каждый корень — отдельное условие по поддереву; межу ними И."""
+    h = await _auth_headers(client, email="conjunct@example.com", password="password99")
+
+    a = await client.post("/api/tags", json={"name": "CjA"}, headers=h)
+    assert a.status_code == 201, a.text
+    a_id = a.json()["id"]
+    b = await client.post("/api/tags", json={"name": "CjB"}, headers=h)
+    assert b.status_code == 201, b.text
+    b_id = b.json()["id"]
+
+    n_both = await client.post("/api/notes", json={"title": "CjBoth", "content_json": "{}"}, headers=h)
+    assert n_both.status_code == 201, n_both.text
+    n_both_id = n_both.json()["id"]
+    await client.post(f"/api/notes/{n_both_id}/tags/{a_id}", headers=h)
+    await client.post(f"/api/notes/{n_both_id}/tags/{b_id}", headers=h)
+
+    n_only_a = await client.post("/api/notes", json={"title": "CjAonly", "content_json": "{}"}, headers=h)
+    assert n_only_a.status_code == 201, n_only_a.text
+    n_only_a_id = n_only_a.json()["id"]
+    await client.post(f"/api/notes/{n_only_a_id}/tags/{a_id}", headers=h)
+
+    r = await client.get(
+        "/api/notes",
+        params=[("conjunct_tag_id", a_id), ("conjunct_tag_id", b_id)],
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    assert {n["id"] for n in r.json()} == {n_both_id}
+
+
+async def test_conjunct_tag_id_with_exclude_and_positive_union(client: AsyncClient) -> None:
+    """∧ блок вместе с tag_id (ИЛИ) и exclude_tag_id."""
+    h = await _auth_headers(client, email="cjmix@example.com", password="password99")
+
+    a = await client.post("/api/tags", json={"name": "MixA"}, headers=h)
+    a_id = a.json()["id"]
+    b = await client.post("/api/tags", json={"name": "MixB"}, headers=h)
+    b_id = b.json()["id"]
+    red = await client.post("/api/tags", json={"name": "MixRed"}, headers=h)
+    red_id = red.json()["id"]
+
+    n_ab = await client.post("/api/notes", json={"title": "AB", "content_json": "{}"}, headers=h)
+    n_ab_id = n_ab.json()["id"]
+    await client.post(f"/api/notes/{n_ab_id}/tags/{a_id}", headers=h)
+    await client.post(f"/api/notes/{n_ab_id}/tags/{b_id}", headers=h)
+
+    n_a_red = await client.post("/api/notes", json={"title": "ARed", "content_json": "{}"}, headers=h)
+    n_a_red_id = n_a_red.json()["id"]
+    await client.post(f"/api/notes/{n_a_red_id}/tags/{a_id}", headers=h)
+    await client.post(f"/api/notes/{n_a_red_id}/tags/{red_id}", headers=h)
+
+    # + только A ∪ B, ∧ A и B ⇒ AB; red исключает ARed
+    r = await client.get(
+        "/api/notes",
+        params=[
+            ("tag_id", a_id),
+            ("tag_id", b_id),
+            ("conjunct_tag_id", a_id),
+            ("conjunct_tag_id", b_id),
+            ("exclude_tag_id", red_id),
+        ],
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    assert {n["id"] for n in r.json()} == {n_ab_id}
+
+
+async def test_notes_filter_multiple_tags_and_intersection(client: AsyncClient) -> None:
+    """Несколько tag_id и tag_match_all=true: только заметки с каждой меткой поддерева (И)."""
+    h = await _auth_headers(client, email="andtags@example.com", password="password99")
+
+    a = await client.post("/api/tags", json={"name": "AndA"}, headers=h)
+    assert a.status_code == 201, a.text
+    a_id = a.json()["id"]
+    b = await client.post("/api/tags", json={"name": "AndB"}, headers=h)
+    assert b.status_code == 201, b.text
+    b_id = b.json()["id"]
+
+    n_both = await client.post("/api/notes", json={"title": "Both", "content_json": "{}"}, headers=h)
+    assert n_both.status_code == 201, n_both.text
+    n_both_id = n_both.json()["id"]
+    na = await client.post(f"/api/notes/{n_both_id}/tags/{a_id}", headers=h)
+    assert na.status_code == 200, na.text
+    nb = await client.post(f"/api/notes/{n_both_id}/tags/{b_id}", headers=h)
+    assert nb.status_code == 200, nb.text
+
+    n_only_a = await client.post("/api/notes", json={"title": "OnlyA", "content_json": "{}"}, headers=h)
+    assert n_only_a.status_code == 201, n_only_a.text
+    n_only_a_id = n_only_a.json()["id"]
+    await client.post(f"/api/notes/{n_only_a_id}/tags/{a_id}", headers=h)
+
+    anded = await client.get(
+        "/api/notes",
+        params=[("tag_id", a_id), ("tag_id", b_id), ("tag_match_all", "true")],
+        headers=h,
+    )
+    assert anded.status_code == 200, anded.text
+    ids = {n["id"] for n in anded.json()}
+    assert ids == {n_both_id}
+
+
 async def test_exclude_tag_id_filters_notes(client: AsyncClient) -> None:
     """exclude_tag_id убирает из списка заметки с этой меткой (поддерево корня)."""
     h = await _auth_headers(client, email="excludetag@example.com", password="password99")

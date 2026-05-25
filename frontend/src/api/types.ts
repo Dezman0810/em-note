@@ -82,6 +82,12 @@ export interface NoteFilterPreset {
   tag_ids: string[]
   exclude_tag_ids: string[]
   exclude_tag_undo_ids: string[]
+  /** Корни блока ∧: заметка должна попадать во все выбранные поддеревья (И между корнями). */
+  conjunct_tag_ids: string[]
+  /** id меток, которые в сайдбаре сохранены свёрнутыми (ветка скрыта). */
+  tag_nav_collapsed_ids: string[]
+  /** Несколько tag_ids (+): все сразу (И) или любая (ИЛИ). */
+  tag_match_all: boolean
   sort_order: number
   created_at: string
   updated_at: string

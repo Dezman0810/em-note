@@ -186,6 +186,51 @@ async def _effective_exclude_tag_tree_ids(
     return list(ex_set - undo_union)
 
 
+async def _apply_positive_tag_filter(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    q: Select[tuple[Note]],
+    tag_roots: list[uuid.UUID],
+    tag_match_all: bool,
+) -> Select[tuple[Note]]:
+    """Положительный фильтр по меткам: объединение поддеревьев (ИЛИ) или все корни (И)."""
+    if not tag_roots:
+        return q
+    user_tags = await _user_tags_all(db, user_id)
+    for tid in tag_roots:
+        await _validate_user_tag(db, tid, user_id)
+
+    if tag_match_all and len(tag_roots) > 1:
+        for tid in tag_roots:
+            subtree = list(subtree_tag_ids(tid, user_tags))
+            if subtree:
+                q = q.where(tag_match_predicate(user_id, subtree))
+        return q
+
+    union_ids: set[uuid.UUID] = set()
+    for tid in tag_roots:
+        union_ids.update(subtree_tag_ids(tid, user_tags))
+    return q.where(tag_match_predicate(user_id, list(union_ids)))
+
+
+async def _apply_conjunct_tag_roots(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    q: Select[tuple[Note]],
+    conjunct_roots: list[uuid.UUID],
+) -> Select[tuple[Note]]:
+    """Блок ∧: каждый корень — отдельное условие «заметка в поддереве»; все вместе через И."""
+    if not conjunct_roots:
+        return q
+    user_tags = await _user_tags_all(db, user_id)
+    for cid in conjunct_roots:
+        await _validate_user_tag(db, cid, user_id)
+        subtree = list(subtree_tag_ids(cid, user_tags))
+        if subtree:
+            q = q.where(tag_match_predicate(user_id, subtree))
+    return q
+
+
 def _accessible_notes_query(user_id: uuid.UUID) -> Select[tuple[Note]]:
     shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
     return (
@@ -233,9 +278,11 @@ async def list_notes(
     unfoldered: Annotated[bool, Query()] = False,
     trash_only: Annotated[bool, Query()] = False,
     tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    conjunct_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_tag_undo_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    tag_match_all: Annotated[bool, Query()] = False,
 ) -> list[NoteRead]:
     if trash_only:
         result = await db.execute(
@@ -248,6 +295,7 @@ async def list_notes(
         return await _notes_to_read_models(db, user.id, list(trash_notes))
 
     tag_roots = tag_id or []
+    conjunct_roots = conjunct_tag_id or []
     folder_ids = folder_id or []
 
     q = _accessible_notes_query(user.id)
@@ -258,8 +306,9 @@ async def list_notes(
             folder_scope_predicate(user.id, None if unfoldered else folder_ids, unfoldered)
         )
     if tag_roots:
-        tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
-        q = q.where(tag_match_predicate(user.id, tree_ids))
+        q = await _apply_positive_tag_filter(db, user.id, q, tag_roots, tag_match_all)
+    if conjunct_roots:
+        q = await _apply_conjunct_tag_roots(db, user.id, q, conjunct_roots)
     exclude_roots = exclude_tag_id or []
     if exclude_roots:
         ex_tree_ids = await _effective_exclude_tag_tree_ids(
@@ -289,11 +338,14 @@ async def search_notes(
     folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
     tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    conjunct_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_tag_undo_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     exclude_folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    tag_match_all: Annotated[bool, Query()] = False,
 ) -> list[NoteRead]:
     tag_roots = tag_id or []
+    conjunct_roots = conjunct_tag_id or []
     folder_ids = folder_id or []
 
     pattern = _ilike_pattern(q)
@@ -307,8 +359,9 @@ async def search_notes(
             folder_scope_predicate(user.id, None if unfoldered else folder_ids, unfoldered)
         )
     if tag_roots:
-        tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
-        base = base.where(tag_match_predicate(user.id, tree_ids))
+        base = await _apply_positive_tag_filter(db, user.id, base, tag_roots, tag_match_all)
+    if conjunct_roots:
+        base = await _apply_conjunct_tag_roots(db, user.id, base, conjunct_roots)
     exclude_roots = exclude_tag_id or []
     if exclude_roots:
         ex_tree_ids = await _effective_exclude_tag_tree_ids(

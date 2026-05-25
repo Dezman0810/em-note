@@ -33,6 +33,9 @@ function syncNarrowLayout() {
 
 const COL_FOLDER_KEY = 'note-ui-w-folder'
 const TAG_NAV_COLLAPSED_KEY = 'note-ui-tag-collapsed'
+
+/** Шаг отступа вложенности = `.folder-nav-tags-panel .tag-chevron` (+ спейсер) + gap в `.nav-row-label--tag`; корень — без доп. padding-left. */
+const TAG_NAV_TREE_INDENT_REM = 1 + 0.14
 const COL_LIST_KEY = 'note-ui-w-list'
 const FOLDER_NAV_MAIN_H_KEY = 'note-ui-folder-main-h'
 const TAGS_PANEL_H_KEY = 'note-ui-tags-panel-h'
@@ -77,7 +80,7 @@ function readColW(key: string, fallback: number, min: number, max: number): numb
   }
 }
 
-const colFolderPx = ref(readColW(COL_FOLDER_KEY, 200, 120, 420))
+const colFolderPx = ref(readColW(COL_FOLDER_KEY, 160, 100, 360))
 const colListPx = ref(readColW(COL_LIST_KEY, 300, 160, 640))
 
 type GutterDrag = null | 'folder' | 'list' | 'folderNavV' | 'tagsCalendar'
@@ -91,7 +94,7 @@ let gutterStartTagsPanelH = 0
 
 const folderNavRef = ref<HTMLElement | null>(null)
 const folderNavMainPx = ref(
-  readColW(FOLDER_NAV_MAIN_H_KEY, 200, 72, 560)
+  readColW(FOLDER_NAV_MAIN_H_KEY, 148, 72, 480)
 )
 /** Высота блока меток (рамка: фильтры + список); календарь ниже. */
 const tagsPanelHeightPx = ref(readColW(TAGS_PANEL_H_KEY, 200, 96, 520))
@@ -237,7 +240,7 @@ function onGutterMove(e: MouseEvent) {
   }
   const dx = e.clientX - gutterStartX
   if (gutterDrag.value === 'folder') {
-    colFolderPx.value = Math.min(420, Math.max(120, gutterStartFolder + dx))
+    colFolderPx.value = Math.min(360, Math.max(100, gutterStartFolder + dx))
   } else {
     colListPx.value = Math.min(640, Math.max(160, gutterStartList + dx))
   }
@@ -270,7 +273,6 @@ const router = useRouter()
 
 const notes = ref<Note[]>([])
 const folders = ref<Folder[]>([])
-const newFolderName = ref('')
 const q = ref('')
 const loading = ref(true)
 const error = ref('')
@@ -285,6 +287,8 @@ const filterExcludeFolderIds = ref<string[]>([])
 const filterTagIds = ref<string[]>([])
 /** Корни веток, исключаемые из списка; «−» вкл/выкл по корню, можно совмещать с «+» у родителя. */
 const filterExcludeTagIds = ref<string[]>([])
+/** Корни блока ∧: все выбранные поддеревья одновременно (И между «∧», не зависит от галочки у «Все метки»). */
+const filterConjunctTagIds = ref<string[]>([])
 /** Корни поддеревьев, снятых с исключения (красное), если они попадали только под родительское «−». */
 const filterExcludeUndoTagIds = ref<string[]>([])
 
@@ -301,6 +305,7 @@ const listRefinementBeyondFolders = computed(
   () =>
     !!q.value.trim() ||
     filterTagIds.value.length > 0 ||
+    filterConjunctTagIds.value.length > 0 ||
     filterExcludeTagIds.value.length > 0 ||
     filterExcludeUndoTagIds.value.length > 0,
 )
@@ -452,7 +457,10 @@ watch(tagsSidebarOnlyWithNotes, (v) =>
   writeBoolKey(TAGS_ONLY_WITH_NOTES_IN_SCOPE_KEY, v)
 )
 
-/** То же дерево меток с отсечкой нулевых счётчиков в текущей области. */
+/** Включение «все + сразу» осталось только из старых пресетов (`tag_match_all`); в UI режим И даёт кнопка «∧». */
+const filterTagsMatchAll = ref(false)
+const tagPlusButtonTitle =
+  'Выбрать ветку в фильтре «+» (ещё раз — убрать). Несколько «+»: достаточно любой из выбранных (ИЛИ). Строгий И по веткам — кнопка «∧».'
 const tagsRenderedInSidebar = computed(() => {
   const nav = tagsVisibleInSidebar.value
   if (!tagsSidebarOnlyWithNotes.value) return nav
@@ -484,6 +492,25 @@ function persistTagNavCollapsed() {
   }
 }
 
+/** id меток со свёрнутым дочерним списком в сайдбаре (положение «▸») — сохраняется в набор фильтров. */
+function tagNavCollapsedIdsForPresetPayload(): string[] {
+  const out: string[] = []
+  for (const [id, folded] of Object.entries(collapsedTagIds.value)) {
+    if (folded) out.push(id)
+  }
+  return out.slice().sort()
+}
+
+/** Восстановить свёрнутость дерева меток из пресета (остальные ветки развёрнуты). */
+function applyTagNavCollapsedFromPreset(ids: string[] | undefined | null): void {
+  const next: Record<string, boolean> = {}
+  for (const raw of ids ?? []) {
+    next[String(raw)] = true
+  }
+  collapsedTagIds.value = next
+  persistTagNavCollapsed()
+}
+
 function toggleTagNavCollapse(tagId: string, e: Event) {
   e.preventDefault()
   e.stopPropagation()
@@ -497,8 +524,10 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
 
 function clearTagFilter() {
   filterTagIds.value = []
+  filterConjunctTagIds.value = []
   filterExcludeTagIds.value = []
   filterExcludeUndoTagIds.value = []
+  filterTagsMatchAll.value = false
 }
 
 /** Вкл/выкл корень в положительном фильтре (несколько «+», ИЛИ на сервере). */
@@ -508,6 +537,15 @@ function toggleTagIncludeRoot(id: string) {
   if (i >= 0) cur.splice(i, 1)
   else cur.push(id)
   filterTagIds.value = cur
+}
+
+/** Вкл/выкл корень в блоке ∧ (все выбранные поддеревья одновременно). */
+function toggleTagConjunctRoot(id: string) {
+  const cur = [...filterConjunctTagIds.value]
+  const i = cur.indexOf(id)
+  if (i >= 0) cur.splice(i, 1)
+  else cur.push(id)
+  filterConjunctTagIds.value = cur
 }
 
 /** Вкл/выкл корень в исключении (можно исключить вложенность при активном «+» у родителя). */
@@ -521,6 +559,11 @@ function toggleTagExcludeRoot(id: string) {
 
 function onSidebarTagClick(t: Tag) {
   toggleTagIncludeRoot(t.id)
+}
+
+/** Кнопка «∧»: отдельный блок И по поддеревьям — не путать с «+ И» у «Все метки». */
+function applyTagConjunctFilterToggle(t: Tag) {
+  toggleTagConjunctRoot(t.id)
 }
 
 /** «+»: выбрал / снова нажал — снял. */
@@ -558,6 +601,12 @@ function applyTagExcludeFilterToggle(t: Tag) {
 function tagRowSubtreeIncluded(tagId: string): boolean {
   const flat = tags.value
   return filterTagIds.value.some((inc) => isDescendantTag(flat, inc, tagId))
+}
+
+/** Строка в зоне блока ∧ — узел входит под любым корнем «∧» (аналог охвата красным для «−»). */
+function tagRowSubtreeConjunct(tagId: string): boolean {
+  const flat = tags.value
+  return filterConjunctTagIds.value.some((cid) => isDescendantTag(flat, cid, tagId))
 }
 
 /** Строка в зоне исключения поддерева (учитываются carve-out «снять с подветки»). */
@@ -810,16 +859,23 @@ function folderRowIncludedHighlight(folderId: string): boolean {
 
 function tagFilterParams(): {
   tag_id?: string | string[]
+  conjunct_tag_id?: string | string[]
   exclude_tag_id?: string | string[]
   exclude_tag_undo_id?: string | string[]
+  tag_match_all?: boolean
 } {
   const out: {
     tag_id?: string | string[]
+    conjunct_tag_id?: string | string[]
     exclude_tag_id?: string | string[]
     exclude_tag_undo_id?: string | string[]
+    tag_match_all?: boolean
   } = {}
   const ids = filterTagIds.value
   if (ids.length) out.tag_id = ids.length === 1 ? ids[0]! : [...ids]
+  if (ids.length > 1 && filterTagsMatchAll.value) out.tag_match_all = true
+  const cids = filterConjunctTagIds.value
+  if (cids.length) out.conjunct_tag_id = cids.length === 1 ? cids[0]! : [...cids]
   const xids = filterExcludeTagIds.value
   if (xids.length) out.exclude_tag_id = xids.length === 1 ? xids[0]! : [...xids]
   const uids = filterExcludeUndoTagIds.value
@@ -834,8 +890,11 @@ function filterStateFingerprint(): string {
     folders: [...filterFolderIds.value].slice().sort(),
     exFolders: [...filterExcludeFolderIds.value].slice().sort(),
     tags: [...filterTagIds.value].slice().sort(),
+    tagMatchAll: filterTagsMatchAll.value,
+    conjunct: [...filterConjunctTagIds.value].slice().sort(),
     exTags: [...filterExcludeTagIds.value].slice().sort(),
     exUndo: [...filterExcludeUndoTagIds.value].slice().sort(),
+    tagNavCollapsed: tagNavCollapsedIdsForPresetPayload(),
   })
 }
 
@@ -846,8 +905,11 @@ function fingerprintFromPresetPayload(p: NoteFilterPreset): string {
     folders: [...p.folder_ids].map(String).sort(),
     exFolders: [...p.exclude_folder_ids].map(String).sort(),
     tags: [...p.tag_ids].map(String).sort(),
+    tagMatchAll: !!p.tag_match_all,
+    conjunct: [...(p.conjunct_tag_ids ?? [])].map(String).sort(),
     exTags: [...p.exclude_tag_ids].map(String).sort(),
     exUndo: [...p.exclude_tag_undo_ids].map(String).sort(),
+    tagNavCollapsed: [...(p.tag_nav_collapsed_ids ?? [])].map(String).sort(),
   })
 }
 
@@ -858,6 +920,9 @@ function presetFiltersPayload(): {
   tag_ids: string[]
   exclude_tag_ids: string[]
   exclude_tag_undo_ids: string[]
+  conjunct_tag_ids: string[]
+  tag_nav_collapsed_ids: string[]
+  tag_match_all: boolean
 } {
   const qt = q.value.trim()
   return {
@@ -867,6 +932,10 @@ function presetFiltersPayload(): {
     tag_ids: [...filterTagIds.value],
     exclude_tag_ids: [...filterExcludeTagIds.value],
     exclude_tag_undo_ids: [...filterExcludeUndoTagIds.value],
+    conjunct_tag_ids: [...filterConjunctTagIds.value],
+    tag_nav_collapsed_ids: tagNavCollapsedIdsForPresetPayload(),
+    tag_match_all:
+      filterTagIds.value.length > 1 ? filterTagsMatchAll.value : false,
   }
 }
 
@@ -911,6 +980,30 @@ watch(presetPickerOpen, (open) => {
     document.removeEventListener('keydown', onPresetDocKeydown, true)
   }
 })
+
+/** Клик по логотипу: главный экран — все заметки, все метки, без фильтров и пресета, секции сайдбара развёрнуты. */
+function goHomeFromLogo() {
+  closePresetPicker()
+  presetSelectId.value = ''
+  presetBaselineFingerprint.value = null
+  q.value = ''
+  clearFolderPicker()
+  clearTagFilter()
+  tagsSidebarOnlyWithNotes.value = false
+  collapsedTagIds.value = {}
+  persistTagNavCollapsed()
+  foldersListExpanded.value = true
+  tagsListExpanded.value = true
+  calendarListExpanded.value = true
+  writeBoolKey(FOLDERS_LIST_EXPANDED_KEY, true)
+  writeBoolKey(TAGS_LIST_EXPANDED_KEY, true)
+  writeBoolKey(CALENDAR_EXPANDED_KEY, true)
+  sidebarNavFullyCollapsed.value = false
+  writeBoolKey(SIDEBAR_NAV_FULL_COLLAPSE_KEY, false)
+  mobileNavOpen.value = false
+  void router.push({ name: 'notes' })
+  void nextTick(() => clampTagsPanelHeight())
+}
 
 async function load() {
   loading.value = true
@@ -1002,9 +1095,12 @@ async function applyPresetFromList(p: NoteFilterPreset) {
     filterFolderIds.value = [...p.folder_ids]
     filterExcludeFolderIds.value = [...p.exclude_folder_ids]
     filterTagIds.value = [...p.tag_ids]
+    filterConjunctTagIds.value = [...(p.conjunct_tag_ids ?? [])]
     filterExcludeTagIds.value = [...p.exclude_tag_ids]
     filterExcludeUndoTagIds.value = [...p.exclude_tag_undo_ids]
+    filterTagsMatchAll.value = !!(p.tag_ids.length > 1 && p.tag_match_all)
     q.value = p.search_query ?? ''
+    applyTagNavCollapsedFromPreset(p.tag_nav_collapsed_ids ?? [])
   } finally {
     bulkPresetApplyDepth.value--
   }
@@ -1103,12 +1199,11 @@ async function deleteFilterPresetById(id: string) {
   }
 }
 
-async function createFolder() {
-  const name = newFolderName.value.trim()
-  if (!name) return
+async function promptAndCreateFolder() {
+  const name = window.prompt('Имя папки', '')
+  if (name === null || !name.trim()) return
   try {
-    await foldersApi.create({ name })
-    newFolderName.value = ''
+    await foldersApi.create({ name: name.trim() })
     error.value = ''
     await loadFolders()
   } catch (e) {
@@ -1269,6 +1364,7 @@ watch(folderViewTrash, (trash) => {
     presetSelectId.value = ''
     presetBaselineFingerprint.value = null
     filterTagIds.value = []
+    filterConjunctTagIds.value = []
     filterExcludeTagIds.value = []
     filterExcludeUndoTagIds.value = []
     filterExcludeFolderIds.value = []
@@ -1287,12 +1383,13 @@ watch(
   { deep: true }
 )
 watch(
-  [filterTagIds, filterExcludeTagIds, filterExcludeUndoTagIds],
+  [filterTagIds, filterConjunctTagIds, filterExcludeTagIds, filterExcludeUndoTagIds],
   () => {
     if (bulkPresetApplyDepth.value > 0) return
     if (folderViewTrash.value) {
       if (
         filterTagIds.value.length ||
+        filterConjunctTagIds.value.length ||
         filterExcludeTagIds.value.length ||
         filterExcludeUndoTagIds.value.length
       ) {
@@ -1349,8 +1446,16 @@ onBeforeUnmount(() => {
         >
           ☰
         </button>
-        <h1 class="logo">Note</h1>
-        <span class="header-sub">Заметки</span>
+        <button
+          type="button"
+          class="logo logo-wordmark logo-home-btn"
+          lang="ru"
+          aria-label="На главную: все заметки и метки, сброс фильтров"
+          title="На главную"
+          @click="goHomeFromLogo"
+        >
+          <span class="logo-brand"><span class="logo-brand-accent">Em</span><span class="logo-brand-dash">-</span><span>Note</span></span>
+        </button>
       </div>
       <div class="header-toolbar">
         <button
@@ -1362,17 +1467,22 @@ onBeforeUnmount(() => {
         >
           Админка
         </button>
-        <div class="header-search-block">
-          <div class="search-wrap">
-          <input
-            v-model="q"
-            class="search"
-            type="search"
-            placeholder="Поиск по заголовку и тексту…"
-            aria-label="Поиск заметок"
-            @keyup.enter="load"
-          />
-          </div>
+
+        <div class="header-main-actions">
+          <button
+            type="button"
+            class="btn primary header-action-new-note"
+            :disabled="auth.user != null && !auth.user.can_create_notes"
+            :title="
+              auth.user && !auth.user.can_create_notes
+                ? 'Создание заметок отключено. Обратитесь к администратору.'
+                : ''
+            "
+            @click="createNote"
+          >
+            Новая заметка
+          </button>
+
           <div v-if="auth.user && !folderViewTrash" class="preset-strip">
             <div ref="presetPickerRootRef" class="preset-picker">
               <div class="preset-combo">
@@ -1527,22 +1637,31 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-        </div>
-        <div class="action-cluster">
-          <button type="button" class="btn secondary" @click="load">Найти</button>
-          <button type="button" class="btn secondary" @click="router.push('/tags')">Метки</button>
-          <button
-            type="button"
-            class="btn primary"
-            :disabled="auth.user != null && !auth.user.can_create_notes"
-            :title="
-              auth.user && !auth.user.can_create_notes
-                ? 'Создание заметок отключено. Обратитесь к администратору.'
-                : ''
-            "
-            @click="createNote"
-          >
-            Новая заметка
+
+          <div class="header-search-inner">
+            <div class="search-shell">
+              <input
+                v-model="q"
+                class="search search--in-shell"
+                type="search"
+                placeholder="Поиск по заголовку и тексту…"
+                aria-label="Поиск заметок"
+                @keyup.enter="load"
+              />
+              <button
+                v-show="q.trim()"
+                type="button"
+                class="search-submit"
+                aria-label="Выполнить поиск"
+                @click="load"
+              >
+                Найти
+              </button>
+            </div>
+          </div>
+
+          <button type="button" class="btn secondary header-tags-btn" @click="router.push('/tags')">
+            Метки
           </button>
         </div>
       </div>
@@ -1577,27 +1696,9 @@ onBeforeUnmount(() => {
           <div class="folder-nav-main" :style="folderNavMainStyle">
             <div class="folder-nav-folders-panel">
               <div class="folder-nav-folders-sticky">
-                <div class="folder-new-row">
-                  <input
-                    v-model="newFolderName"
-                    type="text"
-                    placeholder="Новая папка…"
-                    aria-label="Имя новой папки"
-                    @keyup.enter="createFolder"
-                  />
-                  <button type="button" class="btn-sm primary" title="Создать папку" @click="createFolder">+</button>
-                  <button
-                    v-if="!isNarrowLayout"
-                    type="button"
-                    class="btn-nav-panel-hide"
-                    title="Скрыть панель: папки, метки и календарь"
-                    aria-label="Скрыть боковую панель навигации"
-                    @click="toggleSidebarNavFullyCollapsed"
-                  >
-                    −
-                  </button>
-                </div>
-                <div class="folder-all-row tag-all-wrap folder-all-row--frame">
+                <div
+                  class="folder-all-row tag-all-wrap folder-all-row--frame folder-all-row--folders-scope"
+                >
                   <button
                     v-if="foldersSorted.length"
                     type="button"
@@ -1609,17 +1710,41 @@ onBeforeUnmount(() => {
                     {{ foldersListExpanded ? '▾' : '▸' }}
                   </button>
                   <span v-else class="section-chevron-spacer" />
-                  <button
-                    type="button"
-                    class="folder-filter grow folder-filter-all"
-                    :class="{ on: isAllFoldersScope }"
-                    @click="clearFolderPicker"
-                    @dragover="onFolderDragOver"
-                    @drop="onFolderDrop($event, 'all')"
+                  <div
+                    class="folder-notes-scope-slot"
+                    :class="{ 'folder-notes-scope-slot--no-panel-hide': isNarrowLayout }"
                   >
-                    <span class="folder-label nav-scope-label">Все заметки</span>
-                    <span v-if="folderNoteCounts" class="tag-count nav-scope-count"> ({{ sidebarAllNotesParenText }})</span>
-                  </button>
+                    <button
+                      type="button"
+                      class="folder-filter grow folder-filter-all nav-scope-folders-all-btn"
+                      :class="{ on: isAllFoldersScope }"
+                      @click="clearFolderPicker"
+                      @dragover="onFolderDragOver"
+                      @drop="onFolderDrop($event, 'all')"
+                    >
+                      <span class="folder-label nav-scope-label">Все заметки</span>
+                      <span v-if="folderNoteCounts" class="tag-count nav-scope-count"> ({{ sidebarAllNotesParenText }})</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="folder-add-folder-btn folder-add-folder-btn--overlay"
+                      title="Создать папку"
+                      aria-label="Создать папку"
+                      @click.stop="promptAndCreateFolder"
+                    >
+                      +
+                    </button>
+                    <button
+                      v-if="!isNarrowLayout"
+                      type="button"
+                      class="btn-nav-panel-hide btn-nav-panel-hide--overlay"
+                      title="Скрыть панель: папки, метки и календарь"
+                      aria-label="Скрыть боковую панель навигации"
+                      @click.stop="toggleSidebarNavFullyCollapsed"
+                    >
+                      −
+                    </button>
+                  </div>
                 </div>
               </div>
               <div
@@ -1720,6 +1845,7 @@ onBeforeUnmount(() => {
                       :class="{
                         on:
                           !filterTagIds.length &&
+                          !filterConjunctTagIds.length &&
                           !filterExcludeTagIds.length &&
                           !filterExcludeUndoTagIds.length,
                       }"
@@ -1732,13 +1858,15 @@ onBeforeUnmount(() => {
                         <template v-else>Все метки</template>
                       </span>
                     </button>
-                    <label class="tags-scope-only-wrap" :title="tagsOnlyInScopeTitle" @click.stop>
-                      <input
-                        v-model="tagsSidebarOnlyWithNotes"
-                        type="checkbox"
-                        aria-label="С заметками — только метки с заметками в текущей области списка"
-                      />
-                    </label>
+                    <div class="tags-scope-checkboxes">
+                      <label class="tags-scope-only-wrap" :title="tagsOnlyInScopeTitle" @click.stop>
+                        <input
+                          v-model="tagsSidebarOnlyWithNotes"
+                          type="checkbox"
+                          aria-label="С заметками — только метки с заметками в текущей области списка"
+                        />
+                      </label>
+                    </div>
                   </div>
                 </div>
                 <div
@@ -1754,16 +1882,20 @@ onBeforeUnmount(() => {
                     class="nav-row tag-sidebar-row"
                     :class="{
                       'tag-sidebar-row--exclude': tagRowSubtreeExcluded(t.id),
+                      'tag-sidebar-row--conjunct':
+                        tagRowSubtreeConjunct(t.id) && !tagRowSubtreeExcluded(t.id),
                       on: tagRowSubtreeIncluded(t.id) && !tagRowSubtreeExcluded(t.id),
                     }"
-                    :style="{ paddingLeft: (0.28 + Math.max(0, t.depth - 1) * 0.38) + 'rem' }"
+                    :style="{
+                      paddingLeft: `${Math.max(0, t.depth - 1) * TAG_NAV_TREE_INDENT_REM}rem`,
+                    }"
                     draggable="true"
                     @dragstart="onTagDragStart($event, t.id)"
                   >
                     <button
                       type="button"
                       class="nav-row-label nav-row-label--tag"
-                      title="Тот же вкл/выкл, что «+»: метка в фильтре (ИЛИ с другими). Можно вместе с «−» на вложениях при «+» у родителя"
+                      title="Тот же вкл/выкл, что «+». Несколько «+»: ИЛИ между ветками. Блок «∧» отдельно: все выбранные ∧ одновременно (И)."
                       @click="onSidebarTagClick(t)"
                     >
                       <span
@@ -1784,9 +1916,19 @@ onBeforeUnmount(() => {
                     <div class="nav-row-actions nav-row-actions--tag-filter">
                       <button
                         type="button"
+                        class="btn-tag-filter-conj"
+                        :class="{ on: filterConjunctTagIds.includes(t.id) }"
+                        title="Блок ∧: заметка должна содержать каждую из выбранных веток одновременно (И). Сочетается с «+» (ИЛИ/И) и с «−» (исключить)"
+                        :aria-pressed="filterConjunctTagIds.includes(t.id)"
+                        @click.stop="applyTagConjunctFilterToggle(t)"
+                      >
+                        ∧
+                      </button>
+                      <button
+                        type="button"
                         class="btn-tag-filter-plus"
                         :class="{ on: filterTagIds.includes(t.id) }"
-                        title="Выбрать ветку (ещё раз — убрать из выбора). Несколько «+» объединяются по ИЛИ"
+                        :title="tagPlusButtonTitle"
                         :aria-pressed="filterTagIds.includes(t.id)"
                         @click.stop="applyTagIncludeFilterToggle(t)"
                       >
@@ -1878,7 +2020,6 @@ onBeforeUnmount(() => {
       >
         <div class="list-toolbar">
           <div class="list-toolbar-main-row">
-            <span class="list-toolbar-scope" :title="folderScopeUiLabel">{{ folderScopeUiLabel }}</span>
             <div class="list-toolbar-sort-row">
               <div class="list-toolbar-sort">
                 <label class="sort-lab" for="note-sort">Сортировка</label>
@@ -2027,22 +2168,48 @@ onBeforeUnmount(() => {
 }
 .header-left {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
 }
 .logo {
   margin: 0;
-  font-size: 0.9375rem;
+  line-height: 1.05;
+}
+.logo-home-btn {
+  display: inline-flex;
+  align-items: baseline;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.logo-home-btn:focus-visible {
+  outline: 2px solid rgba(100, 116, 139, 0.45);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+.logo-wordmark {
+  font-family: 'Sora', 'Inter', system-ui, sans-serif;
+  font-size: 1.375rem;
   font-weight: 700;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.055em;
   color: #0f172a;
 }
-.header-sub {
-  font-size: 0.68rem;
-  font-weight: 500;
-  color: var(--note-list-meta);
-  letter-spacing: 0.02em;
-  text-transform: lowercase;
+.logo-brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+.logo-brand-accent {
+  color: var(--accent, #2563eb);
+  font-weight: 700;
+}
+.logo-brand-dash {
+  color: #64748b;
+  font-weight: 600;
+  margin: 0 0.02em;
 }
 .header-toolbar {
   display: flex;
@@ -2051,6 +2218,20 @@ onBeforeUnmount(() => {
   gap: 0.5rem 0.65rem;
   flex: 1 1 auto;
   min-width: 0;
+}
+.header-main-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.55rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.header-action-new-note {
+  flex-shrink: 0;
+}
+.header-tags-btn {
+  flex-shrink: 0;
 }
 .admin-top-btn {
   font-size: 0.72rem;
@@ -2065,22 +2246,79 @@ onBeforeUnmount(() => {
 .admin-top-btn:hover {
   background: rgba(37, 99, 235, 0.14);
 }
-.header-search-block {
+.header-search-inner {
   display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.4rem 0.55rem;
-  flex: 1 1 220px;
-  min-width: 140px;
-  max-width: min(640px, 100%);
+  flex: 1 1 min(320px, 100%);
+  min-width: min(220px, 100%);
+}
+.search-shell {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  gap: 0.15rem;
+  padding: 0.1rem 0.35rem 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: #fff;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.search-shell:hover {
+  border-color: rgba(100, 116, 139, 0.48);
+}
+.search-shell:focus-within {
+  border-color: rgba(37, 99, 235, 0.42);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.search--in-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.32rem 0.35rem;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 0.75rem;
+  background: transparent;
+}
+.search--in-shell:hover {
+  border: none;
+  box-shadow: none;
+}
+.search--in-shell:focus {
+  outline: none;
+  border: none;
+  box-shadow: none;
+}
+.search-submit {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0.28rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--accent, #2563eb);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.search-submit:hover {
+  background: rgba(37, 99, 235, 0.16);
+  border-color: rgba(37, 99, 235, 0.45);
 }
 .preset-strip {
   display: flex;
   align-items: center;
-  flex: 1 1 15rem;
-  min-width: min(15rem, 100%);
-  max-width: 100%;
+  flex: 0 1 min(17rem, 100%);
+  min-width: min(11rem, 100%);
+  max-width: min(360px, 100%);
 }
 .preset-combo {
   display: flex;
@@ -2344,45 +2582,6 @@ onBeforeUnmount(() => {
 .preset-ico--leading {
   flex-shrink: 0;
 }
-.search-wrap {
-  display: flex;
-  align-items: center;
-  flex: 1 1 min(420px, 100%);
-  min-width: min(280px, 100%);
-  max-width: none;
-}
-.search {
-  width: 100%;
-  min-width: 0;
-  max-width: none;
-  box-sizing: border-box;
-  padding: 0.4rem 0.65rem;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  background: #fff;
-  color: #334155;
-  font-size: 0.75rem;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-.search::placeholder {
-  color: #94a3b8;
-}
-.search:hover {
-  border-color: rgba(100, 116, 139, 0.45);
-}
-.search:focus {
-  outline: none;
-  border-color: rgba(37, 99, 235, 0.4);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-.action-cluster {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
-}
 .header-user {
   display: flex;
   flex-wrap: wrap;
@@ -2513,24 +2712,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem 0.55rem;
   min-width: 0;
-}
-.list-toolbar-scope {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-weight: 600;
-  font-size: 0.8125rem;
-  letter-spacing: -0.02em;
-  color: #111827;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  justify-content: flex-end;
 }
 .list-toolbar-sort-row {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   flex: 0 0 auto;
-  margin-left: auto;
   max-width: 100%;
 }
 .list-toolbar-sort {
@@ -2557,9 +2745,6 @@ onBeforeUnmount(() => {
 }
 .btn-notes-list-hide:hover {
   background: #f8fafc;
-}
-.folder-new-row .btn-nav-panel-hide {
-  flex-shrink: 0;
 }
 .btn-nav-panel-hide {
   box-sizing: border-box;
@@ -2588,35 +2773,6 @@ onBeforeUnmount(() => {
 
 .sidebar-panel {
   box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.04);
-}
-.folder-new-row {
-  display: flex;
-  gap: 0.32rem;
-  align-items: center;
-  margin-bottom: 0.35rem;
-}
-.folder-new-row input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.28rem 0.4rem;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
-  font: inherit;
-  font-size: 0.7rem;
-  background: #fff;
-  color: #1f2937;
-}
-.btn-sm {
-  padding: 0.28rem 0.44rem;
-  border-radius: 8px;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.72rem;
-}
-.btn-sm.primary {
-  background: var(--accent);
-  color: #fff;
 }
 .folder-nav {
   display: flex;
@@ -2657,6 +2813,104 @@ onBeforeUnmount(() => {
 .folder-all-row--frame .folder-filter-all.on {
   border-radius: 0;
 }
+.folder-all-row--frame.folder-all-row--folders-scope {
+  overflow: visible;
+}
+.folder-notes-scope-slot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+}
+.folder-notes-scope-slot .nav-scope-folders-all-btn {
+  min-width: 0;
+  width: 100%;
+  justify-content: flex-start;
+  /* место справа: «+» (создание папки) слева от «−», оба у края при наведении */
+  padding-right: calc(2rem + 1.42rem + 0.2rem);
+  box-sizing: border-box;
+  flex-wrap: nowrap;
+}
+
+.folder-add-folder-btn--overlay {
+  position: absolute;
+  left: auto;
+  right: calc(0.32rem + 1.42rem + 0.08rem);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  box-sizing: border-box;
+  width: 1.38rem;
+  height: 1.38rem;
+  padding: 0;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 1.02rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.14s ease,
+    visibility 0.14s ease,
+    transform 0.14s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.folder-all-row--folders-scope:hover .folder-add-folder-btn--overlay,
+.folder-add-folder-btn--overlay:focus-visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.folder-add-folder-btn--overlay:hover {
+  background: #f1f5f9;
+  border-color: rgba(148, 163, 184, 0.55);
+  color: #64748b;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.07);
+}
+.folder-add-folder-btn--overlay:focus-visible {
+  outline: 2px solid rgba(148, 163, 184, 0.65);
+  outline-offset: 1px;
+}
+@media (hover: none) {
+  .folder-add-folder-btn--overlay {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+}
+.btn-nav-panel-hide--overlay {
+  position: absolute;
+  right: 0.3rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+}
+.folder-nav-folders-sticky .btn-nav-panel-hide--overlay {
+  box-sizing: border-box;
+  width: 1.38rem;
+  height: 1.38rem;
+  padding: 0;
+  font-size: 0.92rem;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+.folder-notes-scope-slot--no-panel-hide .nav-scope-folders-all-btn {
+  padding-right: calc(1.42rem + 0.36rem);
+}
+.folder-notes-scope-slot--no-panel-hide .folder-add-folder-btn--overlay {
+  right: 0.34rem;
+}
+
 .nav-scope-label {
   font-weight: 600;
   font-size: 0.8125rem;
@@ -2738,10 +2992,49 @@ onBeforeUnmount(() => {
   overflow: visible;
 }
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:hover),
-.folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-only-wrap:hover),
+.folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-checkboxes:hover),
 .folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-only-wrap:focus-within) {
   z-index: 2;
   position: relative;
+}
+.tags-scope-checkboxes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  max-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  overflow: hidden;
+  padding: 0;
+  pointer-events: none;
+  transition:
+    max-width 0.18s ease,
+    opacity 0.14s ease,
+    visibility 0.14s ease,
+    padding 0.14s ease;
+}
+.folder-scope-notes-parent.tags-all-row-scope:hover .tags-scope-checkboxes,
+.folder-scope-notes-parent.tags-all-row-scope:focus-within .tags-scope-checkboxes,
+.folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus-visible) .tags-scope-checkboxes,
+.folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus) .tags-scope-checkboxes {
+  max-width: 1.65rem;
+  opacity: 1;
+  visibility: visible;
+  padding-right: 1px;
+  pointer-events: auto;
+}
+/* Сенсор: без :hover галочку оставляем доступной */
+@media (hover: none) {
+  .folder-scope-notes-parent.tags-all-row-scope .tags-scope-checkboxes {
+    max-width: 1.65rem;
+    opacity: 1;
+    visibility: visible;
+    padding-right: 1px;
+    pointer-events: auto;
+  }
 }
 .tags-scope-only-wrap {
   flex: 0 0 auto;
@@ -2761,7 +3054,11 @@ onBeforeUnmount(() => {
   width: 13px;
   height: 13px;
   flex-shrink: 0;
-  accent-color: var(--accent, #2563eb);
+  /* Спокойный серый, без синего акцента строки «Все метки» */
+  accent-color: #64748b;
+}
+.tags-scope-only-wrap:hover input {
+  accent-color: #475569;
 }
 
 .tag-all-wrap {
@@ -2823,13 +3120,10 @@ onBeforeUnmount(() => {
 .folder-nav-tags-sticky,
 .folder-nav-folders-sticky {
   flex-shrink: 0;
-  padding: 0.35rem 0.4rem 0.25rem;
+  padding: 0.26rem 0.32rem 0.18rem;
   border-bottom: 1px solid #eceef2;
   background: transparent;
   border-radius: 8px 8px 0 0;
-}
-.folder-nav-tags-sticky {
-  padding: 0.26rem 0.32rem 0.18rem;
 }
 .section-chevron {
   flex-shrink: 0;
@@ -2863,7 +3157,31 @@ onBeforeUnmount(() => {
 .folder-rows {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
+}
+
+/* Выравниваем текст названия папки с текстом корневой метки (колонка шеврона 1rem + gap 0.14rem в строке метки) */
+.folder-nav-folders-scroll .nav-row.folder-sidebar-row {
+  padding: 0.13rem 0.26rem;
+  padding-left: calc(0.13rem + 1rem + 0.14rem);
+  border-radius: 5px;
+}
+.folder-nav-folders-scroll .nav-row.folder-sidebar-row .nav-row-label {
+  line-height: 1.2;
+}
+.folder-nav-folders-scroll .btn-rename,
+.folder-nav-folders-scroll .btn-del {
+  width: 1rem;
+  height: 1rem;
+  box-sizing: border-box;
+  border-radius: 4px;
+}
+.folder-nav-folders-scroll .btn-rename {
+  font-size: 0.72rem;
+}
+.folder-nav-folders-scroll .btn-del {
+  font-size: 0.82rem;
+  line-height: 1;
 }
 .folder-filter-all {
   display: flex;
@@ -2897,13 +3215,13 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0.25rem 0.35rem 0.3rem;
+  padding: 0.2rem 0.28rem 0.24rem;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 .folder-nav-tags-scroll {
-  padding: 0.16rem 0.26rem 0.2rem;
+  padding: 0.14rem 0.24rem 0.18rem;
   gap: 2px;
 }
 .folder-nav-tags-panel .folder-filter .tag-count {
@@ -2918,7 +3236,7 @@ onBeforeUnmount(() => {
   gap: 0.35rem;
 }
 .nav-row.tag-sidebar-row .nav-row-label--tag {
-  gap: 0.18rem;
+  gap: 0.14rem;
 }
 .tag-sidebar-name {
   flex: 1;
@@ -2929,23 +3247,31 @@ onBeforeUnmount(() => {
   text-align: left;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row {
-  padding: 0.18rem 0.28rem;
-  gap: 0.12rem;
+  padding: 0.13rem 0.26rem;
+  gap: 0.1rem;
   border-radius: 5px;
 }
+
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row-label {
   font-size: 0.68rem;
-  line-height: 1.28;
+  line-height: 1.2;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row.on .nav-row-label {
   font-size: 0.68rem;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .tag-count {
   font-size: 0.58rem;
-  line-height: 1.15;
+  line-height: 1.1;
 }
 .folder-nav-tags-panel .section-chevron,
 .folder-nav-tags-panel .section-chevron-spacer {
+  width: 1.12rem;
+  min-height: 1.42rem;
+  font-size: 0.6rem;
+}
+
+.folder-nav-folders-panel .section-chevron,
+.folder-nav-folders-panel .section-chevron-spacer {
   width: 1.12rem;
   min-height: 1.42rem;
   font-size: 0.6rem;
@@ -2965,17 +3291,17 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 .folder-nav-tags-panel .tag-chevron {
-  width: 0.95rem;
-  min-width: 0.95rem;
-  font-size: 0.55rem;
-  line-height: 1.25;
+  width: 1rem;
+  min-width: 1rem;
+  font-size: 0.66rem;
+  line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 .folder-nav-tags-panel .tag-chevron-spacer {
-  width: 0.95rem;
-  min-width: 0.95rem;
+  width: 1rem;
+  min-width: 1rem;
 }
 .nav-row-actions--tag-filter {
   flex-shrink: 0;
@@ -2983,13 +3309,61 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 2px;
 }
+
+/* ∧ + − у метки: только при наведении мышью; на сенсорных экранах всегда видны */
+@media (hover: hover) and (pointer: fine) {
+  .folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row-actions--tag-filter {
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    transition:
+      max-width 0.18s ease,
+      opacity 0.12s ease;
+  }
+  .folder-nav-tags-panel .nav-row.tag-sidebar-row:hover .nav-row-actions--tag-filter {
+    max-width: 4rem;
+    opacity: 1;
+    overflow: visible;
+    pointer-events: auto;
+    gap: 2px;
+  }
+}
 .nav-row-actions--folder-filter {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 2px;
 }
+
+/* + − ✎ × у папки: как у меток — только при наведении мышью; на сенсорных экранах всегда видны */
+@media (hover: hover) and (pointer: fine) {
+  .folder-nav-folders-scroll .nav-row.folder-sidebar-row .nav-row-actions--folder-filter {
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    transition:
+      max-width 0.18s ease,
+      opacity 0.12s ease;
+  }
+  .folder-nav-folders-scroll .nav-row.folder-sidebar-row:hover .nav-row-actions--folder-filter,
+  .folder-nav-folders-scroll .nav-row.folder-sidebar-row .nav-row-actions--folder-filter:focus-within {
+    max-width: 9rem;
+    opacity: 1;
+    overflow: visible;
+    pointer-events: auto;
+    gap: 2px;
+  }
+}
 .folder-nav-tags-panel .btn-tag-filter-plus,
+.folder-nav-tags-panel .btn-tag-filter-conj,
 .folder-nav-tags-panel .btn-tag-filter-minus,
 .folder-nav-folders-scroll .btn-tag-filter-plus,
 .folder-nav-folders-scroll .btn-tag-filter-minus {
@@ -3009,6 +3383,23 @@ onBeforeUnmount(() => {
   line-height: 1;
   color: #64748b;
 }
+.folder-nav-tags-panel .btn-tag-filter-conj:not(.on) {
+  border-color: rgba(22, 163, 74, 0.42);
+  color: #15803d;
+  background: rgba(240, 253, 244, 0.78);
+}
+.folder-nav-tags-panel .btn-tag-filter-minus:not(.on),
+.folder-nav-folders-scroll .btn-tag-filter-minus:not(.on) {
+  border-color: rgba(220, 38, 38, 0.42);
+  color: #b91c1c;
+  background: rgba(254, 242, 242, 0.78);
+}
+.folder-nav-tags-panel .btn-tag-filter-plus:not(.on),
+.folder-nav-folders-scroll .btn-tag-filter-plus:not(.on) {
+  border-color: rgba(37, 99, 235, 0.42);
+  color: var(--accent, #2563eb);
+  background: rgba(239, 246, 255, 0.78);
+}
 .folder-nav-tags-panel .btn-tag-filter-plus:hover:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-plus:hover:not(.on) {
   border-color: rgba(37, 99, 235, 0.35);
@@ -3021,6 +3412,19 @@ onBeforeUnmount(() => {
   background: rgba(37, 99, 235, 0.2);
   color: #1d4ed8;
   box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+.folder-nav-tags-panel .btn-tag-filter-conj:hover:not(.on),
+.folder-nav-folders-scroll .btn-tag-filter-conj:hover:not(.on) {
+  border-color: rgba(22, 163, 74, 0.45);
+  color: #15803d;
+  background: rgba(240, 253, 244, 0.92);
+}
+.folder-nav-tags-panel .btn-tag-filter-conj.on,
+.folder-nav-folders-scroll .btn-tag-filter-conj.on {
+  border-color: rgba(22, 163, 74, 0.62);
+  background: rgba(22, 163, 74, 0.22);
+  color: #166534;
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.14);
 }
 .folder-nav-tags-panel .btn-tag-filter-minus:hover:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-minus:hover:not(.on) {
@@ -3046,6 +3450,21 @@ onBeforeUnmount(() => {
 .folder-nav-folders-scroll .nav-row.folder-sidebar-row.folder-sidebar-row--exclude .tag-count {
   opacity: 0.9;
   color: #b91c1c;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct {
+  background: rgba(220, 252, 231, 0.52);
+  border-color: rgba(22, 163, 74, 0.28);
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .nav-row-label--tag {
+  color: #15803d;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .tag-sidebar-name {
+  font-weight: 600;
+  color: #166534;
+}
+.folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .tag-count {
+  opacity: 0.92;
+  color: #16a34a;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--exclude {
   background: rgba(254, 226, 226, 0.45);
@@ -3211,8 +3630,11 @@ onBeforeUnmount(() => {
     opacity: 0;
     transition: opacity 0.12s ease;
   }
-  .nav-row:hover .nav-row-actions,
-  .nav-row:focus-within .nav-row-actions {
+  .nav-row:hover .nav-row-actions {
+    opacity: 1;
+  }
+  /* папки: видимость кнопок только если фокус внутри блока действий, не на названии строки */
+  .nav-row.folder-sidebar-row .nav-row-actions:focus-within {
     opacity: 1;
   }
 }
@@ -3457,14 +3879,14 @@ onBeforeUnmount(() => {
   gap: 0.35rem;
   min-width: 0;
 }
-.workspace--narrow .header-search-block {
+.workspace--narrow .header-main-actions {
   flex: 1 1 auto;
   min-width: 0;
   flex-direction: column;
   align-items: stretch;
 }
-.workspace--narrow .search {
-  min-width: 0;
+.workspace--narrow .header-search-inner {
+  flex: 1 1 auto;
   width: 100%;
   max-width: none;
 }

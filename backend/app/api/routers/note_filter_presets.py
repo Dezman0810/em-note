@@ -94,6 +94,9 @@ async def create_preset(
             tag_ids=_ids_to_rows(body.tag_ids),
             exclude_tag_ids=_ids_to_rows(body.exclude_tag_ids),
             exclude_tag_undo_ids=_ids_to_rows(body.exclude_tag_undo_ids),
+            conjunct_tag_ids=_ids_to_rows(body.conjunct_tag_ids),
+            tag_nav_collapsed_ids=_ids_to_rows(body.tag_nav_collapsed_ids),
+            tag_match_all=body.tag_match_all,
             sort_order=next_so,
         )
         db.add(row)
@@ -147,6 +150,8 @@ async def patch_preset(
             ("tag_ids", "tag_ids"),
             ("exclude_tag_ids", "exclude_tag_ids"),
             ("exclude_tag_undo_ids", "exclude_tag_undo_ids"),
+            ("conjunct_tag_ids", "conjunct_tag_ids"),
+            ("tag_nav_collapsed_ids", "tag_nav_collapsed_ids"),
         ):
             if key_src not in data:
                 continue
@@ -155,6 +160,9 @@ async def patch_preset(
                 setattr(row, attr, [])
             elif isinstance(val, list):
                 setattr(row, attr, _ids_to_rows(val))
+
+        if "tag_match_all" in data:
+            row.tag_match_all = bool(data["tag_match_all"])
 
         await db.flush()
         await db.refresh(row)

@@ -44,6 +44,29 @@ async def test_note_filter_preset_crud(client: AsyncClient) -> None:
     assert p["name"] == "Задачи"
     assert p["search_query"] == "дело"
     assert p["folder_ids"] == [folder_id]
+    assert p["tag_match_all"] is False
+    assert p["conjunct_tag_ids"] == []
+    assert p["tag_nav_collapsed_ids"] == []
+
+    tag = await client.post("/api/tags", json={"name": "Cj"}, headers=h)
+    assert tag.status_code == 201, tag.text
+    tag_id = tag.json()["id"]
+
+    r1b = await client.patch(
+        f"/api/note-filter-presets/{preset_id}",
+        json={"conjunct_tag_ids": [tag_id]},
+        headers=h,
+    )
+    assert r1b.status_code == 200, r1b.text
+    assert r1b.json()["conjunct_tag_ids"] == [tag_id]
+
+    r_nav = await client.patch(
+        f"/api/note-filter-presets/{preset_id}",
+        json={"tag_nav_collapsed_ids": [tag_id]},
+        headers=h,
+    )
+    assert r_nav.status_code == 200, r_nav.text
+    assert r_nav.json()["tag_nav_collapsed_ids"] == [tag_id]
 
     r2 = await client.get("/api/note-filter-presets", headers=h)
     assert len(r2.json()) == 1

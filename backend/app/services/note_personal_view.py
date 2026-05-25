@@ -61,7 +61,9 @@ def folder_exclude_predicate(user_id: uuid.UUID, exclude_folder_ids: list[uuid.U
         select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
     )
 
-    owned_in_excluded = owned & Note.folder_id.in_(exclude_folder_ids)
+    # Важно: без is_not(None) при folder_id = NULL выражение «folder_id IN (...)» даёт UNKNOWN,
+    # и строка ошибочно отбрасывается в «WHERE NOT (исключаемое)», скрывая заметки «без папки».
+    owned_in_excluded = owned & Note.folder_id.is_not(None) & Note.folder_id.in_(exclude_folder_ids)
     placement_in_excluded = exists(
         select(literal_column("1")).select_from(NoteUserPlacement).where(
             NoteUserPlacement.user_id == user_id,
