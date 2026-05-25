@@ -1,6 +1,7 @@
 # Python
 backend/.venv/
 backend/.env
+backend/.alembic_lifespan_startup.lock
 backend/**/*.db
 backend/note.db
 backend/data/

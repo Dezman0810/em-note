@@ -494,12 +494,29 @@ const sortedNotes = computed(() => {
   return list
 })
 
-function noteRowTitle(n: Note): string {
-  const parts = [
-    `Создано: ${fmtMsk(n.created_at)}`,
-    `Изменено: ${fmtMsk(n.updated_at)}`,
-  ]
-  return parts.join('\n')
+/** Нативный title: полный заголовок и текст (с ограничением по длине), даты внизу. */
+const NOTE_ROW_TOOLTIP_BODY_MAX = 8000
+
+function noteRowDatesLines(n: Note): string[] {
+  const lines = [`Создано: ${fmtMsk(n.created_at)}`, `Изменено: ${fmtMsk(n.updated_at)}`]
+  if (n.deleted_at) lines.push(`Удалено: ${fmtMsk(n.deleted_at)}`)
+  return lines
+}
+
+function noteRowTooltip(n: Note): string {
+  const titleFull = (n.title || '').trim() || DEFAULT_NOTE_TITLE
+  const raw = (n.content_plain || '').replace(/\s+/g, ' ').trim()
+  let bodyTip = ''
+  if (raw) {
+    bodyTip =
+      raw.length > NOTE_ROW_TOOLTIP_BODY_MAX
+        ? `${raw.slice(0, NOTE_ROW_TOOLTIP_BODY_MAX).trimEnd()}…`
+        : raw
+  }
+  const lines: string[] = [titleFull]
+  if (bodyTip) lines.push('', bodyTip)
+  lines.push('', ...noteRowDatesLines(n))
+  return lines.join('\n')
 }
 
 function noteBodyPreview(n: Note): string {
@@ -978,7 +995,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="note-item"
                   :class="{ current: n.id === activeNoteId }"
-                  :title="noteRowTitle(n)"
+                  :title="noteRowTooltip(n)"
                   @click="openNote(n.id)"
                   @dragover="onNoteTagAttachDragOver"
                   @drop="onNoteTagAttachDrop($event, n.id)"
@@ -1434,8 +1451,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 4px;
 }
+.list > li {
+  min-width: 0;
+}
 .note-item {
   width: 100%;
+  min-width: 0;
   text-align: left;
   padding: 0.45rem 0.5rem;
   border-radius: 10px;
@@ -1457,10 +1478,25 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2);
 }
 .note-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-weight: 600;
   font-size: 0.8rem;
+  line-height: 1.35;
 }
 .note-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-size: 0.72rem;
   color: var(--text-muted);
   line-height: 1.35;

@@ -14,6 +14,9 @@ import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+# lifespan приложения дергает Alembic по settings.database_url; в pytest своя TEST_DATABASE_URL.
+os.environ.setdefault("SKIP_ALEMBIC_AT_STARTUP", "1")
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -39,7 +42,7 @@ def _run_alembic(url: str) -> None:
         cwd=BACKEND_ROOT,
         env={**os.environ, "DATABASE_URL": url},
         check=True,
-)
+    )
 
 
 @pytest.fixture(autouse=True)

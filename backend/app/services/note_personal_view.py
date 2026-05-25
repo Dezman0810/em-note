@@ -51,6 +51,28 @@ def folder_scope_predicate(
     return owned_ok | shared_ok
 
 
+def folder_exclude_predicate(user_id: uuid.UUID, exclude_folder_ids: list[uuid.UUID]):
+    """Заметка относится к одной из исключаемых папок (canonical или личное размещение шеренной)."""
+    if not exclude_folder_ids:
+        return false()
+
+    owned = Note.owner_id == user_id
+    shared_in = Note.id.in_(
+        select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
+    )
+
+    owned_in_excluded = owned & Note.folder_id.in_(exclude_folder_ids)
+    placement_in_excluded = exists(
+        select(literal_column("1")).select_from(NoteUserPlacement).where(
+            NoteUserPlacement.user_id == user_id,
+            NoteUserPlacement.note_id == Note.id,
+            NoteUserPlacement.folder_id.in_(exclude_folder_ids),
+        )
+    )
+    shared_in_excluded = shared_in & placement_in_excluded
+    return owned_in_excluded | shared_in_excluded
+
+
 def tag_match_predicate(user_id: uuid.UUID, tree_ids: list[uuid.UUID]):
     """Метки владельца на своих заметках + личные метки получателя на шеренных."""
     if not tree_ids:

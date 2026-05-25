@@ -2,6 +2,8 @@
 
 Код на сервер попадает через **git push** → на VPS **`git pull`** и пересборка контейнеров.
 
+**Чеклист разработки на Windows, коммитов и выкладки на VPS** (что писать ассистенту, какой compose): [WORKFLOW-CHECKLIST-RU.md](WORKFLOW-CHECKLIST-RU.md).
+
 ## 1. DNS
 
 У домена создайте **A** на публичный IPv4 сервера. Для `www` — отдельная **A** или CNAME, если нужен второй хост.
@@ -114,6 +116,8 @@ bash deploy/remote-update-vps.sh
 
 **Ничего не меняется в браузере:** на сервере выполните **`bash deploy/vps-diagnose.sh`** и пришлите вывод (или сами проверьте: дата образа `em-note-web`, совпадает ли режим GHCR vs prod). Частые причины: не выполнялся `docker pull` / скрипт; Actions ещё не зелёный; на VPS другой каталог или используется только `docker-compose.prod.yml` без `--build`.
 
+**HTTP 413 при импорте схемы Excalidraw (~1 MB и больше):** импорт кладёт сцену в JSON заметки; при сохранении уходит большой **`PATCH /api/notes/…`**. Если лимита тела запроса недостаточно, nginx (или другой reverse proxy **перед** Docker) отдаёт **413**. В образе **`em-note-web`** в **`deploy/nginx/docker-prod.conf`** задан **`client_max_body_size 100m`** и таймауты для **`/api/`**. Если 413 сохраняется после обновления образа и перезапуска контейнеров, проверьте **лимиты у хостинг-провайдера**: у панелей иногда свой nginx с телом порядка **`1m`** — его нужно увеличить для этого сайта или проксировать напрямую на порт контейнера.
+
 ### Сборка на сервере (`docker-compose.prod.yml`)
 
 ```bash
@@ -140,6 +144,8 @@ docker compose -f docker-compose.ghcr.yml --env-file .env up -d
 ## 6. HTTPS
 
 В `docker-compose.prod.yml` только HTTP. Типичные варианты: отдельный хостовый Nginx/Caddy с Let’s Encrypt перед контейнерами, или облачный прокси с TLS.
+
+Если на VPS уже стоит **системный Nginx**, который проксирует 80/443 на `127.0.0.1:8080` (Docker `em-note-prod-web`), в нём нужно **`client_max_body_size`**, иначе при больших JSON (импорт Excalidraw) будет **413** — дефолт nginx порядка **1m**. Образец с **`100m`**: [deploy/nginx/vps-host-em-note-proxy.conf](nginx/vps-host-em-note-proxy.conf) (путь на сервере типично `/etc/nginx/sites-available/em-note-proxy`, затем `nginx -t` и **`systemctl reload nginx`**).
 
 ## 7. Бэкапы
 

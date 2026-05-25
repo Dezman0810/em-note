@@ -1,0 +1,20 @@
+# Контекст для deploy/Dockerfile.web (docker-compose.prod.yml: context: .)
+# Без этого Docker Desktop на Windows тянет frontend/node_modules и падает на
+# симлинках/временных файлах в node_modules/.bin (invalid file request).
+
+frontend/node_modules/
+frontend/dist/
+
+.git/
+.cursor/
+.idea/
+backups/
+
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.env
+
+**/Thumbs.db
+**/.DS_Store

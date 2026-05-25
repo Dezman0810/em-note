@@ -71,6 +71,22 @@ export interface FolderNoteCounts {
   folder_counts: { folder_id: string; count: number }[]
 }
 
+/** GET/POST/PATCH /api/note-filter-presets — сохранённые наборы фильтров списка заметок. */
+export interface NoteFilterPreset {
+  id: string
+  user_id: string
+  name: string
+  search_query: string | null
+  folder_ids: string[]
+  exclude_folder_ids: string[]
+  tag_ids: string[]
+  exclude_tag_ids: string[]
+  exclude_tag_undo_ids: string[]
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export interface NoteShare {
   id: string
   note_id: string

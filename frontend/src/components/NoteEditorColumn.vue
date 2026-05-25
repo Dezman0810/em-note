@@ -943,10 +943,23 @@ function onTagSuggestionTab(e: KeyboardEvent) {
 
 async function removeNote() {
   if (!note.value || !confirm('Переместить заметку в корзину?')) return
+
+  const idToRemove = note.value.id
+  const idsSnap = [...noteNavIds.value]
+  const idx = idsSnap.indexOf(idToRemove)
+  /** Сосед после удаления: сначала «следующая» из текущего списка (как 6-я после 5-й среди 14), иначе предыдущая */
+  let openAfterTrash: string | null = null
+  if (idx >= 0) {
+    if (idx + 1 < idsSnap.length) openAfterTrash = idsSnap[idx + 1]!
+    else if (idx > 0) openAfterTrash = idsSnap[idx - 1]!
+  }
+
+  await flushSave()
   try {
-    await notesApi.remove(note.value.id)
+    await notesApi.remove(idToRemove)
     emitRefresh()
-    await router.push({ name: 'notes' })
+    if (openAfterTrash) await router.push({ name: 'note', params: { id: openAfterTrash } })
+    else await router.push({ name: 'notes' })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1184,10 +1197,8 @@ watch(
     </template>
     <template v-else>
       <header class="bar">
-        <a href="#" class="back" @click.prevent="closePanel">← Закрыть</a>
-        <div class="bar-actions">
-          <span v-if="fetching && note" class="save-indicator muted">Загрузка заметки…</span>
-          <span v-if="saving && !isTrashed" class="save-indicator muted">Сохранение…</span>
+        <div class="bar-tools">
+          <a href="#" class="back" @click.prevent="closePanel">← Закрыть</a>
           <template v-if="isTrashed && isOwner">
             <button type="button" class="btn primary" @click="restoreFromTrash">Восстановить</button>
             <button type="button" class="danger" @click="purgeForever">Удалить навсегда</button>
@@ -1202,52 +1213,72 @@ watch(
             <span class="share-hub-ico" aria-hidden="true">✉</span>
             По почте
           </button>
-          <button v-if="isOwner && !isTrashed" type="button" class="danger" @click="removeNote">
-            В корзину
-          </button>
+          <template v-if="!isTrashed">
+            <div
+              v-if="noteNavVisible"
+              class="bar-note-nav"
+              role="navigation"
+              aria-label="Переход по списку заметок"
+            >
+              <span v-if="noteNavCounter" class="bar-note-nav-counter">{{ noteNavCounter }}</span>
+              <button
+                type="button"
+                class="btn-note-nav"
+                :disabled="!hasPrevNote"
+                title="Предыдущая в списке (фильтры и сортировка как в средней колонке)"
+                aria-label="Предыдущая заметка в списке"
+                @click="goPrevNote"
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                class="btn-note-nav"
+                :disabled="!hasNextNote"
+                title="Следующая в списке (фильтры и сортировка как в средней колонке)"
+                aria-label="Следующая заметка в списке"
+                @click="goNextNote"
+              >
+                →
+              </button>
+            </div>
+            <button
+              v-if="note"
+              type="button"
+              class="btn-editor-focus"
+              :aria-label="
+                editorFocusMode
+                  ? 'Вернуть обычный вид с колонками списка'
+                  : 'Показать только заметку на весь экран'
+              "
+              :title="
+                editorFocusMode ? 'Вернуть обычный вид колонок (можно Esc)' : 'Только заметка на весь экран'
+              "
+              @click="toggleEditorFocusMode"
+            >
+              {{ editorFocusMode ? 'Обычный режим' : 'На весь экран' }}
+            </button>
+          </template>
+        </div>
+        <div
+          v-if="(fetching && note) || (saving && !isTrashed) || (isOwner && !isTrashed)"
+          class="bar-tail"
+        >
           <div
-            v-if="noteNavVisible"
-            class="bar-note-nav"
-            role="navigation"
-            aria-label="Переход по списку заметок"
+            v-if="(fetching && note) || (saving && !isTrashed)"
+            class="bar-status"
+            aria-live="polite"
           >
-            <span v-if="noteNavCounter" class="bar-note-nav-counter">{{ noteNavCounter }}</span>
-            <button
-              type="button"
-              class="btn-note-nav"
-              :disabled="!hasPrevNote"
-              title="Предыдущая в списке (фильтры и сортировка как в средней колонке)"
-              aria-label="Предыдущая заметка в списке"
-              @click="goPrevNote"
-            >
-              ←
-            </button>
-            <button
-              type="button"
-              class="btn-note-nav"
-              :disabled="!hasNextNote"
-              title="Следующая в списке (фильтры и сортировка как в средней колонке)"
-              aria-label="Следующая заметка в списке"
-              @click="goNextNote"
-            >
-              →
-            </button>
+            <span v-if="fetching && note" class="save-indicator muted">Загрузка заметки…</span>
+            <span v-if="saving && !isTrashed" class="save-indicator muted">Сохранение…</span>
           </div>
           <button
-            v-if="note && !isTrashed"
+            v-if="isOwner && !isTrashed"
             type="button"
-            class="btn-editor-focus"
-            :aria-label="
-              editorFocusMode
-                ? 'Вернуть обычный вид с колонками списка'
-                : 'Показать только заметку на весь экран'
-            "
-            :title="
-              editorFocusMode ? 'Вернуть обычный вид колонок (можно Esc)' : 'Только заметка на весь экран'
-            "
-            @click="toggleEditorFocusMode"
+            class="danger btn-trash-right"
+            @click="removeNote"
           >
-            {{ editorFocusMode ? 'Обычный режим' : 'На весь экран' }}
+            В корзину
           </button>
         </div>
       </header>
@@ -1636,6 +1667,11 @@ watch(
   background: var(--panel);
 }
 .bar-note-nav-counter {
+  box-sizing: border-box;
+  display: inline-block;
+  min-width: 13ch;
+  text-align: center;
+  white-space: nowrap;
   font-size: 0.68rem;
   font-variant-numeric: tabular-nums;
   color: #64748b;
@@ -1961,17 +1997,42 @@ watch(
 }
 .bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
-  gap: 0.75rem;
   flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+  gap: 0.45rem;
 }
-.bar-actions {
+.bar-tail {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
   align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex: 1 1 auto;
+  margin-left: auto;
+  min-width: 0;
+}
+.bar-tail .bar-status {
+  flex-shrink: 0;
+}
+.btn-trash-right {
+  flex-shrink: 0;
+}
+.bar-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.bar-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
 }
 .save-indicator {
   font-size: 0.78rem;

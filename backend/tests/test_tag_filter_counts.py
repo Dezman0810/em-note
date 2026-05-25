@@ -94,3 +94,67 @@ async def test_notes_filter_multiple_tags_or_union(client: AsyncClient) -> None:
     assert both.status_code == 200, both.text
     got = {n["id"] for n in both.json()}
     assert got == {n1_id, n2_id}
+
+
+async def test_exclude_tag_id_filters_notes(client: AsyncClient) -> None:
+    """exclude_tag_id убирает из списка заметки с этой меткой (поддерево корня)."""
+    h = await _auth_headers(client, email="excludetag@example.com", password="password99")
+
+    a = await client.post("/api/tags", json={"name": "InclA"}, headers=h)
+    assert a.status_code == 201, a.text
+    a_id = a.json()["id"]
+    bad = await client.post("/api/tags", json={"name": "Excluded"}, headers=h)
+    assert bad.status_code == 201, bad.text
+    bad_id = bad.json()["id"]
+
+    n_ok = await client.post("/api/notes", json={"title": "OK", "content_json": "{}"}, headers=h)
+    assert n_ok.status_code == 201, n_ok.text
+    n_ok_id = n_ok.json()["id"]
+    r_ok = await client.post(f"/api/notes/{n_ok_id}/tags/{a_id}", headers=h)
+    assert r_ok.status_code == 200, r_ok.text
+
+    n_x = await client.post("/api/notes", json={"title": "Bad", "content_json": "{}"}, headers=h)
+    assert n_x.status_code == 201, n_x.text
+    n_x_id = n_x.json()["id"]
+    r_x = await client.post(f"/api/notes/{n_x_id}/tags/{bad_id}", headers=h)
+    assert r_x.status_code == 200, r_x.text
+
+    r = await client.get("/api/notes", params={"exclude_tag_id": bad_id}, headers=h)
+    assert r.status_code == 200, r.text
+    ids = {n["id"] for n in r.json()}
+    assert n_ok_id in ids
+    assert n_x_id not in ids
+
+
+async def test_exclude_tag_undo_carves_nested_subtree(client: AsyncClient) -> None:
+    """Исключаем родителя, затем undo на ребёнка — заметки только с меткой ребёнка снова в списке."""
+    h = await _auth_headers(client, email="excludeundo@example.com", password="password99")
+
+    root = await client.post("/api/tags", json={"name": "ExRoot"}, headers=h)
+    assert root.status_code == 201, root.text
+    root_id = root.json()["id"]
+    leaf = await client.post(
+        "/api/tags", json={"name": "ExLeaf", "parent_id": root_id}, headers=h
+    )
+    assert leaf.status_code == 201, leaf.text
+    leaf_id = leaf.json()["id"]
+
+    n_only_leaf = await client.post(
+        "/api/notes", json={"title": "OnlyLeaf", "content_json": "{}"}, headers=h
+    )
+    assert n_only_leaf.status_code == 201, n_only_leaf.text
+    n_only_leaf_id = n_only_leaf.json()["id"]
+    r_att = await client.post(f"/api/notes/{n_only_leaf_id}/tags/{leaf_id}", headers=h)
+    assert r_att.status_code == 200, r_att.text
+
+    ex_only = await client.get("/api/notes", params={"exclude_tag_id": root_id}, headers=h)
+    assert ex_only.status_code == 200, ex_only.text
+    assert n_only_leaf_id not in {n["id"] for n in ex_only.json()}
+
+    carved = await client.get(
+        "/api/notes",
+        params=[("exclude_tag_id", root_id), ("exclude_tag_undo_id", leaf_id)],
+        headers=h,
+    )
+    assert carved.status_code == 200, carved.text
+    assert n_only_leaf_id in {n["id"] for n in carved.json()}

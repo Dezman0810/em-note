@@ -3,13 +3,29 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import admin, attachments, auth, folders, mail, note_public_links, notes, public_notes, shares, tags, user_settings
+from app.api.routers import (
+    admin,
+    attachments,
+    auth,
+    folders,
+    mail,
+    note_filter_presets,
+    note_public_links,
+    notes,
+    public_notes,
+    shares,
+    tags,
+    user_settings,
+)
+from app.alembic_startup import alembic_upgrade_head_at_startup
 from app.config import settings
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     import app.models  # noqa: F401 — register SQLAlchemy models
+
+    alembic_upgrade_head_at_startup()
 
     yield
 
@@ -30,6 +46,7 @@ app.include_router(notes.router, prefix="/api")
 app.include_router(attachments.router, prefix="/api")
 app.include_router(folders.router, prefix="/api")
 app.include_router(tags.router, prefix="/api")
+app.include_router(note_filter_presets.router, prefix="/api")
 app.include_router(shares.router, prefix="/api")
 app.include_router(note_public_links.router, prefix="/api")
 app.include_router(public_notes.router, prefix="/api")

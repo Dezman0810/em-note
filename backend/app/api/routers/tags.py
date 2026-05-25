@@ -14,7 +14,7 @@ from app.models.share import NoteShare
 from app.models.tag import Tag
 from app.models.user import User
 from app.schemas.tag import TagCreate, TagNoteCountRead, TagRead, TagUpdate
-from app.services.note_personal_view import folder_scope_predicate
+from app.services.note_personal_view import folder_exclude_predicate, folder_scope_predicate
 from app.services.tag_subtree import subtree_tag_ids
 from app.utils.text import slugify
 
@@ -95,7 +95,10 @@ async def _would_create_cycle(db: AsyncSession, tag: Tag, new_parent_id: uuid.UU
 
 
 def _accessible_note_ids_stmt(
-    user_id: uuid.UUID, folder_ids: list[uuid.UUID] | None, unfoldered: bool
+    user_id: uuid.UUID,
+    folder_ids: list[uuid.UUID] | None,
+    unfoldered: bool,
+    exclude_folder_ids: list[uuid.UUID] | None = None,
 ) -> Select[tuple[uuid.UUID]]:
     shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
     stmt = (
@@ -105,6 +108,8 @@ def _accessible_note_ids_stmt(
     )
     if unfoldered or folder_ids:
         stmt = stmt.where(folder_scope_predicate(user_id, None if unfoldered else folder_ids, unfoldered))
+    if exclude_folder_ids:
+        stmt = stmt.where(~folder_exclude_predicate(user_id, exclude_folder_ids))
     return stmt
 
 
@@ -115,8 +120,17 @@ async def tag_note_counts(
     user: Annotated[User, Depends(get_current_user)],
     folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
+    exclude_folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
 ) -> list[TagNoteCountRead]:
     raw = folder_id or []
+    exclude_raw = exclude_folder_id or []
+    if exclude_raw:
+        for fid in exclude_raw:
+            folder = await db.get(Folder, fid)
+            if folder is None or folder.user_id != user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
+                )
     if unfoldered:
         scope_folder_ids: list[uuid.UUID] | None = None
     elif raw:
@@ -128,7 +142,9 @@ async def tag_note_counts(
     else:
         scope_folder_ids = None
 
-    scope = _accessible_note_ids_stmt(user.id, scope_folder_ids, unfoldered)
+    scope = _accessible_note_ids_stmt(
+        user.id, scope_folder_ids, unfoldered, exclude_raw if exclude_raw else None
+    )
     tags_result = await db.execute(select(Tag).where(Tag.user_id == user.id))
     user_tags = list(tags_result.scalars().all())
     user_tags.sort(key=lambda t: (t.depth, t.name))

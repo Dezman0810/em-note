@@ -10,6 +10,8 @@ const props = defineProps<{
   refreshSignal?: number
   /** ID заметок из текущей выборки списка — в фильтре: приглушённый синий; вне фильтра: приглушённый красный */
   scopeNoteIds?: string[]
+  /** Показывать «n из N» по напоминаниям при сужении списка метками / поиском (N — все напоминания в периоде). */
+  fractionFromListFilter?: boolean
   /** В боковой панели заголовок «Календарь» уже снаружи — дублировать не нужно */
   embedInSidebar?: boolean
 }>()
@@ -146,6 +148,18 @@ async function loadReminders() {
     loading.value = false
   }
 }
+
+const reminderFractionLabel = computed(() => {
+  if (!props.fractionFromListFilter || !scopeTintActive.value || loading.value) return ''
+  const total = reminders.value.length
+  if (total === 0) return ''
+  let inScope = 0
+  const s = scopeSet.value
+  for (const n of reminders.value) {
+    if (s.has(n.id)) inScope++
+  }
+  return `${inScope} из ${total}`
+})
 
 watch(
   [cursor, view, () => props.disabled, () => props.refreshSignal],
@@ -333,6 +347,13 @@ function cellDateTitle(d: Date): string {
       <button type="button" class="rem-cal-arrow" title="Вперёд" @click="next">›</button>
       <button type="button" class="rem-cal-today" @click="today">Сегодня</button>
     </div>
+    <p
+      v-if="reminderFractionLabel"
+      class="rem-cal-frac muted small"
+      title="Сколько напоминаний попало в текущий список (метки, поиск) из всех в выбранном периоде календаря"
+    >
+      Напоминания: {{ reminderFractionLabel }}
+    </p>
     <p v-if="loading" class="rem-cal-hint muted small">Загрузка…</p>
     <div v-if="!loading && view === 'month'" class="rem-cal-month">
       <div class="rem-cal-dow">
@@ -501,6 +522,10 @@ function cellDateTitle(d: Date): string {
   align-items: center;
   gap: 0.3rem;
   margin-bottom: 0.45rem;
+}
+.rem-cal-frac {
+  margin: -0.15rem 0 0.4rem;
+  font-variant-numeric: tabular-nums;
 }
 .rem-cal-arrow {
   width: 1.35rem;

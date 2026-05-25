@@ -20,6 +20,8 @@ docker compose logs -f
 
 Фронт в контейнере проксирует `/api` на сервис `api` (`API_PROXY_TARGET` в Compose).
 
+**Миграции БД.** При старте API автоматически выполняется `alembic upgrade head` (`app/alembic_startup.py` вместе с `docker-entrypoint.sh` в Docker). Отключить: `SKIP_ALEMBIC_AT_STARTUP=1` в окружении (для особых случаев).
+
 ## Продакшен (как на VPS)
 
 Собранный фронт + Nginx и API в одном стеке:
@@ -37,6 +39,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 1. Коммит и `git push` в GitHub.
 2. На VPS: `git pull`, затем команда из раздела «Обновление» в `deploy/README.md`.
+
+Чеклист по контурам (Windows / несколько ПК / что писать ассистенту): **[deploy/WORKFLOW-CHECKLIST-RU.md](deploy/WORKFLOW-CHECKLIST-RU.md)**.
 
 В репозиторий не попадают секреты и БД (см. `.gitignore`).
 

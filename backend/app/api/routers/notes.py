@@ -26,6 +26,7 @@ from app.services.note_access import (
 )
 from app.services.note_personal_view import (
     add_personal_tag_link,
+    folder_exclude_predicate,
     folder_scope_predicate,
     has_personal_tag,
     note_read_overlay,
@@ -166,6 +167,25 @@ async def _tree_ids_for_tag_roots(
     return list(seen)
 
 
+async def _effective_exclude_tag_tree_ids(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    exclude_roots: list[uuid.UUID],
+    undo_roots: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """Поддеревья exclude_tag_id минус объединённые поддеревья exclude_tag_undo_id (вырезание из исключения)."""
+    if not exclude_roots:
+        return []
+    ex_set = set(await _tree_ids_for_tag_roots(db, user_id, exclude_roots))
+    if not undo_roots:
+        return list(ex_set)
+    undo_union: set[uuid.UUID] = set()
+    for ur in undo_roots:
+        await _validate_user_tag(db, ur, user_id)
+        undo_union.update(await _tree_ids_for_tag_roots(db, user_id, [ur]))
+    return list(ex_set - undo_union)
+
+
 def _accessible_notes_query(user_id: uuid.UUID) -> Select[tuple[Note]]:
     shared_ids = select(NoteShare.note_id).where(NoteShare.shared_with_user_id == user_id)
     return (
@@ -213,6 +233,9 @@ async def list_notes(
     unfoldered: Annotated[bool, Query()] = False,
     trash_only: Annotated[bool, Query()] = False,
     tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_tag_undo_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
 ) -> list[NoteRead]:
     if trash_only:
         result = await db.execute(
@@ -237,6 +260,17 @@ async def list_notes(
     if tag_roots:
         tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
         q = q.where(tag_match_predicate(user.id, tree_ids))
+    exclude_roots = exclude_tag_id or []
+    if exclude_roots:
+        ex_tree_ids = await _effective_exclude_tag_tree_ids(
+            db, user.id, exclude_roots, exclude_tag_undo_id or []
+        )
+        if ex_tree_ids:
+            q = q.where(~tag_match_predicate(user.id, ex_tree_ids))
+    exclude_folder_ids = exclude_folder_id or []
+    if exclude_folder_ids:
+        await _validate_folders_for_owner(db, exclude_folder_ids, user.id)
+        q = q.where(~folder_exclude_predicate(user.id, exclude_folder_ids))
     result = await db.execute(q)
     notes = result.scalars().unique().all()
     return await _notes_to_read_models(db, user.id, list(notes))
@@ -255,6 +289,9 @@ async def search_notes(
     folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
     unfoldered: Annotated[bool, Query()] = False,
     tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_tag_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_tag_undo_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+    exclude_folder_id: Annotated[list[uuid.UUID] | None, Query()] = None,
 ) -> list[NoteRead]:
     tag_roots = tag_id or []
     folder_ids = folder_id or []
@@ -272,6 +309,17 @@ async def search_notes(
     if tag_roots:
         tree_ids = await _tree_ids_for_tag_roots(db, user.id, tag_roots)
         base = base.where(tag_match_predicate(user.id, tree_ids))
+    exclude_roots = exclude_tag_id or []
+    if exclude_roots:
+        ex_tree_ids = await _effective_exclude_tag_tree_ids(
+            db, user.id, exclude_roots, exclude_tag_undo_id or []
+        )
+        if ex_tree_ids:
+            base = base.where(~tag_match_predicate(user.id, ex_tree_ids))
+    exclude_folder_ids = exclude_folder_id or []
+    if exclude_folder_ids:
+        await _validate_folders_for_owner(db, exclude_folder_ids, user.id)
+        base = base.where(~folder_exclude_predicate(user.id, exclude_folder_ids))
     result = await db.execute(base)
     notes = result.scalars().unique().all()
     return await _notes_to_read_models(db, user.id, list(notes))

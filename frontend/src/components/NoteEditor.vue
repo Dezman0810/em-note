@@ -16,9 +16,10 @@ import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
 import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
 import { ExcalidrawUndoGuard } from './tiptap/ExcalidrawUndoGuard'
+import { RichClipboardPasteFix } from './tiptap/RichClipboardPasteFix'
 import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
-import { TextStyle } from '@tiptap/extension-text-style'
+import { FontFamily, TextStyle } from '@tiptap/extension-text-style'
 import StarterKit from '@tiptap/starter-kit'
 import type { Editor } from '@tiptap/core'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
@@ -27,7 +28,9 @@ import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { attachmentsApi, errMessage, publicNoteApi } from '../api/client'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
+import { normalizePastedRichCodeHtml } from '../utils/normalizePastedRichCodeHtml'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
+import { rewriteAttachmentImagesInTipTapDoc } from '../utils/tiptapContent'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 import {
   excalidrawInnerHasFocusedTextField,
@@ -119,7 +122,8 @@ let encryptPlain = ''
 function parseDoc(raw: string) {
   try {
     const j = JSON.parse(raw || '{}')
-    return j && typeof j === 'object' ? j : {}
+    const base = j && typeof j === 'object' ? j : {}
+    return rewriteAttachmentImagesInTipTapDoc(base) as Record<string, unknown>
   } catch {
     return {}
   }
@@ -128,6 +132,10 @@ function parseDoc(raw: string) {
 const editor = useEditor({
   editable: props.editable,
   editorProps: {
+    /** SSMS и др. дают `<font>` / смесь тегов; TipTap понимает `span[style]`. */
+    transformPastedHTML(html) {
+      return normalizePastedRichCodeHtml(html)
+    },
     handleDOMEvents: {
       /** Пока фокус внутри Excalidraw — не отдаём клавиши TipTap (в т.ч. после capture-фокуса перед Ctrl+C/V). */
       keydown(_view, event) {
@@ -193,6 +201,7 @@ const editor = useEditor({
   },
   extensions: [
     ExcalidrawUndoGuard,
+    RichClipboardPasteFix,
     StarterKit.configure({
       heading: { levels: [2, 3] },
     }),
@@ -213,6 +222,7 @@ const editor = useEditor({
     TaskItemNote.configure({ nested: false }),
     TaskListEnterKeymap,
     TextStyle,
+    FontFamily.configure({ types: ['textStyle'] }),
     Color,
     Highlight.configure({ multicolor: true }),
     Image.configure({ inline: true, allowBase64: true }),

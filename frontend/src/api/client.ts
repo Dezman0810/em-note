@@ -6,6 +6,7 @@ import type {
   FolderNoteCounts,
   Note,
   NoteMailSendHistoryRow,
+  NoteFilterPreset,
   NotePublicLink,
   NoteShare,
   PublicNotePayload,
@@ -87,9 +88,21 @@ export type NotesListParams = {
   unfoldered?: boolean
   /** Одна метка или несколько; на сервер уходит повторяющийся query `tag_id`. */
   tag_id?: string | string[]
+  /** Исключить заметки с меткой из поддерева этих корней (повтор как `tag_id`). */
+  exclude_tag_id?: string | string[]
+  /** Снять исключение с поддерева этих корней (вычитается из `exclude_tag_id`). */
+  exclude_tag_undo_id?: string | string[]
+  /** Заметки из этих папок скрыть из списка (повтор `exclude_folder_id` в query). */
+  exclude_folder_id?: string | string[]
 }
 
-const REPEAT_QUERY_KEYS = new Set(['tag_id', 'folder_id'])
+const REPEAT_QUERY_KEYS = new Set([
+  'tag_id',
+  'folder_id',
+  'exclude_tag_id',
+  'exclude_tag_undo_id',
+  'exclude_folder_id',
+])
 
 function serializeRepeatKeyQuery(params: Record<string, unknown>): string {
   const usp = new URLSearchParams()
@@ -194,6 +207,34 @@ export const notesApi = {
   },
 }
 
+export type NoteFilterPresetWriteBody = {
+  name?: string
+  search_query?: string | null
+  folder_ids?: string[]
+  exclude_folder_ids?: string[]
+  tag_ids?: string[]
+  exclude_tag_ids?: string[]
+  exclude_tag_undo_ids?: string[]
+}
+
+export const noteFilterPresetsApi = {
+  async list(): Promise<NoteFilterPreset[]> {
+    const { data } = await api.get<NoteFilterPreset[]>('/api/note-filter-presets')
+    return data
+  },
+  async create(body: NoteFilterPresetWriteBody & { name: string }): Promise<NoteFilterPreset> {
+    const { data } = await api.post<NoteFilterPreset>('/api/note-filter-presets', body)
+    return data
+  },
+  async update(id: string, body: NoteFilterPresetWriteBody): Promise<NoteFilterPreset> {
+    const { data } = await api.patch<NoteFilterPreset>(`/api/note-filter-presets/${id}`, body)
+    return data
+  },
+  async remove(id: string): Promise<void> {
+    await api.delete(`/api/note-filter-presets/${id}`)
+  },
+}
+
 export const foldersApi = {
   async list(forNoteId?: string): Promise<Folder[]> {
     const { data } = await api.get<Folder[]>('/api/folders', {
@@ -229,6 +270,8 @@ export const foldersApi = {
 export type TagsNoteCountsParams = {
   folder_id?: string | string[]
   unfoldered?: boolean
+  /** Совместно со списком заметок: скрыть папку из области подсчёта меток */
+  exclude_folder_id?: string | string[]
 }
 
 /** Разбор ответа /api/tags/counts (учёт разных форматов ключей и типов). */

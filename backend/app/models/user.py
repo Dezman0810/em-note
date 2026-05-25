@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from app.models.note import Note
     from app.models.smtp import UserSmtpSettings
     from app.models.tag import Tag
+    from app.models.user_note_filter_preset import UserNoteFilterPreset
 
 
 class User(Base):
@@ -39,4 +40,7 @@ class User(Base):
     )
     smtp_settings: Mapped["UserSmtpSettings | None"] = relationship(
         "UserSmtpSettings", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+    filter_presets: Mapped[list["UserNoteFilterPreset"]] = relationship(
+        "UserNoteFilterPreset", back_populates="user", cascade="all, delete-orphan"
     )
