@@ -43,9 +43,9 @@ from app.utils.text import plain_text_from_tiptap_json
 router = APIRouter(prefix="/notes", tags=["notes"])
 
 
-def _note_read_with_access(note: Note, access: Access) -> NoteRead:
+def _note_read_with_access(note: Note, access: Access, *, for_list: bool = False) -> NoteRead:
     """Только когда не нужна персональная подстановка папки/меток."""
-    base = NoteRead.from_note(note)
+    base = NoteRead.from_note_for_list(note) if for_list else NoteRead.from_note(note)
     return base.model_copy(update={"my_access": access.value})
 
 
@@ -78,7 +78,11 @@ async def _access_map_for_note_list(
 
 
 async def _notes_to_read_models(
-    db: AsyncSession, user_id: uuid.UUID, notes: list[Note]
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    notes: list[Note],
+    *,
+    for_list: bool = False,
 ) -> list[NoteRead]:
     acc_map = await _access_map_for_note_list(db, user_id, notes)
     shared_nid = [n.id for n in notes if n.owner_id != user_id]
@@ -88,7 +92,7 @@ async def _notes_to_read_models(
     for n in notes:
         acc = acc_map[n.id]
         if n.owner_id == user_id:
-            out.append(_note_read_with_access(n, acc))
+            out.append(_note_read_with_access(n, acc, for_list=for_list))
         else:
             out.append(
                 note_read_overlay(
@@ -97,6 +101,7 @@ async def _notes_to_read_models(
                     viewer_id=user_id,
                     folder_effective=pmap.get(n.id),
                     tag_ids_effective=tmap.get(n.id, []),
+                    for_list=for_list,
                 )
             )
     return out
@@ -267,7 +272,7 @@ async def list_reminders(
     )
     result = await db.execute(q)
     notes = result.scalars().unique().all()
-    return await _notes_to_read_models(db, user.id, list(notes))
+    return await _notes_to_read_models(db, user.id, list(notes), for_list=True)
 
 
 @router.get("", response_model=list[NoteRead])
@@ -292,7 +297,7 @@ async def list_notes(
             .order_by(Note.deleted_at.desc())
         )
         trash_notes = result.scalars().unique().all()
-        return await _notes_to_read_models(db, user.id, list(trash_notes))
+        return await _notes_to_read_models(db, user.id, list(trash_notes), for_list=True)
 
     tag_roots = tag_id or []
     conjunct_roots = conjunct_tag_id or []
@@ -322,7 +327,7 @@ async def list_notes(
         q = q.where(~folder_exclude_predicate(user.id, exclude_folder_ids))
     result = await db.execute(q)
     notes = result.scalars().unique().all()
-    return await _notes_to_read_models(db, user.id, list(notes))
+    return await _notes_to_read_models(db, user.id, list(notes), for_list=True)
 
 
 def _ilike_pattern(q: str) -> str:
@@ -375,7 +380,7 @@ async def search_notes(
         base = base.where(~folder_exclude_predicate(user.id, exclude_folder_ids))
     result = await db.execute(base)
     notes = result.scalars().unique().all()
-    return await _notes_to_read_models(db, user.id, list(notes))
+    return await _notes_to_read_models(db, user.id, list(notes), for_list=True)
 
 
 @router.post("", response_model=NoteRead, status_code=status.HTTP_201_CREATED)

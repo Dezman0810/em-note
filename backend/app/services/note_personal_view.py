@@ -205,9 +205,10 @@ def note_read_overlay(
     viewer_id: uuid.UUID,
     folder_effective: uuid.UUID | None,
     tag_ids_effective: list[uuid.UUID],
+    for_list: bool = False,
 ) -> NoteRead:
     if note.owner_id == viewer_id:
-        base = NoteRead.from_note(note)
+        base = NoteRead.from_note_for_list(note) if for_list else NoteRead.from_note(note)
         return base.model_copy(update={"my_access": access.value})
 
     # Не трогаем relationship `note.tags`: в async это может вызвать implicit lazy-load и 500.
@@ -218,6 +219,15 @@ def note_read_overlay(
         _ma = "edit"
     elif access == Access.owner:
         _ma = "owner"
+    if for_list:
+        slim = NoteRead.from_note_for_list(note)
+        return slim.model_copy(
+            update={
+                "folder_id": folder_effective,
+                "tag_ids": tag_ids_effective,
+                "my_access": _ma,
+            }
+        )
     return NoteRead(
         id=note.id,
         owner_id=note.owner_id,

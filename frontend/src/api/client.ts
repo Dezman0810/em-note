@@ -48,6 +48,9 @@ export function setAuthToken(token: string | null) {
 export function errMessage(e: unknown): string {
   if (isAxiosError(e)) {
     if (e.code === 'ECONNABORTED') return 'Превышено время ожидания сервера. Проверьте сеть и попробуйте снова.'
+    if (!e.response && (e.code === 'ERR_NETWORK' || e.message === 'Network Error')) {
+      return 'Ошибка сети при запросе к серверу. Обновите страницу или попробуйте позже.'
+    }
     const d = e.response?.data as { detail?: string | object } | undefined
     if (typeof d?.detail === 'string') return d.detail
     if (Array.isArray(d?.detail)) return JSON.stringify(d.detail)

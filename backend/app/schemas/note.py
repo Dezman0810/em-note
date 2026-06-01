@@ -12,6 +12,17 @@ if TYPE_CHECKING:
 
 _ACCENT_RE = re.compile(r"^$|^#[0-9A-Fa-f]{6}$")
 
+# Превью текста в GET /api/notes и /search; полное тело — GET /api/notes/{id}.
+LIST_CONTENT_PLAIN_MAX = 600
+
+
+def _plain_preview_for_list(plain: str) -> str:
+    raw = (plain or "").replace("\r\n", "\n").replace("\r", "\n")
+    collapsed = " ".join(raw.split())
+    if len(collapsed) <= LIST_CONTENT_PLAIN_MAX:
+        return collapsed
+    return collapsed[:LIST_CONTENT_PLAIN_MAX].rstrip() + "…"
+
 
 def _normalize_accent(v: str | None) -> str:
     s = (v or "").strip()
@@ -84,6 +95,17 @@ class NoteRead(BaseModel):
             accent_color=note.accent_color or "",
             reminder_at=note.reminder_at,
             tag_ids=[t.id for t in note.tags],
+        )
+
+    @classmethod
+    def from_note_for_list(cls, note: "Note") -> "NoteRead":
+        """Список заметок: без тяжёлого content_json, укороченный content_plain для превью."""
+        base = cls.from_note(note)
+        return base.model_copy(
+            update={
+                "content_json": "{}",
+                "content_plain": _plain_preview_for_list(base.content_plain),
+            }
         )
 
     @classmethod
