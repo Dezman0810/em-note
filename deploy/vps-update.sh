@@ -66,6 +66,13 @@ if [ "${SKIP_GIT:-0}" != "1" ]; then
   fi
 fi
 
+# GHCR: образы тегируются полным SHA коммита — подтягиваем ровно ту версию, что в git HEAD.
+if [ -d .git ]; then
+  GIT_HEAD_SHA="$(git rev-parse HEAD)"
+  export IMAGE_TAG="${IMAGE_TAG:-$GIT_HEAD_SHA}"
+  echo "=== версия деплоя: IMAGE_TAG=${IMAGE_TAG} (git $(git rev-parse --short HEAD)) ==="
+fi
+
 case "$MODE" in
   ghcr)
     if [ ! -f .env ]; then

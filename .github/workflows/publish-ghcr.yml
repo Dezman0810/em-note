@@ -49,6 +49,8 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile.web
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.o.outputs.owner_lc }}/em-note-web:main

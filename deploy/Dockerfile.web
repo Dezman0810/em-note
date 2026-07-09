@@ -6,10 +6,12 @@ RUN npm ci
 COPY frontend/ ./
 # Пустой base — запросы на тот же origin, Nginx проксирует /api
 ARG VITE_API_BASE=
+ARG GIT_SHA=unknown
 ENV VITE_API_BASE=$VITE_API_BASE
 # Сборка фронта жирная (vue-tsc + vite); при малом RAM на хосте добавьте swap и/или GHCR-образы
 ENV NODE_OPTIONS="--max-old-space-size=1536"
-RUN npm run build
+RUN npm run build \
+    && printf '%s\n' "{\"git_sha\":\"${GIT_SHA}\"}" > dist/version.json
 
 FROM public.ecr.aws/docker/library/nginx:1.27-alpine
 COPY deploy/nginx/docker-prod.conf /etc/nginx/conf.d/default.conf
