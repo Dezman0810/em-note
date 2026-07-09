@@ -15,6 +15,7 @@ from app.api.routers import (
     public_notes,
     shares,
     tags,
+    user_contacts,
     user_settings,
 )
 from app.alembic_startup import alembic_upgrade_head_at_startup
@@ -51,6 +52,7 @@ app.include_router(shares.router, prefix="/api")
 app.include_router(note_public_links.router, prefix="/api")
 app.include_router(public_notes.router, prefix="/api")
 app.include_router(mail.router, prefix="/api")
+app.include_router(user_contacts.router, prefix="/api")
 app.include_router(user_settings.router, prefix="/api")
 
 

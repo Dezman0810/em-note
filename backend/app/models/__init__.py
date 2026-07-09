@@ -11,6 +11,7 @@ from app.models.share import NoteShare, ShareRole
 from app.models.smtp import UserSmtpSettings
 from app.models.tag import Tag
 from app.models.user import User
+from app.models.user_contact import UserContact
 from app.models.user_note_filter_preset import UserNoteFilterPreset
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "ShareRole",
     "UserSmtpSettings",
     "UserNoteFilterPreset",
+    "UserContact",
 ]

@@ -13,6 +13,7 @@ import type {
   Tag,
   TagNoteCount,
   User,
+  UserContact,
 } from './types'
 
 export type TagAttachByNameResponse = { note: Note; tag: Tag }
@@ -434,6 +435,27 @@ export const mailApi = {
       `/api/mail/notes/${encodeURIComponent(noteId)}/send-history`
     )
     return Array.isArray(data) ? (data as NoteMailSendHistoryRow[]) : []
+  },
+}
+
+export const contactsApi = {
+  async list(): Promise<UserContact[]> {
+    const { data } = await api.get<UserContact[]>('/api/users/me/contacts')
+    return data
+  },
+  async create(body: { name: string; email: string }): Promise<UserContact> {
+    const { data } = await api.post<UserContact>('/api/users/me/contacts', body)
+    return data
+  },
+  async update(id: string, body: { name?: string; email?: string }): Promise<UserContact> {
+    const { data } = await api.patch<UserContact>(
+      `/api/users/me/contacts/${encodeURIComponent(id)}`,
+      body
+    )
+    return data
+  },
+  async remove(id: string): Promise<void> {
+    await api.delete(`/api/users/me/contacts/${encodeURIComponent(id)}`)
   },
 }
 

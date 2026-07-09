@@ -14,6 +14,7 @@ import TaskList from '@tiptap/extension-task-list'
 import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
 import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
+import { CodeSnippetBlock } from './tiptap/CodeSnippetExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
 import { ExcalidrawUndoGuard } from './tiptap/ExcalidrawUndoGuard'
 import { RichClipboardPasteFix } from './tiptap/RichClipboardPasteFix'
@@ -228,6 +229,7 @@ const editor = useEditor({
     Image.configure({ inline: true, allowBase64: true }),
     EncryptedInline,
     ExcalidrawBlock,
+    CodeSnippetBlock,
     AudioNoteBlock,
     UploadedFileBlock,
   ],
@@ -667,6 +669,10 @@ function unsetHighlightFill() {
 
 function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
+}
+
+function insertCodeSnippet() {
+  editor.value?.chain().focus().insertCodeSnippet().run()
 }
 
 function closeTableDd() {
@@ -1286,6 +1292,14 @@ onBeforeUnmount(() => {
         Зашифровать
       </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
+      <button
+        type="button"
+        class="tb"
+        title="Вставить блок кода (SQL или Python) с подсветкой синтаксиса"
+        @click="insertCodeSnippet"
+      >
+        Код
+      </button>
       <input
         ref="fileInputRef"
         type="file"

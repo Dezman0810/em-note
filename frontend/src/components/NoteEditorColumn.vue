@@ -5,6 +5,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { errMessage, foldersApi, mailApi, notesApi, sharesApi, tagsApi } from '../api/client'
 import type { Folder, Note, NoteMailSendHistoryRow, NotePublicLink, NoteShare, Tag } from '../api/types'
 import NoteEditor from './NoteEditor.vue'
+import ContactBookPanel from './ContactBookPanel.vue'
 import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
@@ -589,7 +590,7 @@ async function sendMailFromModal() {
   }
   mailSending.value = true
   mailError.value = ''
-  const list = modalEmail.value.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean)
+  const list = parseEmailList(modalEmail.value)
   try {
     await mailApi.sendNote({
       note_id: note.value.id,
@@ -992,6 +993,30 @@ async function purgeForever() {
 
 const shareEmail = ref('')
 const shareRole = ref('viewer')
+
+function pickShareContact(email: string) {
+  shareEmail.value = email.trim()
+}
+
+function parseEmailList(raw: string): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of raw.split(/[,;\s]+/)) {
+    const e = part.trim().toLowerCase()
+    if (!e || seen.has(e)) continue
+    seen.add(e)
+    out.push(e)
+  }
+  return out
+}
+
+function pickMailContact(email: string) {
+  const e = email.trim()
+  if (!e) return
+  const list = parseEmailList(modalEmail.value)
+  if (!list.includes(e.toLowerCase())) list.push(e)
+  modalEmail.value = list.join(', ')
+}
 
 async function addShare() {
   if (!note.value || !shareEmail.value.trim()) return
@@ -1515,6 +1540,7 @@ watch(
               </select>
               <button type="button" class="share-hub-btn-secondary" @click="addShare">Добавить</button>
             </div>
+            <ContactBookPanel pick-mode="single" @pick="pickShareContact" />
             <ul v-if="shares.length" class="share-email-list">
               <li v-for="s in shares" :key="s.id" class="share-email-item">
                 <span class="share-email-who">{{ shareRecipientLabel(s) }}</span>
@@ -1599,6 +1625,12 @@ watch(
             type="text"
             class="modal-input"
             placeholder="Один или несколько через запятую"
+          />
+          <ContactBookPanel
+            pick-mode="multi"
+            picker-label="Добавить из контактов…"
+            compact
+            @pick="pickMailContact"
           />
           <label class="modal-label">Сообщение (необязательно)</label>
           <textarea v-model="modalMsg" class="modal-textarea" rows="3" placeholder="Текст к письму" />
