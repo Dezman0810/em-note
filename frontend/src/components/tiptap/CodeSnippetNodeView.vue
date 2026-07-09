@@ -16,6 +16,9 @@ const expanded = ref(!props.node.attrs.collapsed)
 const copyDone = ref(false)
 const formatErr = ref('')
 const formatting = ref(false)
+const formatOk = ref(false)
+/** Актуальный текст из CodeMirror (attrs TipTap могут отставать на один тик). */
+const liveCode = ref('')
 const cmHostRef = ref<HTMLDivElement | null>(null)
 let cmHost: CodeMirrorHost | null = null
 let syncingDoc = false
@@ -61,8 +64,10 @@ watch(expanded, async (on) => {
 watch(
   () => props.node.attrs.code,
   (next) => {
+    const text = String(next ?? '')
+    if (!syncingDoc) liveCode.value = text
     if (!cmHost || syncingDoc) return
-    cmHost.setDoc(String(next ?? ''))
+    cmHost.setDoc(text)
   }
 )
 
@@ -93,17 +98,27 @@ function mountCodeMirror() {
   const parent = cmHostRef.value
   if (!parent) return
 
+  const initial = code.value
+  liveCode.value = initial
+
   cmHost = createCodeMirrorHost(parent, {
-    doc: code.value,
+    doc: initial,
     language: language.value,
     editable: props.editor.isEditable,
     placeholder: props.editor.isEditable ? 'Вставьте или введите код…' : undefined,
     onDocChange: (value) => {
+      liveCode.value = value
       if (syncingDoc) return
       formatErr.value = ''
+      formatOk.value = false
       props.updateAttributes({ code: value })
     },
   })
+}
+
+function getCodeText(): string {
+  if (cmHost) return cmHost.view.state.doc.toString()
+  return liveCode.value || code.value
 }
 
 function destroyCodeMirror() {
@@ -118,7 +133,7 @@ function toggle() {
 }
 
 async function copyCode() {
-  const text = code.value
+  const text = getCodeText()
   if (!text.trim()) return
   try {
     await navigator.clipboard.writeText(text)
@@ -137,6 +152,7 @@ function stopBubble(ev: Event) {
 
 function applyFormattedCode(formatted: string) {
   syncingDoc = true
+  liveCode.value = formatted
   props.updateAttributes({ code: formatted })
   cmHost?.setDoc(formatted)
   syncingDoc = false
@@ -145,22 +161,49 @@ function applyFormattedCode(formatted: string) {
 
 function formatSql() {
   formatErr.value = ''
-  const src = code.value
-  if (!src.trim()) return
+  formatOk.value = false
+  const src = getCodeText()
+  if (!src.trim()) {
+    formatErr.value = 'Вставьте SQL-код в блок'
+    return
+  }
+  formatting.value = true
   try {
-    applyFormattedCode(formatSqlCode(src))
+    const formatted = formatSqlCode(src)
+    if (formatted.trim() === src.trim()) {
+      formatOk.value = true
+      window.setTimeout(() => {
+        formatOk.value = false
+      }, 1600)
+      return
+    }
+    applyFormattedCode(formatted)
+    formatOk.value = true
+    window.setTimeout(() => {
+      formatOk.value = false
+    }, 1600)
   } catch {
-    formatErr.value = 'Не удалось отформатировать SQL'
+    formatErr.value = 'Не удалось отформатировать SQL — проверьте синтаксис запроса'
+  } finally {
+    formatting.value = false
   }
 }
 
 async function formatPython() {
   formatErr.value = ''
-  const src = code.value
-  if (!src.trim()) return
+  formatOk.value = false
+  const src = getCodeText()
+  if (!src.trim()) {
+    formatErr.value = 'Вставьте Python-код в блок'
+    return
+  }
   formatting.value = true
   try {
     applyFormattedCode(await formatPythonCode(src))
+    formatOk.value = true
+    window.setTimeout(() => {
+      formatOk.value = false
+    }, 1600)
   } catch {
     formatErr.value = 'Не удалось отформатировать Python'
   } finally {
@@ -171,7 +214,7 @@ async function formatPython() {
 
 <template>
   <NodeViewWrapper class="code-snippet-node" contenteditable="false">
-    <div class="code-snippet-head">
+    <div class="code-snippet-head" @mousedown="stopBubble">
       <button type="button" class="code-snippet-btn code-snippet-btn-main" @click="toggle">
         {{ collapseLabel }}
       </button>
@@ -199,28 +242,28 @@ async function formatPython() {
         v-if="editor.isEditable && language === 'sql'"
         type="button"
         class="code-snippet-btn"
-        :disabled="!code.trim() || formatting"
+        :disabled="!liveCode.trim() || formatting"
         title="Отформатировать SQL: переносы полей, JOIN, WHERE, отступы"
-        @click="formatSql"
+        @click.stop="formatSql"
       >
-        Форматировать SQL
+        {{ formatting ? 'Форматирование…' : formatOk ? 'Готово' : 'Форматировать SQL' }}
       </button>
       <button
         v-if="editor.isEditable && language === 'python'"
         type="button"
         class="code-snippet-btn"
-        :disabled="!code.trim() || formatting"
+        :disabled="!liveCode.trim() || formatting"
         title="Отформатировать Python (Ruff / PEP 8: отступы, кавычки, переносы строк)"
-        @click="formatPython"
+        @click.stop="formatPython"
       >
-        {{ formatting ? 'Форматирование…' : 'Форматировать Python' }}
+        {{ formatting ? 'Форматирование…' : formatOk ? 'Готово' : 'Форматировать Python' }}
       </button>
       <button
         type="button"
         class="code-snippet-btn"
-        :disabled="!code.trim()"
-        :title="code.trim() ? 'Скопировать код' : 'Нет кода для копирования'"
-        @click="copyCode"
+        :disabled="!liveCode.trim()"
+        :title="liveCode.trim() ? 'Скопировать код' : 'Нет кода для копирования'"
+        @click.stop="copyCode"
       >
         {{ copyDone ? 'Скопировано' : 'Копировать' }}
       </button>
