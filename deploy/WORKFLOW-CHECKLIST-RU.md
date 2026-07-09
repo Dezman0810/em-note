@@ -26,7 +26,7 @@
 
 | Задача | Файл | URL |
 |--------|------|-----|
-| Разработка UI (Vite, быстрый цикл) | `docker-compose.yml` | UI: http://localhost:5173 · API: http://localhost:8000/docs |
+| Разработка UI (Vite, быстрый цикл) | `docker-compose.yml` | UI: http://localhost:8080 · API: http://localhost:8000/docs |
 | Как «на проде» (nginx + собранный фронт) | `docker-compose.prod.yml` | http://localhost:8080 (порт меняется через `COMPOSE_WEB_PORT`) |
 
 Для сборки **`docker-compose.prod.yml`** на Windows в репозитории есть `.dockerignore` (не тащить `frontend/node_modules` в контекст билда).

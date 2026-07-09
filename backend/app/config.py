@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = "http://localhost:8080,http://127.0.0.1:8080"
 
     # Email владельца: единственный, кто видит админку и может выдавать can_create_notes новым юзерам
     admin_email: str = "ramis.idrisov@gmail.com"

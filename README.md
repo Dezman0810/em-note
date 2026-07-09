@@ -15,10 +15,21 @@ docker compose logs -f
 
 Если сборка образа **api** падает при скачивании модели Vosk (**curl: (18)** из‑за сети), скопируйте `docker-env.example` → `.env` в корне (рядом с `docker-compose.yml`) или добавьте в уже существующий корневой `.env`: `SKIP_VOSK_DOWNLOAD=1` и пустое `VOSK_MODEL_PATH=` — затем снова `docker compose up --build -d`.
 
-- UI: http://localhost:5173/
+- UI: http://localhost:8080/
 - API: http://localhost:8000/docs  
 
 Фронт в контейнере проксирует `/api` на сервис `api` (`API_PROXY_TARGET` в Compose).
+
+### Порты: Windows и VPS
+
+| Сервис | Windows (`docker-compose.yml`) | VPS (`docker-compose.ghcr.yml`) | Зачем отличается |
+|--------|-------------------------------|----------------------------------|------------------|
+| **UI (веб)** | **8080** | **8080** | Одинаково (`COMPOSE_WEB_PORT`) |
+| **API** | **8000** снаружи (`/docs`) | только внутри Docker, снаружи через UI `/api` | На Windows удобно открыть Swagger; на VPS API не торчит в интернет |
+| **PostgreSQL** | **5432** снаружи | только внутри Docker | На Windows — pgAdmin/DBeaver; на VPS БД закрыта |
+| **Airflow** | **8088** | **8088** | Одинаково (отдельный compose) |
+
+На Windows dev-стек использует **Vite** (горячая перезагрузка), на VPS — **Nginx + собранный фронт**; снаружи оба открываются на **8080**.
 
 **Миграции БД.** При старте API автоматически выполняется `alembic upgrade head` (`app/alembic_startup.py` вместе с `docker-entrypoint.sh` в Docker). Отключить: `SKIP_ALEMBIC_AT_STARTUP=1` в окружении (для особых случаев).
 

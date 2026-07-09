@@ -1,4 +1,4 @@
-# Основной локальный стек: UI http://localhost:5173/ · API http://localhost:8000/docs
+# Основной локальный стек: UI http://localhost:8080/ · API http://localhost:8000/docs
 # (облако / VPS — отдельно через docker-compose.prod.yml после merge в репозиторий).
 #
 # Разработка на Windows: весь стек в Docker (API + БД + Vite). Нужен backend/.env (из .env.example).
@@ -9,7 +9,7 @@
 #
 #   docker compose up --build -d
 #
-# UI http://localhost:5173/  ·  API http://localhost:8000/docs
+# UI http://localhost:8080/  ·  API http://localhost:8000/docs  (порт UI: COMPOSE_WEB_PORT, по умолчанию 8080 как на VPS)
 # PostgreSQL: localhost:5432 (логин/пароль postgres/postgres, БД note и em_note_test)
 #
 # История «Отправить по почте»: таблица note_mail_sends (Alembic revision 202605121000).
@@ -78,9 +78,10 @@ services:
       - ./frontend:/app
       - ./deploy/docker-web-dev.sh:/docker-web-dev.sh:ro
     ports:
-      - "5173:5173"
+      - "${COMPOSE_WEB_PORT:-8080}:${COMPOSE_WEB_PORT:-8080}"
     environment:
       API_PROXY_TARGET: http://api:8000
+      COMPOSE_WEB_PORT: ${COMPOSE_WEB_PORT:-8080}
     # Скрипт: npm ci при изменении package-lock.json или при отсутствии таблиц TipTap (см. deploy/docker-web-dev.sh).
     # Прод: deploy/Dockerfile.web — npm ci при сборке образа.
     command: ["sh", "/docker-web-dev.sh"]

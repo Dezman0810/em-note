@@ -36,4 +36,4 @@ if [ ! -f node_modules/@tiptap/extension-table/package.json ]; then
   exit 1
 fi
 
-exec npm run dev -- --host 0.0.0.0 --port 5173
+exec npm run dev -- --host 0.0.0.0 --port "${COMPOSE_WEB_PORT:-8080}"
