@@ -46,7 +46,7 @@ def main() -> int:
 
     repo = Path(__file__).resolve().parents[2]  # em-note
     local_env = repo / "deploy" / "airflow" / "airflow.env"
-    text = local_env.read_text(encoding="utf-8")
+    text = local_env.read_text(encoding="utf-8", errors="replace")
     ldb = parse_dropbox_keys(text)
     needed = {
         "DROPBOX_APP_KEY",
@@ -67,6 +67,8 @@ def main() -> int:
         ssh_base() + ["cat", VPS_REMOTE],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if p.returncode != 0:
         print(p.stderr or " ssh cat failed", file=sys.stderr)
@@ -109,7 +111,7 @@ def main() -> int:
     merged = merged.rstrip() + "\n" + insert_block
 
     tmp = Path(__file__).with_name(".vps_airflow_merge_tmp.env")
-    tmp.write_text(merged, encoding="utf-8")
+    tmp.write_text(merged, encoding="utf-8", newline="\n")
     try:
         r = subprocess.run(
             [
