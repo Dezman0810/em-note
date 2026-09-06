@@ -14,6 +14,9 @@ import type {
   TagNoteCount,
   User,
   UserContact,
+  Habit,
+  HabitPublicLink,
+  PublicHabitsPayload,
 } from './types'
 
 export type TagAttachByNameResponse = { note: Note; tag: Tag }
@@ -67,6 +70,10 @@ export const adminApi = {
   },
   async setCanCreateNotes(userId: string, can_create_notes: boolean): Promise<AdminUserRow> {
     const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_create_notes })
+    return data
+  },
+  async setCanUseHabits(userId: string, can_use_habits: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_habits })
     return data
   },
 }
@@ -187,6 +194,9 @@ export const notesApi = {
   },
   async purge(id: string): Promise<void> {
     await api.delete(`/api/notes/${id}/permanent`)
+  },
+  async emptyTrash(): Promise<void> {
+    await api.delete('/api/notes/trash')
   },
   async attachTag(noteId: string, tagId: string): Promise<Note> {
     const { data } = await api.post<Note>(`/api/notes/${noteId}/tags/${tagId}`)
@@ -456,6 +466,64 @@ export const contactsApi = {
   },
   async remove(id: string): Promise<void> {
     await api.delete(`/api/users/me/contacts/${encodeURIComponent(id)}`)
+  },
+}
+
+export const habitsApi = {
+  async list(anchor?: string): Promise<Habit[]> {
+    const { data } = await api.get<Habit[]>('/api/habits', { params: anchor ? { anchor } : {} })
+    return data
+  },
+  async create(body: {
+    title: string
+    icon?: string
+    weekdays: number[]
+    target_days: number
+    starts_on?: string
+  }): Promise<Habit> {
+    const { data } = await api.post<Habit>('/api/habits', body)
+    return data
+  },
+  async update(
+    id: string,
+    body: Partial<{ title: string; icon: string; weekdays: number[]; target_days: number; starts_on: string; sort_order: number }>
+  ): Promise<Habit> {
+    const { data } = await api.patch<Habit>(`/api/habits/${encodeURIComponent(id)}`, body)
+    return data
+  },
+  async remove(id: string): Promise<void> {
+    await api.delete(`/api/habits/${encodeURIComponent(id)}`)
+  },
+  async setDay(
+    id: string,
+    body: { day?: string; status?: 'done' | 'missed' | 'clear'; comment?: string },
+    anchor?: string
+  ): Promise<Habit> {
+    const { data } = await api.put<Habit>(`/api/habits/${encodeURIComponent(id)}/day`, body, {
+      params: anchor ? { anchor } : {},
+    })
+    return data
+  },
+  async getPublicLink(): Promise<HabitPublicLink> {
+    const { data } = await api.get<HabitPublicLink>('/api/habits/public-link')
+    return data
+  },
+  async createPublicLink(): Promise<HabitPublicLink> {
+    const { data } = await api.put<HabitPublicLink>('/api/habits/public-link')
+    return data
+  },
+  async deletePublicLink(): Promise<void> {
+    await api.delete('/api/habits/public-link')
+  },
+}
+
+export const publicHabitsApi = {
+  async get(token: string, anchor?: string): Promise<PublicHabitsPayload> {
+    const { data } = await api.get<PublicHabitsPayload>(
+      `/api/public/habits/${encodeURIComponent(token)}`,
+      { params: anchor ? { anchor } : {} }
+    )
+    return data
   },
 }
 

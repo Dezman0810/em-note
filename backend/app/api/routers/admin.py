@@ -33,12 +33,21 @@ async def patch_user_access(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     a = (settings.admin_email or "").strip().lower()
-    if user.email.strip().lower() == a and not body.can_create_notes:
+    is_admin_user = bool(a) and user.email.strip().lower() == a
+    if is_admin_user and body.can_create_notes is False:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить создание заметок у аккаунта администратора",
         )
-    user.can_create_notes = body.can_create_notes
+    if is_admin_user and body.can_use_habits is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя отключить привычки у аккаунта администратора",
+        )
+    if body.can_create_notes is not None:
+        user.can_create_notes = body.can_create_notes
+    if body.can_use_habits is not None:
+        user.can_use_habits = body.can_use_habits
     await db.flush()
     await db.refresh(user)
     return user

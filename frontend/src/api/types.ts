@@ -5,6 +5,8 @@ export interface User {
   created_at: string
   /** Если false — нельзя создавать новые заметки (выдаёт только админ). */
   can_create_notes: boolean
+  /** Если false — раздел «Привычки» скрыт (выдаёт админ). */
+  can_use_habits: boolean
   /** Единственный email из настроек API; видит админку. */
   is_admin: boolean
 }
@@ -15,6 +17,18 @@ export interface AdminUserRow {
   display_name: string
   created_at: string
   can_create_notes: boolean
+  can_use_habits: boolean
+}
+
+export interface HabitPublicLink {
+  token: string
+  created_at: string
+}
+
+export interface PublicHabitsPayload {
+  owner_name: string
+  habits: Habit[]
+  can_edit: boolean
 }
 
 /** Ответ POST /api/notes/.../attachments */
@@ -132,4 +146,38 @@ export interface UserContact {
   email: string
   created_at: string
   updated_at: string
+}
+
+export interface HabitDayCell {
+  day: string
+  day_num: number
+  weekday: number
+  label: string
+  is_today: boolean
+  is_anchor: boolean
+  state: 'empty' | 'done' | 'missed' | 'anchor' | string
+  toggleable: boolean
+  comment?: string
+}
+
+export interface Habit {
+  id: string
+  user_id: string
+  title: string
+  icon: string
+  weekdays: number[]
+  target_days: number
+  starts_on: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+  today: string
+  anchor: string
+  done_count: number
+  missed_count: number
+  percent: number
+  stage_emoji: string
+  stage_label: string
+  window_cells: HabitDayCell[]
+  slots: HabitDayCell[]
 }

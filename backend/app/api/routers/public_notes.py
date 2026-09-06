@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,8 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db
 from app.config import settings
+from app.models.habit_public_link import HabitPublicLink
+from app.models.user import User
 from app.models.note import Note
 from app.models.note_attachment import NoteAttachment
 from app.models.note_public_link import NotePublicLink
@@ -18,6 +20,7 @@ from app.models.share import ShareRole
 from app.schemas.attachment import AttachmentRead, TranscriptionRead
 from app.services.audio_transcribe import transcribe_audio_file
 from app.services.attachment_ops import create_attachment_for_note
+from app.schemas.habit import PublicHabitsPayload
 from app.schemas.note import NoteRead, NoteUpdate
 from app.schemas.public_link import PublicNotePayload
 from app.utils.json_compare import json_doc_equal
@@ -158,4 +161,30 @@ async def public_download_attachment(
         path,
         media_type=row.content_type or "application/octet-stream",
         filename=row.original_filename or "download",
+    )
+
+
+@router.get("/habits/{token}", response_model=PublicHabitsPayload)
+async def get_public_habits(
+    token: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    anchor: Annotated[str | None, Query()] = None,
+) -> PublicHabitsPayload:
+    from app.api.routers.habits import habits_for_owner
+
+    row = (
+        (await db.execute(select(HabitPublicLink).where(HabitPublicLink.token == token)))
+        .scalars()
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ссылка недействительна или доступ отозван")
+    owner = await db.get(User, row.user_id)
+    if owner is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ссылка недействительна или доступ отозван")
+    habits = await habits_for_owner(db, owner.id, anchor)
+    return PublicHabitsPayload(
+        owner_name=owner.display_name or owner.email,
+        habits=habits,
+        can_edit=False,
     )

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import Color from '@tiptap/extension-color'
 import Highlight from '@tiptap/extension-highlight'
-import Image from '@tiptap/extension-image'
+import { ResizableImage } from './tiptap/ResizableImageExtension'
 import { TableKit } from '@tiptap/extension-table'
 import { NoteTableCell, NoteTableHeader } from './tiptap/noteTableSizingCells'
 import {
@@ -226,7 +226,7 @@ const editor = useEditor({
     FontFamily.configure({ types: ['textStyle'] }),
     Color,
     Highlight.configure({ multicolor: true }),
-    Image.configure({ inline: true, allowBase64: true }),
+    ResizableImage.configure({ inline: false, allowBase64: true }),
     EncryptedInline,
     ExcalidrawBlock,
     CodeSnippetBlock,
@@ -1655,6 +1655,11 @@ onBeforeUnmount(() => {
   padding: 0.75rem 1rem;
   outline: none;
   line-height: 1.45;
+}
+.editor-content :deep(.ProseMirror::after) {
+  content: '';
+  display: table;
+  clear: both;
 }
 .editor-content :deep(.ProseMirror > p) {
   margin: 0.2em 0;

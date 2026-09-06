@@ -810,6 +810,14 @@ onBeforeUnmount(() => {
           ← Заметки
         </button>
         <button
+          v-if="auth.user?.can_use_habits"
+          type="button"
+          class="btn secondary"
+          @click="router.push({ name: 'habits' })"
+        >
+          Привычки
+        </button>
+        <button
           type="button"
           class="btn primary"
           :disabled="!selectedTagId"

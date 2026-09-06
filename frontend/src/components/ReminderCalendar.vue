@@ -319,7 +319,13 @@ function reminderDetailTitle(n: Note): string {
 }
 
 function cellDateTitle(d: Date): string {
-  return d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  const base = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  return isToday(d) ? `Сегодня, ${base}` : base
+}
+
+function isToday(d: Date): boolean {
+  const t = new Date()
+  return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate()
 }
 </script>
 
@@ -368,7 +374,12 @@ function cellDateTitle(d: Date): string {
             :class="{ 'rem-cal-cell--dots': c.inMonth && (byDay.get(c.key)?.length ?? 0) > 0 }"
           >
             <template v-if="c.inMonth">
-              <span class="rem-cal-daynum" :title="cellDateTitle(c.d)">{{ c.label }}</span>
+              <span
+                class="rem-cal-daynum"
+                :class="{ 'rem-cal-daynum--today': isToday(c.d) }"
+                :title="cellDateTitle(c.d)"
+                >{{ c.label }}</span
+              >
               <div v-if="byDay.get(c.key)?.length" class="rem-cal-dots">
                 <span
                   v-for="n in (byDay.get(c.key) ?? []).slice(0, 6)"
@@ -395,7 +406,11 @@ function cellDateTitle(d: Date): string {
           class="rem-cal-wcol"
           :class="{ 'rem-cal-wcol--has': (byDay.get(c.key)?.length ?? 0) > 0 }"
         >
-          <div class="rem-cal-whead" :title="c.titleFull">
+          <div
+            class="rem-cal-whead"
+            :class="{ 'rem-cal-whead--today': isToday(c.d) }"
+            :title="isToday(c.d) ? `Сегодня, ${c.titleFull}` : c.titleFull"
+          >
             {{ c.label }}<span class="rem-cal-wnum">{{ c.short }}</span>
           </div>
           <div class="rem-cal-wdots">
@@ -608,6 +623,9 @@ function cellDateTitle(d: Date): string {
   font-weight: 600;
   color: #475569;
 }
+.rem-cal-daynum--today {
+  color: var(--accent);
+}
 .rem-cal-dots {
   display: flex;
   flex-wrap: wrap;
@@ -666,6 +684,10 @@ function cellDateTitle(d: Date): string {
   font-size: 0.6875rem;
   font-weight: 600;
   color: #475569;
+}
+.rem-cal-whead--today,
+.rem-cal-whead--today .rem-cal-wnum {
+  color: var(--accent);
 }
 .rem-cal-wdots {
   flex: 1;

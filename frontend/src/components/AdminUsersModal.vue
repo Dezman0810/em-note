@@ -34,14 +34,33 @@ watch(
   }
 )
 
-async function toggle(row: AdminUserRow, ev: Event) {
+async function toggleNotes(row: AdminUserRow, ev: Event) {
   const input = ev.target as HTMLInputElement
   const next = input.checked
-  pending.value = row.id
+  pending.value = row.id + ':notes'
   err.value = ''
   try {
     await adminApi.setCanCreateNotes(row.id, next)
     row.can_create_notes = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
+async function toggleHabits(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':habits'
+  err.value = ''
+  try {
+    await adminApi.setCanUseHabits(row.id, next)
+    row.can_use_habits = next
     if (auth.user?.id === row.id) {
       await auth.fetchMe()
     }
@@ -67,7 +86,7 @@ function close() {
           <button type="button" class="admin-close" aria-label="Закрыть" @click="close">×</button>
         </div>
         <p class="muted small admin-lead">
-          Галочка «создание заметок»: без неё пользователь может войти, но не создаёт новые заметки.
+          Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт.
         </p>
         <p v-if="loading" class="muted small">Загрузка…</p>
         <p v-else-if="err" class="err">{{ err }}</p>
@@ -79,6 +98,7 @@ function close() {
                 <th>Имя</th>
                 <th>Регистрация</th>
                 <th>Новые заметки</th>
+                <th>Привычки</th>
               </tr>
             </thead>
             <tbody>
@@ -90,9 +110,18 @@ function close() {
                   <input
                     type="checkbox"
                     :checked="u.can_create_notes"
-                    :disabled="pending === u.id"
+                    :disabled="pending === u.id + ':notes'"
                     :aria-label="`Создание заметок для ${u.email}`"
-                    @change="toggle(u, $event)"
+                    @change="toggleNotes(u, $event)"
+                  />
+                </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_use_habits"
+                    :disabled="pending === u.id + ':habits'"
+                    :aria-label="`Привычки для ${u.email}`"
+                    @change="toggleHabits(u, $event)"
                   />
                 </td>
               </tr>
@@ -118,7 +147,7 @@ function close() {
   overflow-y: auto;
 }
 .admin-modal {
-  width: min(720px, 100%);
+  width: min(820px, 100%);
   margin-top: min(8vh, 4rem);
   border-radius: var(--radius-lg, 14px);
   border: 1px solid var(--border);

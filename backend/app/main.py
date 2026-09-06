@@ -8,6 +8,7 @@ from app.api.routers import (
     attachments,
     auth,
     folders,
+    habits,
     mail,
     note_filter_presets,
     note_public_links,
@@ -53,6 +54,7 @@ app.include_router(note_public_links.router, prefix="/api")
 app.include_router(public_notes.router, prefix="/api")
 app.include_router(mail.router, prefix="/api")
 app.include_router(user_contacts.router, prefix="/api")
+app.include_router(habits.router, prefix="/api")
 app.include_router(user_settings.router, prefix="/api")
 
 

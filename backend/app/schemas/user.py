@@ -18,6 +18,7 @@ class UserRead(BaseModel):
     display_name: str
     created_at: UtcDatetime
     can_create_notes: bool = True
+    can_use_habits: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -34,12 +35,14 @@ class UserAdminListItem(BaseModel):
     display_name: str
     created_at: UtcDatetime
     can_create_notes: bool
+    can_use_habits: bool
 
     model_config = {"from_attributes": True}
 
 
 class UserAdminUpdate(BaseModel):
-    can_create_notes: bool
+    can_create_notes: bool | None = None
+    can_use_habits: bool | None = None
 
 
 class UserLogin(BaseModel):

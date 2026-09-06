@@ -505,6 +505,18 @@ async def update_note(
     return await finalize()
 
 
+@router.delete("/trash", status_code=status.HTTP_204_NO_CONTENT)
+async def empty_trash(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    result = await db.execute(
+        select(Note).where(Note.owner_id == user.id, Note.deleted_at.is_not(None))
+    )
+    for note in result.scalars().all():
+        await db.delete(note)
+
+
 @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_note(
     note_id: uuid.UUID,

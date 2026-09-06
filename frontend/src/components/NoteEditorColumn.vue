@@ -1152,6 +1152,29 @@ function exitEditorFocusMode() {
   editorFocusMode.value = false
 }
 
+function onEditorColumnKeydown(e: KeyboardEvent) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  if (isTrashed.value) return
+  if (reminderPanelOpen.value || showMailModal.value || tagSuggestionsOpen.value) return
+  if (isTypingTarget(e.target)) return
+  if (e.key === 'ArrowUp' && !hasPrevNote.value) return
+  if (e.key === 'ArrowDown' && !hasNextNote.value) return
+  e.preventDefault()
+  if (e.key === 'ArrowUp') void goPrevNote()
+  else void goNextNote()
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (target.isContentEditable) return true
+  return !!target.closest(
+    '.ProseMirror, .cm-editor, .cm-content, [contenteditable="true"], .excalidraw, .code-snippet',
+  )
+}
+
 function onEditorFocusKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (!editorFocusMode.value) return
@@ -1213,7 +1236,11 @@ watch(
 </script>
 
 <template>
-  <div class="editor-column" :class="{ 'editor-column--focus': editorFocusMode }">
+  <div
+    class="editor-column"
+    :class="{ 'editor-column--focus': editorFocusMode }"
+    @keydown="onEditorColumnKeydown"
+  >
     <template v-if="!noteId">
       <div class="editor-placeholder">
         <p class="ph-title">Заметка не выбрана</p>
@@ -1250,7 +1277,7 @@ watch(
                 type="button"
                 class="btn-note-nav"
                 :disabled="!hasPrevNote"
-                title="Предыдущая в списке (фильтры и сортировка как в средней колонке)"
+                title="Предыдущая в списке (↑ или кнопка). Фильтры и сортировка как в средней колонке"
                 aria-label="Предыдущая заметка в списке"
                 @click="goPrevNote"
               >
@@ -1260,7 +1287,7 @@ watch(
                 type="button"
                 class="btn-note-nav"
                 :disabled="!hasNextNote"
-                title="Следующая в списке (фильтры и сортировка как в средней колонке)"
+                title="Следующая в списке (↓ или кнопка). Фильтры и сортировка как в средней колонке"
                 aria-label="Следующая заметка в списке"
                 @click="goNextNote"
               >

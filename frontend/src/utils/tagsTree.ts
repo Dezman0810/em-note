@@ -109,6 +109,31 @@ export function tagNavIdsRelevantToNotes(
   return tagNavAncestorClosure(flat, seeds)
 }
 
+/** Найденные метки + предки (главная ветка) + потомки найденных. Чужие корни и соседние ветки не входят. */
+export function tagNavRelatedClosure(flat: Tag[], seedIds: Iterable<string>): Set<string> {
+  const children = new Map<string | null, Tag[]>()
+  for (const t of flat) {
+    const k = t.parent_id
+    if (!children.has(k)) children.set(k, [])
+    children.get(k)!.push(t)
+  }
+  const seeds: string[] = []
+  for (const id of seedIds) seeds.push(id)
+  const out = tagNavAncestorClosure(flat, seeds)
+  const walkDown = (id: string) => {
+    for (const kid of children.get(id) ?? []) {
+      if (out.has(kid.id)) {
+        walkDown(kid.id)
+        continue
+      }
+      out.add(kid.id)
+      walkDown(kid.id)
+    }
+  }
+  for (const id of seeds) walkDown(id)
+  return out
+}
+
 /**
  * Счётчики поддеревьев меток по списку заметок — та же модель, что у GET /tags/counts:
  * заметку учитываем у метки R, если у заметки есть прикреплённая метка из поддерева R (вверх по цепочке предков).

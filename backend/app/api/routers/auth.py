@@ -34,6 +34,7 @@ async def register(
         password_hash=hash_password(body.password),
         display_name=body.display_name or email_norm.split("@")[0],
         can_create_notes=is_owner,
+        can_use_habits=is_owner,
     )
     db.add(user)
     await db.flush()
@@ -54,8 +55,11 @@ async def login(
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     admin_e = settings.admin_email.strip().lower() if settings.admin_email else ""
-    if admin_e and user.email.strip().lower() == admin_e and not user.can_create_notes:
-        user.can_create_notes = True
+    if admin_e and user.email.strip().lower() == admin_e:
+        if not user.can_create_notes:
+            user.can_create_notes = True
+        if not user.can_use_habits:
+            user.can_use_habits = True
         await db.flush()
     await claim_invite_shares_for_user(db, user)
     await ensure_share_access_tags_for_user(db, user.id)

@@ -43,6 +43,22 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/habits',
+      name: 'habits',
+      component: () => import('../views/HabitsView.vue'),
+      meta: { requiresAuth: true, requiresHabits: true },
+    },
+    {
+      path: '/h/:token',
+      name: 'public-habits',
+      component: () => import('../views/HabitsView.vue'),
+      beforeEnter: (to) => {
+        const t = String(to.params.token || '').trim()
+        if (!t) return { path: '/' }
+        return true
+      },
+    },
+    {
       path: '/p/:token',
       name: 'public-note',
       component: () => import('../views/PublicNoteView.vue'),
@@ -67,6 +83,9 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.meta.guest && auth.isAuthenticated) {
+    return { name: 'notes' }
+  }
+  if (to.meta.requiresHabits && !auth.user?.can_use_habits) {
     return { name: 'notes' }
   }
   return true

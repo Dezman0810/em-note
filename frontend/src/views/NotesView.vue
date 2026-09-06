@@ -21,9 +21,11 @@ import {
   tagCountsFromNoteList,
   tagNavAncestorClosure,
   tagNavIdsRelevantToNotes,
+  tagNavRelatedClosure,
   tagsWithChildrenSet,
   visibleTagsForNav,
 } from '../utils/tagsTree'
+import { tagNameMatchesQuery } from '../utils/tagSearch'
 
 const adminUsersOpen = ref(false)
 
@@ -50,6 +52,8 @@ const FOLDERS_LIST_EXPANDED_KEY = 'note-ui-folders-list-expanded'
 const TAGS_LIST_EXPANDED_KEY = 'note-ui-tags-list-expanded'
 /** В сайдбаре скрывать метки с нулём заметок в текущей области (все папки или выбранные). */
 const TAGS_ONLY_WITH_NOTES_IN_SCOPE_KEY = 'note-ui-tags-only-with-notes-in-scope'
+const FOLDERS_ONLY_WITH_NOTES_KEY = 'note-ui-folders-only-with-notes'
+const TAGS_SIDEBAR_SEARCH_KEY = 'note-ui-tags-sidebar-search'
 const CALENDAR_EXPANDED_KEY = 'note-ui-calendar-expanded'
 /** Свёрнуто всё меню слева (папки, метки, календарь) — узкая колонка с «+». */
 const SIDEBAR_NAV_FULL_COLLAPSE_KEY = 'note-ui-sidebar-nav-full-collapsed'
@@ -70,6 +74,22 @@ function readBoolKey(key: string, fallback: boolean): boolean {
 function writeBoolKey(key: string, v: boolean) {
   try {
     localStorage.setItem(key, v ? '1' : '0')
+  } catch {
+    /* */
+  }
+}
+
+function readStrKey(key: string, fallback = ''): string {
+  try {
+    return localStorage.getItem(key) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+function writeStrKey(key: string, v: string) {
+  try {
+    localStorage.setItem(key, v)
   } catch {
     /* */
   }
@@ -480,12 +500,25 @@ watch(tagsSidebarOnlyWithNotes, (v) =>
   writeBoolKey(TAGS_ONLY_WITH_NOTES_IN_SCOPE_KEY, v)
 )
 
+const tagsSidebarSearch = ref(readStrKey(TAGS_SIDEBAR_SEARCH_KEY))
+const tagsSidebarSearchActive = computed(() => tagsSidebarSearch.value.trim().length > 0)
+
+watch(tagsSidebarSearch, (v) => {
+  writeStrKey(TAGS_SIDEBAR_SEARCH_KEY, v)
+  if (v.trim()) {
+    tagsListExpanded.value = true
+    writeBoolKey(TAGS_LIST_EXPANDED_KEY, true)
+  }
+})
+
 /** Включение «все + сразу» осталось только из старых пресетов (`tag_match_all`); в UI режим И даёт кнопка «∧». */
 const filterTagsMatchAll = ref(false)
 const tagPlusButtonTitle =
   'Выбрать ветку в фильтре «+» (ещё раз — убрать). Несколько «+»: достаточно любой из выбранных (ИЛИ). Строгий И по веткам — кнопка «∧».'
 const tagsRenderedInSidebar = computed(() => {
-  let nav = tagsVisibleInSidebar.value
+  const q = tagsSidebarSearch.value.trim()
+  /* При поиске показываем совпадения и во свёрнутых ветках. */
+  let nav = q ? visibleTagsForNav(tags.value, {}) : tagsVisibleInSidebar.value
   /* Узкое дерево только при включённой галочке «с заметками» и при поиске/фильтре меток: метки (+ предки), коснувшиеся текущего списка; скобки «n из N» у «Все метки» не от этого. */
   if (
     tagsSidebarOnlyWithNotes.value &&
@@ -515,17 +548,24 @@ const tagsRenderedInSidebar = computed(() => {
       nav = nav.filter((t) => rel.has(t.id))
     }
   }
-  if (!tagsSidebarOnlyWithNotes.value) return nav
-  const counts = tagCountByIdForSidebar.value
-  return nav.filter((t) => {
-    if ((counts[String(t.id)] ?? 0) > 0) return true
-    /* «−» / снятие с исключения / «+» / «∧» при нуле счётчика оставляем в списке — видно активный фильтр */
-    if (tagRowMinusPressed(t.id)) return true
-    if (tagRowSubtreeExcluded(t.id)) return true
-    if (filterTagIds.value.includes(t.id)) return true
-    if (filterConjunctTagIds.value.includes(t.id)) return true
-    return false
-  })
+  if (tagsSidebarOnlyWithNotes.value) {
+    const counts = tagCountByIdForSidebar.value
+    nav = nav.filter((t) => {
+      if ((counts[String(t.id)] ?? 0) > 0) return true
+      /* «−» / снятие с исключения / «+» / «∧» при нуле счётчика оставляем в списке — видно активный фильтр */
+      if (tagRowMinusPressed(t.id)) return true
+      if (tagRowSubtreeExcluded(t.id)) return true
+      if (filterTagIds.value.includes(t.id)) return true
+      if (filterConjunctTagIds.value.includes(t.id)) return true
+      return false
+    })
+  }
+  if (q) {
+    const matchIds = tags.value.filter((t) => tagNameMatchesQuery(t.name, q)).map((t) => t.id)
+    const keep = tagNavRelatedClosure(tags.value, matchIds)
+    nav = nav.filter((t) => keep.has(t.id))
+  }
+  return nav
 })
 
 const tagNameById = computed(() => {
@@ -600,6 +640,19 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
     [tagId]: willCollapse,
   }
   persistTagNavCollapsed()
+}
+
+const tagNavHasCollapsed = computed(() => Object.values(collapsedTagIds.value).some(Boolean))
+
+function expandAllTagNavLevels(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  collapsedTagIds.value = {}
+  persistTagNavCollapsed()
+  if (!tagsListExpanded.value) {
+    tagsListExpanded.value = true
+    writeBoolKey(TAGS_LIST_EXPANDED_KEY, true)
+  }
 }
 
 function clearTagFilter() {
@@ -719,10 +772,55 @@ watch(
 
 const foldersSorted = computed(() => foldersSortedAlphabetical(folders.value))
 
+const foldersSidebarOnlyWithNotes = ref(readBoolKey(FOLDERS_ONLY_WITH_NOTES_KEY, false))
+
+watch(foldersSidebarOnlyWithNotes, (v) => writeBoolKey(FOLDERS_ONLY_WITH_NOTES_KEY, v))
+
+const foldersOnlyWithNotesTitle = computed(() => {
+  if (listRefinementBeyondFolders.value && !folderViewTrash.value) {
+    return 'Только папки, в которых есть заметки из текущего списка (учтены метки и поиск).'
+  }
+  return 'Только папки с заметками (пустые скрыть).'
+})
+
+const foldersRenderedInSidebar = computed(() => {
+  const all = foldersSorted.value
+  if (!foldersSidebarOnlyWithNotes.value || folderViewTrash.value) return all
+  return all.filter((f) => {
+    if (filterFolderIds.value.includes(f.id) || filterExcludeFolderIds.value.includes(f.id)) {
+      return true
+    }
+    if (listRefinementBeyondFolders.value) {
+      return (notesCountByFolderIdInList.value.get(f.id) ?? 0) > 0
+    }
+    return countInFolder(f.id) > 0
+  })
+})
+
 function countInFolder(folderId: string): number {
   const fc = folderNoteCounts.value?.folder_counts ?? []
   const row = fc.find((x) => x.folder_id === folderId)
   return row?.count ?? 0
+}
+
+/** Сколько заметок из текущего списка (поиск / метки) лежит в папке. */
+const notesCountByFolderIdInList = computed(() => {
+  const m = new Map<string, number>()
+  for (const n of notes.value) {
+    const fid = n.folder_id
+    if (!fid) continue
+    m.set(fid, (m.get(fid) ?? 0) + 1)
+  }
+  return m
+})
+
+function folderRowParenText(folderId: string): string {
+  const total = countInFolder(folderId)
+  if (folderViewTrash.value || !listRefinementBeyondFolders.value) {
+    return String(total)
+  }
+  const narrowed = notesCountByFolderIdInList.value.get(folderId) ?? 0
+  return `${narrowed} из ${total}`
 }
 
 /** Совпадает с областью списка заметок: сумма выбранных папок / все − исключённые. */
@@ -751,13 +849,15 @@ const scopeTagsAllRowParenText = computed(() => {
   return `${notes.value.length} из ${base}`
 })
 
-/** Скобки у «Все заметки» в папках: без отбора папки показывает «n из N» при фильтрах меток/поиска. */
+/** Скобки у «Все заметки»: при метках/поиске — сколько в списке из всего в текущей области папок. */
 const sidebarAllNotesParenText = computed(() => {
   if (!folderNoteCounts.value) return ''
   if (folderViewTrash.value) return String(folderNoteCounts.value.total)
-  if (filterFolderIds.value.length > 0) return String(folderNoteCounts.value.total)
   const base = effectiveNotesTotalForFolderScope()
-  if (!listRefinementBeyondFolders.value) return String(base)
+  if (!listRefinementBeyondFolders.value) {
+    if (filterFolderIds.value.length > 0) return String(folderNoteCounts.value.total)
+    return String(base)
+  }
   return `${notes.value.length} из ${base}`
 })
 
@@ -1070,6 +1170,8 @@ function goHomeFromLogo() {
   clearFolderPicker()
   clearTagFilter()
   tagsSidebarOnlyWithNotes.value = false
+  foldersSidebarOnlyWithNotes.value = false
+  tagsSidebarSearch.value = ''
   collapsedTagIds.value = {}
   persistTagNavCollapsed()
   foldersListExpanded.value = true
@@ -1357,6 +1459,37 @@ async function purgeNote(n: Note, ev: Event) {
   }
 }
 
+const emptyingTrash = ref(false)
+
+async function emptyTrash() {
+  const count = sortedNotes.value.length
+  if (!folderViewTrash.value || count === 0 || emptyingTrash.value) return
+  if (
+    !confirm(
+      count === 1
+        ? 'Удалить заметку из корзины навсегда? Это нельзя отменить.'
+        : `Удалить все заметки из корзины (${count}) навсегда? Это нельзя отменить.`,
+    )
+  ) {
+    return
+  }
+  emptyingTrash.value = true
+  const wasActive = activeNoteId.value
+  try {
+    await notesApi.emptyTrash()
+    error.value = ''
+    await loadFolders()
+    await load()
+    if (wasActive) {
+      await router.push({ name: 'notes' })
+    }
+  } catch (e) {
+    error.value = errMessage(e)
+  } finally {
+    emptyingTrash.value = false
+  }
+}
+
 async function createNote() {
   try {
     if (auth.user && !auth.user.can_create_notes) {
@@ -1388,6 +1521,23 @@ function logout() {
 
 function openNote(id: string) {
   void router.push({ name: 'note', params: { id } })
+}
+
+function onNoteListItemKeydown(e: KeyboardEvent, id: string) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  const ids = sortedNotes.value.map((n) => n.id)
+  const i = ids.indexOf(id)
+  if (i < 0) return
+  const j = e.key === 'ArrowDown' ? i + 1 : i - 1
+  if (j < 0 || j >= ids.length) return
+  e.preventDefault()
+  const nextId = ids[j]!
+  openNote(nextId)
+  void nextTick(() => {
+    const el = document.querySelector(`[data-note-list-id="${nextId}"]`)
+    if (el instanceof HTMLButtonElement) el.focus()
+  })
 }
 
 /** Нативный title: полный заголовок и текст (с ограничением по длине), даты внизу. */
@@ -1748,6 +1898,14 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <button
+            v-if="auth.user?.can_use_habits"
+            type="button"
+            class="btn secondary header-tags-btn"
+            @click="router.push('/habits')"
+          >
+            Привычки
+          </button>
           <button type="button" class="btn secondary header-tags-btn" @click="router.push('/tags')">
             Метки
           </button>
@@ -1785,7 +1943,7 @@ onBeforeUnmount(() => {
             <div class="folder-nav-folders-panel">
               <div class="folder-nav-folders-sticky">
                 <div
-                  class="folder-all-row tag-all-wrap folder-all-row--frame folder-all-row--folders-scope"
+                  class="folder-all-row tag-all-wrap folder-all-row--frame folder-all-row--folders-scope folders-all-row-scope"
                 >
                   <button
                     v-if="foldersSorted.length"
@@ -1811,7 +1969,15 @@ onBeforeUnmount(() => {
                       @drop="onFolderDrop($event, 'all')"
                     >
                       <span class="folder-label nav-scope-label">Все заметки</span>
-                      <span v-if="folderNoteCounts" class="tag-count nav-scope-count"> ({{ sidebarAllNotesParenText }})</span>
+                      <span
+                        v-if="folderNoteCounts"
+                        class="tag-count nav-scope-count"
+                        :title="
+                          listRefinementBeyondFolders && !folderViewTrash
+                            ? 'В списке с учётом меток и поиска / всего заметок в этой области папок'
+                            : 'Всего заметок'
+                        "
+                      > ({{ sidebarAllNotesParenText }})</span>
                     </button>
                     <button
                       type="button"
@@ -1833,6 +1999,15 @@ onBeforeUnmount(() => {
                       −
                     </button>
                   </div>
+                  <div class="tags-scope-checkboxes folders-scope-checkboxes">
+                    <label class="tags-scope-only-wrap" :title="foldersOnlyWithNotesTitle" @click.stop>
+                      <input
+                        v-model="foldersSidebarOnlyWithNotes"
+                        type="checkbox"
+                        aria-label="Только папки с заметками"
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
               <div
@@ -1841,7 +2016,7 @@ onBeforeUnmount(() => {
               >
                 <div v-show="foldersListExpanded" class="folder-rows">
                   <div
-                    v-for="f in foldersSorted"
+                    v-for="f in foldersRenderedInSidebar"
                     :key="f.id"
                     class="nav-row folder-sidebar-row"
                     :class="{
@@ -1899,7 +2074,14 @@ onBeforeUnmount(() => {
                         ×
                       </button>
                     </div>
-                    <span class="tag-count">({{ countInFolder(f.id) }})</span>
+                    <span
+                      class="tag-count"
+                      :title="
+                        listRefinementBeyondFolders && !folderViewTrash
+                          ? 'В списке с учётом меток и поиска / всего в этой папке'
+                          : 'Заметок в папке'
+                      "
+                    >({{ folderRowParenText(f.id) }})</span>
                   </div>
                 </div>
               </div>
@@ -1915,6 +2097,7 @@ onBeforeUnmount(() => {
                 <div class="folder-nav-tags-sticky">
                   <div
                     class="folder-all-row tag-all-wrap folder-all-row--frame folder-scope-notes-parent tags-all-row-scope"
+                    :class="{ 'tags-all-row-scope--has-search': tagsSidebarSearchActive }"
                   >
                     <button
                       v-if="tags.length"
@@ -1946,7 +2129,46 @@ onBeforeUnmount(() => {
                         <template v-else>Все метки</template>
                       </span>
                     </button>
+                    <input
+                      v-model="tagsSidebarSearch"
+                      type="text"
+                      class="tags-scope-search"
+                      placeholder="поиск"
+                      aria-label="Поиск меток"
+                      title="Показать метки по названию или словоформе"
+                      autocomplete="off"
+                      spellcheck="false"
+                      @click.stop
+                      @mousedown.stop
+                    />
                     <div class="tags-scope-checkboxes">
+                      <button
+                        type="button"
+                        class="btn-tags-expand-all"
+                        :disabled="!tagNavHasCollapsed && tagsListExpanded"
+                        title="Раскрыть все уровни меток"
+                        aria-label="Раскрыть все уровни меток"
+                        @click.stop="expandAllTagNavLevels"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path
+                            d="M3.5 4.2 L8 8.2 L12.5 4.2"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                          <path
+                            d="M3.5 8.6 L8 12.6 L12.5 8.6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </button>
                       <label class="tags-scope-only-wrap" :title="tagsOnlyInScopeTitle" @click.stop>
                         <input
                           v-model="tagsSidebarOnlyWithNotes"
@@ -2107,6 +2329,16 @@ onBeforeUnmount(() => {
         :style="notesListColOuterStyle"
       >
         <div class="list-toolbar">
+          <div v-if="folderViewTrash" class="list-toolbar-trash-row">
+            <button
+              type="button"
+              class="btn-empty-trash"
+              :disabled="emptyingTrash || sortedNotes.length === 0"
+              @click="emptyTrash"
+            >
+              {{ emptyingTrash ? 'Очистка…' : 'Очистить всё' }}
+            </button>
+          </div>
           <div class="list-toolbar-main-row">
             <div class="list-toolbar-sort-row">
               <div class="list-toolbar-sort">
@@ -2147,12 +2379,14 @@ onBeforeUnmount(() => {
                 type="button"
                 class="note-item"
                 :class="{ current: n.id === activeNoteId }"
+                :data-note-list-id="n.id"
                 :title="noteRowTooltip(n)"
                 :draggable="!folderViewTrash"
                 @dragstart="onNoteDragStart($event, n.id)"
                 @dragover="onNoteRowDragOver"
                 @drop="onNoteRowDrop($event, n.id)"
                 @click="openNote(n.id)"
+                @keydown="onNoteListItemKeydown($event, n.id)"
               >
                 <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
                 <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
@@ -2915,6 +3149,31 @@ onBeforeUnmount(() => {
 .folder-all-row--frame.folder-all-row--folders-scope {
   overflow: visible;
 }
+.folders-all-row-scope:has(.nav-scope-folders-all-btn:hover),
+.folders-all-row-scope:has(.folders-scope-checkboxes:hover),
+.folders-all-row-scope:has(.tags-scope-only-wrap:focus-within) {
+  z-index: 2;
+  position: relative;
+}
+.folders-all-row-scope:hover .folders-scope-checkboxes,
+.folders-all-row-scope:focus-within .folders-scope-checkboxes,
+.folders-all-row-scope:has(.nav-scope-folders-all-btn:focus-visible) .folders-scope-checkboxes,
+.folders-all-row-scope:has(.nav-scope-folders-all-btn:focus) .folders-scope-checkboxes {
+  max-width: 1.65rem;
+  opacity: 1;
+  visibility: visible;
+  padding-right: 1px;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .folders-all-row-scope .folders-scope-checkboxes {
+    max-width: 1.65rem;
+    opacity: 1;
+    visibility: visible;
+    padding-right: 1px;
+    pointer-events: auto;
+  }
+}
 .folder-notes-scope-slot {
   position: relative;
   flex: 1 1 auto;
@@ -3092,16 +3351,68 @@ onBeforeUnmount(() => {
 }
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:hover),
 .folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-checkboxes:hover),
-.folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-only-wrap:focus-within) {
+.folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-only-wrap:focus-within),
+.folder-scope-notes-parent.tags-all-row-scope:has(.tags-scope-search:focus) {
   z-index: 2;
   position: relative;
 }
+.tags-scope-search {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  opacity: 0;
+  visibility: hidden;
+  overflow: hidden;
+  pointer-events: none;
+  font-family: inherit;
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: #64748b;
+  align-self: stretch;
+  transition:
+    max-width 0.18s ease,
+    width 0.18s ease,
+    opacity 0.14s ease,
+    visibility 0.14s ease,
+    padding 0.14s ease;
+}
+.tags-scope-search::placeholder {
+  color: #94a3b8;
+  opacity: 0.85;
+}
+.folder-scope-notes-parent.tags-all-row-scope:hover .tags-scope-search,
+.folder-scope-notes-parent.tags-all-row-scope:focus-within .tags-scope-search,
+.folder-scope-notes-parent.tags-all-row-scope.tags-all-row-scope--has-search .tags-scope-search {
+  width: 5.25rem;
+  max-width: 5.25rem;
+  padding: 0 3px 0 2px;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .folder-scope-notes-parent.tags-all-row-scope .tags-scope-search {
+    width: 5.25rem;
+    max-width: 5.25rem;
+    padding: 0 3px 0 2px;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+}
 .tags-scope-checkboxes {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 1px;
   flex: 0 0 auto;
   max-width: 0;
   opacity: 0;
@@ -3115,11 +3426,39 @@ onBeforeUnmount(() => {
     visibility 0.14s ease,
     padding 0.14s ease;
 }
+.btn-tags-expand-all {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+.btn-tags-expand-all svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.btn-tags-expand-all:hover:not(:disabled) {
+  color: #475569;
+  background: rgba(148, 163, 184, 0.16);
+}
+.btn-tags-expand-all:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
 .folder-scope-notes-parent.tags-all-row-scope:hover .tags-scope-checkboxes,
 .folder-scope-notes-parent.tags-all-row-scope:focus-within .tags-scope-checkboxes,
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus-visible) .tags-scope-checkboxes,
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus) .tags-scope-checkboxes {
-  max-width: 1.65rem;
+  max-width: 3.1rem;
   opacity: 1;
   visibility: visible;
   padding-right: 1px;
@@ -3128,7 +3467,7 @@ onBeforeUnmount(() => {
 /* Сенсор: без :hover галочку оставляем доступной */
 @media (hover: none) {
   .folder-scope-notes-parent.tags-all-row-scope .tags-scope-checkboxes {
-    max-width: 1.65rem;
+    max-width: 3.1rem;
     opacity: 1;
     visibility: visible;
     padding-right: 1px;
@@ -3767,6 +4106,29 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid rgba(148, 163, 184, 0.25);
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.45);
+}
+.list-toolbar-trash-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.38rem;
+}
+.btn-empty-trash {
+  width: 100%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.38rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--danger);
+  background: #fff;
+  color: var(--danger);
+  cursor: pointer;
+}
+.btn-empty-trash:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.08);
+}
+.btn-empty-trash:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .sort-lab {
   font-size: 0.65rem;
