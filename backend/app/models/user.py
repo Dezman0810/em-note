@@ -32,6 +32,7 @@ class User(Base):
     )
     can_create_notes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_use_habits: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     notes: Mapped[list["Note"]] = relationship(
         "Note", back_populates="owner", foreign_keys="Note.owner_id"

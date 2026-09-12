@@ -9,6 +9,8 @@ export interface User {
   can_use_habits: boolean
   /** Единственный email из настроек API; видит админку. */
   is_admin: boolean
+  /** После сброса админом: нужно задать свой пароль. */
+  must_change_password: boolean
 }
 
 export interface AdminUserRow {

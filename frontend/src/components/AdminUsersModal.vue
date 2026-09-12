@@ -13,6 +13,7 @@ const users = ref<AdminUserRow[]>([])
 const loading = ref(false)
 const err = ref('')
 const pending = ref<string | null>(null)
+const revealed = ref<{ email: string; password: string } | null>(null)
 
 async function load() {
   loading.value = true
@@ -30,7 +31,10 @@ async function load() {
 watch(
   () => props.open,
   (v) => {
-    if (v) void load()
+    if (v) {
+      revealed.value = null
+      void load()
+    }
   }
 )
 
@@ -73,7 +77,37 @@ async function toggleHabits(row: AdminUserRow, ev: Event) {
 }
 
 function close() {
+  revealed.value = null
   emit('update:open', false)
+}
+
+async function resetPassword(row: AdminUserRow) {
+  if (
+    !confirm(
+      `Сбросить пароль для ${row.email}? Старый больше не подойдёт. Новый покажем один раз — его нужно передать пользователю.`
+    )
+  ) {
+    return
+  }
+  pending.value = row.id + ':pw'
+  err.value = ''
+  try {
+    const data = await adminApi.resetPassword(row.id)
+    revealed.value = { email: data.email, password: data.temporary_password }
+  } catch (e) {
+    err.value = errMessage(e)
+  } finally {
+    pending.value = null
+  }
+}
+
+async function copyRevealed() {
+  if (!revealed.value) return
+  try {
+    await navigator.clipboard.writeText(revealed.value.password)
+  } catch {
+    err.value = 'Не удалось скопировать пароль'
+  }
 }
 </script>
 
@@ -87,7 +121,15 @@ function close() {
         </div>
         <p class="muted small admin-lead">
           Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт.
+          Старый пароль узнать нельзя — он не хранится. Можно только сбросить и выдать новый.
         </p>
+        <div v-if="revealed" class="admin-revealed">
+          <p>
+            Новый пароль для <strong>{{ revealed.email }}</strong> — временный. При входе программа попросит задать свой. Передайте его пользователю:
+          </p>
+          <code class="admin-pw">{{ revealed.password }}</code>
+          <button type="button" class="admin-copy" @click="copyRevealed">Копировать</button>
+        </div>
         <p v-if="loading" class="muted small">Загрузка…</p>
         <p v-else-if="err" class="err">{{ err }}</p>
         <div v-else class="admin-table-wrap">
@@ -99,6 +141,7 @@ function close() {
                 <th>Регистрация</th>
                 <th>Новые заметки</th>
                 <th>Привычки</th>
+                <th>Сбросить пароль</th>
               </tr>
             </thead>
             <tbody>
@@ -124,6 +167,16 @@ function close() {
                     @change="toggleHabits(u, $event)"
                   />
                 </td>
+                <td class="admin-acts">
+                  <button
+                    type="button"
+                    class="admin-reset"
+                    :disabled="pending === u.id + ':pw'"
+                    @click="resetPassword(u)"
+                  >
+                    Сбросить пароль
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -147,7 +200,7 @@ function close() {
   overflow-y: auto;
 }
 .admin-modal {
-  width: min(820px, 100%);
+  width: min(940px, 100%);
   margin-top: min(8vh, 4rem);
   border-radius: var(--radius-lg, 14px);
   border: 1px solid var(--border);
@@ -227,5 +280,42 @@ function close() {
   width: 1.1rem;
   height: 1.1rem;
   cursor: pointer;
+}
+.admin-acts {
+  white-space: nowrap;
+}
+.admin-reset,
+.admin-copy {
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.22rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+}
+.admin-reset:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.admin-revealed {
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #84cc16;
+  background: #f7fee7;
+  font-size: 0.8rem;
+}
+.admin-revealed p {
+  margin: 0 0 0.4rem;
+}
+.admin-pw {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.92rem;
+  letter-spacing: 0.02em;
 }
 </style>

@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, require_admin
 from app.config import settings
 from app.models.user import User
-from app.schemas.user import UserAdminListItem, UserAdminUpdate
+from app.schemas.user import UserAdminListItem, UserAdminPasswordReset, UserAdminUpdate
+from app.utils.security import generate_temporary_password, hash_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -51,3 +52,19 @@ async def patch_user_access(
     await db.flush()
     await db.refresh(user)
     return user
+
+
+@router.post("/users/{user_id}/reset-password", response_model=UserAdminPasswordReset)
+async def reset_user_password(
+    user_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _admin: Annotated[User, Depends(require_admin)],
+) -> UserAdminPasswordReset:
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    temporary = generate_temporary_password()
+    user.password_hash = hash_password(temporary)
+    user.must_change_password = True
+    await db.flush()
+    return UserAdminPasswordReset(email=user.email, temporary_password=temporary)

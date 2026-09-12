@@ -62,11 +62,16 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function changePassword(current_password: string, new_password: string) {
+    const me = await authApi.changePassword({ current_password, new_password })
+    user.value = me
+  }
+
   function logout() {
     authEpoch++
     persistToken(null)
     user.value = null
   }
 
-  return { token, user, loaded, isAuthenticated, login, register, fetchMe, logout }
+  return { token, user, loaded, isAuthenticated, login, register, fetchMe, changePassword, logout }
 })

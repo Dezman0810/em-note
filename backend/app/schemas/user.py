@@ -19,6 +19,7 @@ class UserRead(BaseModel):
     created_at: UtcDatetime
     can_create_notes: bool = True
     can_use_habits: bool = False
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -43,6 +44,16 @@ class UserAdminListItem(BaseModel):
 class UserAdminUpdate(BaseModel):
     can_create_notes: bool | None = None
     can_use_habits: bool | None = None
+
+
+class UserAdminPasswordReset(BaseModel):
+    email: str
+    temporary_password: str
+
+
+class UserChangePassword(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class UserLogin(BaseModel):

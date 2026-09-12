@@ -1,10 +1,18 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import secrets
 
 import bcrypt
 from jose import JWTError, jwt
 
 from app.config import settings
+
+
+def generate_temporary_password(length: int = 12) -> str:
+    """Одноразовый пароль для сброса админом. Старый хеш восстановить нельзя."""
+    alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    n = max(8, min(32, int(length)))
+    return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
 def hash_password(password: str) -> str:

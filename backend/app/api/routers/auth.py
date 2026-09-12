@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_db
 from app.config import settings
 from app.models.user import User
-from app.schemas.user import Token, UserCreate, UserLogin, UserRead
+from app.schemas.user import Token, UserChangePassword, UserCreate, UserLogin, UserRead
 from app.services.share_claim import claim_invite_shares_for_user
 from app.services.share_recipient_tag import ensure_share_access_tags_for_user
 from app.utils.security import create_access_token, hash_password, verify_password
@@ -65,6 +65,29 @@ async def login(
     await ensure_share_access_tags_for_user(db, user.id)
     token = create_access_token(str(user.id))
     return Token(access_token=token)
+
+
+@router.post("/change-password", response_model=UserRead)
+async def change_password(
+    body: UserChangePassword,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Текущий пароль неверный",
+        )
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Новый пароль должен отличаться от временного",
+        )
+    user.password_hash = hash_password(body.new_password)
+    user.must_change_password = False
+    await db.flush()
+    await db.refresh(user)
+    return user
 
 
 @router.get("/me", response_model=UserRead)

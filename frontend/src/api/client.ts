@@ -76,6 +76,12 @@ export const adminApi = {
     const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_habits })
     return data
   },
+  async resetPassword(userId: string): Promise<{ email: string; temporary_password: string }> {
+    const { data } = await api.post<{ email: string; temporary_password: string }>(
+      `/api/admin/users/${userId}/reset-password`
+    )
+    return data
+  },
 }
 
 export const authApi = {
@@ -89,6 +95,10 @@ export const authApi = {
   },
   async me(): Promise<User> {
     const { data } = await api.get<User>('/api/auth/me')
+    return data
+  },
+  async changePassword(body: { current_password: string; new_password: string }): Promise<User> {
+    const { data } = await api.post<User>('/api/auth/change-password', body)
     return data
   },
 }
