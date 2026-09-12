@@ -13,19 +13,29 @@ import {
 } from '../utils/dndTags'
 import type { Folder, FolderNoteCounts, Note, NoteFilterPreset, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
-import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
+import { fmtCompactMsk } from '../utils/datetime'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
+import {
+  noteBodyPreview,
+  noteRowTooltip,
+  sortNotes,
+  type NoteSort,
+} from '../utils/noteList'
 import {
   isDescendantTag,
   tagCountsFromNoteList,
   tagNavAncestorClosure,
   tagNavIdsRelevantToNotes,
-  tagNavRelatedClosure,
   tagsWithChildrenSet,
   visibleTagsForNav,
 } from '../utils/tagsTree'
 import { tagNameMatchesQuery } from '../utils/tagSearch'
+import { useNoteLayout } from '../composables/useNoteLayout'
+import { useTheme } from '../composables/useTheme'
+
+const { label: themeLabel, icon: themeIcon, cycleTheme } = useTheme()
+const { innerScroll, setInnerScroll } = useNoteLayout()
 
 const adminUsersOpen = ref(false)
 
@@ -423,7 +433,6 @@ async function onNoteRowDrop(e: DragEvent, noteId: string) {
     }
     error.value = ''
     await load()
-    reminderRefreshSignal.value++
     bumpEditorSyncIfOpen(noteId)
   } catch (err) {
     error.value = errMessage(err)
@@ -516,34 +525,30 @@ const filterTagsMatchAll = ref(false)
 const tagPlusButtonTitle =
   'Выбрать ветку в фильтре «+» (ещё раз — убрать). Несколько «+»: достаточно любой из выбранных (ИЛИ). Строгий И по веткам — кнопка «∧».'
 const tagsRenderedInSidebar = computed(() => {
-  const q = tagsSidebarSearch.value.trim()
-  /* При поиске показываем совпадения и во свёрнутых ветках. */
-  let nav = q ? visibleTagsForNav(tags.value, {}) : tagsVisibleInSidebar.value
-  /* Узкое дерево только при включённой галочке «с заметками» и при поиске/фильтре меток: метки (+ предки), коснувшиеся текущего списка; скобки «n из N» у «Все метки» не от этого. */
+  const tagQuery = tagsSidebarSearch.value.trim()
+  const noteQuery = q.value.trim()
+  /* При поиске по названию метки показываем совпадения и во свёрнутых ветках. */
+  let nav = tagQuery ? visibleTagsForNav(tags.value, {}) : tagsVisibleInSidebar.value
+  const filterSeeds = [
+    ...filterTagIds.value,
+    ...filterConjunctTagIds.value,
+    ...filterExcludeTagIds.value,
+    ...filterExcludeUndoTagIds.value,
+  ]
+  /* Узкое дерево при галочке «с заметками» или при текстовом поиске заметок:
+     иначе «есть» оставляет на экране родителя «10.000 - Проекты». */
   if (
-    tagsSidebarOnlyWithNotes.value &&
-    listRefinementBeyondFolders.value &&
     !folderViewTrash.value &&
-    tags.value.length
+    tags.value.length &&
+    ((tagsSidebarOnlyWithNotes.value && listRefinementBeyondFolders.value) || !!noteQuery)
   ) {
     if (notes.value.length === 0) {
-      const seeds = [
-        ...filterTagIds.value,
-        ...filterConjunctTagIds.value,
-        ...filterExcludeTagIds.value,
-        ...filterExcludeUndoTagIds.value,
-      ]
-      nav = seeds.length
-        ? nav.filter((t) => tagNavAncestorClosure(tags.value, seeds).has(t.id))
+      nav = filterSeeds.length
+        ? nav.filter((t) => tagNavAncestorClosure(tags.value, filterSeeds).has(t.id))
         : []
     } else {
+      /* Метки на найденных заметках + их предки (ветка до корня), без чужих деревьев. */
       const rel = new Set(tagNavIdsRelevantToNotes(tags.value, notes.value))
-      const filterSeeds = [
-        ...filterTagIds.value,
-        ...filterConjunctTagIds.value,
-        ...filterExcludeTagIds.value,
-        ...filterExcludeUndoTagIds.value,
-      ]
       for (const id of tagNavAncestorClosure(tags.value, filterSeeds)) rel.add(id)
       nav = nav.filter((t) => rel.has(t.id))
     }
@@ -560,12 +565,22 @@ const tagsRenderedInSidebar = computed(() => {
       return false
     })
   }
-  if (q) {
-    const matchIds = tags.value.filter((t) => tagNameMatchesQuery(t.name, q)).map((t) => t.id)
-    const keep = tagNavRelatedClosure(tags.value, matchIds)
+  if (tagQuery) {
+    const matchIds = tags.value
+      .filter((t) => tagNameMatchesQuery(t.name, tagQuery))
+      .map((t) => t.id)
+    /* Совпадение и вся ветка вверх до корня. Предки — путь, не «нашлось по буквам». */
+    const keep = tagNavAncestorClosure(tags.value, matchIds)
     nav = nav.filter((t) => keep.has(t.id))
   }
   return nav
+})
+
+/** Id меток, которые реально совпали с поиском в сайдбаре (предки пути — нет). */
+const tagsSidebarSearchHitIds = computed(() => {
+  const q = tagsSidebarSearch.value.trim()
+  if (!q) return null
+  return new Set(tags.value.filter((t) => tagNameMatchesQuery(t.name, q)).map((t) => t.id))
 })
 
 const tagNameById = computed(() => {
@@ -916,39 +931,9 @@ function bumpEditorSyncIfOpen(noteId: string) {
   if (noteId === activeNoteId.value) editorSyncSignal.value++
 }
 
-type NoteSort =
-  | 'updated_desc'
-  | 'updated_asc'
-  | 'created_desc'
-  | 'created_asc'
-  | 'title_asc'
-  | 'title_desc'
-
 const noteSort = ref<NoteSort>('created_desc')
 
-const sortedNotes = computed(() => {
-  const list = [...notes.value]
-  const s = noteSort.value
-  list.sort((a, b) => {
-    if (s === 'title_asc') {
-      return (a.title || '').localeCompare(b.title || '', 'ru', { sensitivity: 'base' })
-    }
-    if (s === 'title_desc') {
-      return (b.title || '').localeCompare(a.title || '', 'ru', { sensitivity: 'base' })
-    }
-    if (s === 'created_asc') {
-      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    }
-    if (s === 'created_desc') {
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    }
-    if (s === 'updated_asc') {
-      return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
-    }
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-  })
-  return list
-})
+const sortedNotes = computed(() => sortNotes(notes.value, noteSort.value))
 
 async function loadFolders() {
   try {
@@ -1257,6 +1242,19 @@ async function load() {
   reminderRefreshSignal.value++
 }
 
+/**
+ * Редактор просит обновить список после сохранения, смены папки, метки, ссылки.
+ * За одно действие таких просьб приходит несколько — склеиваем в одну перезагрузку.
+ */
+let reloadTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleReload() {
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null
+    void load()
+  }, 150)
+}
+
 async function loadFilterPresets() {
   if (!auth.user) return
   try {
@@ -1540,48 +1538,43 @@ function onNoteListItemKeydown(e: KeyboardEvent, id: string) {
   })
 }
 
-/** Нативный title: полный заголовок и текст (с ограничением по длине), даты внизу. */
-const NOTE_ROW_TOOLTIP_BODY_MAX = 8000
-
-function noteRowDatesLines(n: Note): string[] {
-  const lines = [`Создано: ${fmtMsk(n.created_at)}`, `Изменено: ${fmtMsk(n.updated_at)}`]
-  if (n.deleted_at) lines.push(`Удалено: ${fmtMsk(n.deleted_at)}`)
-  return lines
+type NoteRowView = {
+  id: string
+  note: Note
+  title: string
+  preview: string
+  tooltip: string
+  folderName: string
+  tagItems: { id: string; label: string }[]
 }
 
-function noteRowTooltip(n: Note): string {
-  const titleFull = (n.title || '').trim() || DEFAULT_NOTE_TITLE
-  const raw = (n.content_plain || '').replace(/\s+/g, ' ').trim()
-  let bodyTip = ''
-  if (raw) {
-    bodyTip =
-      raw.length > NOTE_ROW_TOOLTIP_BODY_MAX
-        ? `${raw.slice(0, NOTE_ROW_TOOLTIP_BODY_MAX).trimEnd()}…`
-        : raw
-  }
-  const lines: string[] = [titleFull]
-  if (bodyTip) {
-    lines.push('', bodyTip)
-  }
-  if (n.folder_id && !folderViewTrash.value) {
-    const fn = folders.value.find((x) => x.id === n.folder_id)?.name
-    if (fn) lines.push('', `Папка: ${fn}`)
-  }
-  const tagLabels = noteRowTagItems(n)
-  if (tagLabels.length) {
-    lines.push('', `Метки: ${tagLabels.map((t) => t.label).join(', ')}`)
-  }
-  lines.push('', ...noteRowDatesLines(n))
-  return lines.join('\n')
-}
+/**
+ * Готовые строки списка. Раньше шаблон вызывал `noteRowTooltip`, `noteBodyPreview`,
+ * `noteRowTagItems` и `folders.find` для каждой заметки на каждый рендер — на больших
+ * списках это давало квадратичную работу. Теперь всё считается один раз на изменение данных.
+ */
+const noteRows = computed<NoteRowView[]>(() => {
+  const trash = folderViewTrash.value
+  const folderNameById = new Map(folders.value.map((f) => [f.id, f.name]))
+  return sortedNotes.value.map((n) => {
+    const tagItems = noteRowTagItems(n)
+    const folderName =
+      !trash && n.folder_id ? (folderNameById.get(n.folder_id) ?? '') : ''
+    return {
+      id: n.id,
+      note: n,
+      title: n.title || DEFAULT_NOTE_TITLE,
+      preview: noteBodyPreview(n),
+      tooltip: noteRowTooltip(n, { folderName, tagLabels: tagItems.map((t) => t.label) }),
+      folderName,
+      tagItems,
+    }
+  })
+})
 
-function noteBodyPreview(n: Note): string {
-  const raw = (n.content_plain || '').replace(/\s+/g, ' ').trim()
-  if (!raw) return ''
-  const max = 140
-  if (raw.length <= max) return raw
-  return raw.slice(0, max).trimEnd() + '…'
-}
+/** Стабильные ссылки для пропсов: иначе новый массив на каждый рендер дёргает дочерние компоненты. */
+const scopeNoteIds = computed(() => notes.value.map((n) => n.id))
+const sortedNoteIds = computed(() => sortedNotes.value.map((n) => n.id))
 
 onMounted(async () => {
   syncNarrowLayout()
@@ -1616,7 +1609,7 @@ watch(
     if (folderViewTrash.value && filterFolderIds.value.length) {
       folderViewTrash.value = false
     }
-    void load()
+    scheduleReload()
   },
   { deep: true }
 )
@@ -1634,16 +1627,18 @@ watch(
         folderViewTrash.value = false
         filterFolderIds.value = []
         filterExcludeFolderIds.value = []
-        void load()
+        scheduleReload()
       }
       return
     }
-    void load()
+    scheduleReload()
   },
   { deep: true }
 )
 
 onBeforeUnmount(() => {
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = null
   mobileMq?.removeEventListener('change', syncNarrowLayout)
   mobileMq = null
   window.removeEventListener('resize', clampTagsPanelHeight)
@@ -1664,6 +1659,7 @@ onBeforeUnmount(() => {
     :class="{
       'workspace--narrow': isNarrowLayout,
       'workspace--note-route': noteRouteOpen,
+      'workspace--fit': innerScroll,
     }"
   >
     <div
@@ -1913,6 +1909,26 @@ onBeforeUnmount(() => {
       </div>
       <div class="header-user">
         <span class="user" v-if="auth.user">{{ auth.user.email }}</span>
+        <label
+          class="note-fit-toggle"
+          title="Заметка на высоту экрана: шапка и доступы всегда видны, скролл внутри текста"
+        >
+          <input
+            type="checkbox"
+            :checked="innerScroll"
+            @change="setInnerScroll(($event.target as HTMLInputElement).checked)"
+          />
+          <span class="note-fit-toggle-text">Скролл в заметке</span>
+        </label>
+        <button
+          type="button"
+          class="theme-toggle"
+          :aria-label="themeLabel"
+          :title="themeLabel"
+          @click="cycleTheme"
+        >
+          <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+        </button>
         <button type="button" class="btn ghost" @click="logout">Выйти</button>
       </div>
     </header>
@@ -2060,6 +2076,7 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         class="btn-rename"
+                        aria-label="Переименовать папку"
                         title="Переименовать"
                         @click.stop="renameFolder(f)"
                       >
@@ -2068,6 +2085,7 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         class="btn-del"
+                        aria-label="Удалить папку"
                         title="Удалить папку"
                         @click.stop="deleteFolder(f)"
                       >
@@ -2195,6 +2213,8 @@ onBeforeUnmount(() => {
                       'tag-sidebar-row--conjunct':
                         tagRowSubtreeConjunct(t.id) && !tagRowSubtreeExcluded(t.id),
                       on: tagRowSubtreeIncluded(t.id) && !tagRowSubtreeExcluded(t.id),
+                      'tag-sidebar-row--search-path':
+                        !!tagsSidebarSearchHitIds && !tagsSidebarSearchHitIds.has(t.id),
                     }"
                     :style="{
                       paddingLeft: `${Math.max(0, t.depth - 1) * TAG_NAV_TREE_INDENT_REM}rem`,
@@ -2229,6 +2249,7 @@ onBeforeUnmount(() => {
                         class="btn-tag-filter-conj"
                         :class="{ on: filterConjunctTagIds.includes(t.id) }"
                         title="Блок ∧: заметка должна содержать каждую из выбранных веток одновременно (И). Сочетается с «+» (ИЛИ/И) и с «−» (исключить)"
+                        aria-label="Требовать эту ветку меток вместе с другими"
                         :aria-pressed="filterConjunctTagIds.includes(t.id)"
                         @click.stop="applyTagConjunctFilterToggle(t)"
                       >
@@ -2239,6 +2260,7 @@ onBeforeUnmount(() => {
                         class="btn-tag-filter-plus"
                         :class="{ on: filterTagIds.includes(t.id) }"
                         :title="tagPlusButtonTitle"
+                        aria-label="Включить метку в фильтре"
                         :aria-pressed="filterTagIds.includes(t.id)"
                         @click.stop="applyTagIncludeFilterToggle(t)"
                       >
@@ -2249,6 +2271,7 @@ onBeforeUnmount(() => {
                         class="btn-tag-filter-minus"
                         :class="{ on: tagRowMinusPressed(t.id) }"
                         title="Исключить всю ветку. Если строка красная из‑за «−» у родителя — снимает красное с этой подветки без снятия исключения у родителя; ещё раз — вернуть исключение"
+                        aria-label="Исключить ветку меток из списка"
                         :aria-pressed="tagRowMinusPressed(t.id)"
                         @click.stop="applyTagExcludeFilterToggle(t)"
                       >
@@ -2285,7 +2308,7 @@ onBeforeUnmount(() => {
                     embed-in-sidebar
                     :fraction-from-list-filter="listRefinementBeyondFolders && !folderViewTrash"
                     :refresh-signal="reminderRefreshSignal"
-                    :scope-note-ids="notes.map((n) => n.id)"
+                    :scope-note-ids="scopeNoteIds"
                     @open-note="openNote"
                   />
                 </div>
@@ -2374,57 +2397,56 @@ onBeforeUnmount(() => {
             class="list"
             :class="{ 'list--refreshing': loading && sortedNotes.length > 0 }"
           >
-            <li v-for="n in sortedNotes" :key="n.id" :class="{ trashrow: folderViewTrash }">
+            <li v-for="row in noteRows" :key="row.id" :class="{ trashrow: folderViewTrash }">
               <button
                 type="button"
                 class="note-item"
-                :class="{ current: n.id === activeNoteId }"
-                :data-note-list-id="n.id"
-                :title="noteRowTooltip(n)"
+                :class="{ current: row.id === activeNoteId }"
+                :data-note-list-id="row.id"
+                :title="row.tooltip"
                 :draggable="!folderViewTrash"
-                @dragstart="onNoteDragStart($event, n.id)"
+                @dragstart="onNoteDragStart($event, row.id)"
                 @dragover="onNoteRowDragOver"
-                @drop="onNoteRowDrop($event, n.id)"
-                @click="openNote(n.id)"
-                @keydown="onNoteListItemKeydown($event, n.id)"
+                @drop="onNoteRowDrop($event, row.id)"
+                @click="openNote(row.id)"
+                @keydown="onNoteListItemKeydown($event, row.id)"
               >
-                <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
-                <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
+                <span class="note-title">{{ row.title }}</span>
+                <span v-if="row.preview" class="note-preview">{{ row.preview }}</span>
                 <span class="meta">
-                  <span
-                    v-if="(n.folder_id && !folderViewTrash) || noteRowTagItems(n).length"
-                    class="note-list-badges"
-                  >
-                    <span v-if="n.folder_id && !folderViewTrash" class="folder-badge">{{
-                      folders.find((x) => x.id === n.folder_id)?.name
-                    }}</span>
+                  <span v-if="row.folderName || row.tagItems.length" class="note-list-badges">
+                    <span v-if="row.folderName" class="folder-badge">{{ row.folderName }}</span>
                     <span
-                      v-for="tagRow in noteRowTagItems(n)"
+                      v-for="tagRow in row.tagItems"
                       :key="tagRow.id"
                       class="note-tag-badge"
                       >{{ tagRow.label }}</span
                     >
                   </span>
                   <span class="dates dates-compact">
-                    <template v-if="folderViewTrash && n.deleted_at">
+                    <template v-if="folderViewTrash && row.note.deleted_at">
                       <span class="meta-prefix">Удал.</span>
-                      {{ fmtCompactMsk(n.deleted_at) }}
+                      {{ fmtCompactMsk(row.note.deleted_at) }}
                     </template>
                     <template v-else>
                       <span class="date-bit"
-                        ><span class="meta-prefix">Созд.</span>{{ fmtCompactMsk(n.created_at) }}</span
+                        ><span class="meta-prefix">Созд.</span
+                        >{{ fmtCompactMsk(row.note.created_at) }}</span
                       >
                       <span class="date-sep" aria-hidden="true">·</span>
                       <span class="date-bit"
-                        ><span class="meta-prefix">Изм.</span>{{ fmtCompactMsk(n.updated_at) }}</span
+                        ><span class="meta-prefix">Изм.</span
+                        >{{ fmtCompactMsk(row.note.updated_at) }}</span
                       >
                     </template>
                   </span>
                 </span>
               </button>
               <div v-if="folderViewTrash" class="trash-actions">
-                <button type="button" class="btn-mini" @click="restoreNote(n, $event)">Восстановить</button>
-                <button type="button" class="btn-mini danger" @click="purgeNote(n, $event)">
+                <button type="button" class="btn-mini" @click="restoreNote(row.note, $event)">
+                  Восстановить
+                </button>
+                <button type="button" class="btn-mini danger" @click="purgeNote(row.note, $event)">
                   Удалить навсегда
                 </button>
               </div>
@@ -2448,9 +2470,9 @@ onBeforeUnmount(() => {
       <div class="editor-shell">
         <NoteEditorColumn
           :note-id="activeNoteId"
-          :sorted-note-ids="sortedNotes.map((n) => n.id)"
+          :sorted-note-ids="sortedNoteIds"
           :editor-sync-signal="editorSyncSignal"
-          @refresh="load"
+          @refresh="scheduleReload"
         />
       </div>
     </div>
@@ -2465,24 +2487,29 @@ onBeforeUnmount(() => {
   flex-direction: column;
   background: var(--bg);
 }
+.workspace--fit {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
 .mobile-nav-backdrop {
   position: fixed;
   inset: 0;
   z-index: 180;
-  background: rgba(15, 23, 42, 0.42);
+  background: var(--scrim);
   -webkit-tap-highlight-color: transparent;
 }
 .header-menu-btn {
   padding: 0.32rem 0.5rem;
   margin-right: 0.15rem;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
-  background: #fff;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
   border-radius: 10px;
   cursor: pointer;
   flex-shrink: 0;
-  color: #334155;
+  color: var(--text-2);
 }
 .workspace-header {
   position: relative;
@@ -2492,12 +2519,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.75rem 1rem;
   padding: 0.5rem 1rem 0.55rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-translucent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   flex-shrink: 0;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  box-shadow: 0 1px 0 var(--inset-highlight) inset;
 }
 .header-left {
   display: flex;
@@ -2519,16 +2546,16 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 .logo-home-btn:focus-visible {
-  outline: 2px solid rgba(100, 116, 139, 0.45);
+  outline: 2px solid var(--border-strong);
   outline-offset: 3px;
   border-radius: 8px;
 }
 .logo-wordmark {
   font-family: 'Sora', 'Inter', system-ui, sans-serif;
-  font-size: 1.375rem;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.055em;
-  color: #0f172a;
+  color: var(--text-1);
 }
 .logo-brand {
   display: inline-flex;
@@ -2536,11 +2563,11 @@ onBeforeUnmount(() => {
   gap: 0;
 }
 .logo-brand-accent {
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
   font-weight: 700;
 }
 .logo-brand-dash {
-  color: #64748b;
+  color: var(--text-4);
   font-weight: 600;
   margin: 0 0.02em;
 }
@@ -2567,17 +2594,17 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .admin-top-btn {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   padding: 0.35rem 0.55rem;
   border-radius: 8px;
-  border: 1px solid rgba(37, 99, 235, 0.35);
-  background: rgba(37, 99, 235, 0.08);
-  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
   cursor: pointer;
 }
 .admin-top-btn:hover {
-  background: rgba(37, 99, 235, 0.14);
+  background: var(--accent-subtle-hover);
 }
 .header-search-inner {
   display: flex;
@@ -2594,18 +2621,18 @@ onBeforeUnmount(() => {
   gap: 0.15rem;
   padding: 0.1rem 0.35rem 0.1rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
+    border-color var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease);
 }
 .search-shell:hover {
-  border-color: rgba(100, 116, 139, 0.48);
+  border-color: var(--border-strong);
 }
 .search-shell:focus-within {
-  border-color: rgba(37, 99, 235, 0.42);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .search--in-shell {
   flex: 1 1 auto;
@@ -2615,7 +2642,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 0;
   box-shadow: none;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   background: transparent;
 }
 .search--in-shell:hover {
@@ -2632,19 +2659,19 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: 0.28rem 0.65rem;
   border-radius: 999px;
-  border: 1px solid rgba(37, 99, 235, 0.35);
-  background: rgba(37, 99, 235, 0.1);
-  color: var(--accent, #2563eb);
-  font-size: 0.68rem;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 .search-submit:hover {
-  background: rgba(37, 99, 235, 0.16);
-  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-subtle-hover);
+  border-color: var(--accent-border);
 }
 .preset-strip {
   display: flex;
@@ -2676,26 +2703,26 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   margin: 0;
   padding: 0.32rem 0.5rem;
-  border: 1px solid rgba(148, 163, 184, 0.38);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(248, 250, 252, 0.65);
-  color: #0f172a;
-  font-size: 0.72rem;
+  background: var(--surface-2-translucent);
+  color: var(--text-1);
+  font-size: var(--fs-2xs);
   font-weight: 500;
   cursor: pointer;
   text-align: left;
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    background 0.15s ease;
+    border-color var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease),
+    background var(--dur-base) var(--ease);
 }
 .preset-trigger:hover {
-  border-color: rgba(37, 99, 235, 0.38);
+  border-color: var(--accent-border);
 }
 .preset-trigger:focus-visible {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.55);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent-border-strong);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .preset-trigger-label {
   flex: 1 1 auto;
@@ -2705,14 +2732,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .preset-trigger-label--muted {
-  color: #64748b;
+  color: var(--text-4);
   font-weight: 400;
 }
 .preset-chevron {
   flex-shrink: 0;
   width: 0.95rem;
   height: 0.95rem;
-  color: #64748b;
+  color: var(--text-4);
 }
 .preset-dropdown {
   position: absolute;
@@ -2728,11 +2755,11 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding: 4px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.98);
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: var(--surface-translucent);
+  border: 1px solid var(--border);
   box-shadow:
-    0 4px 6px -1px rgba(15, 23, 42, 0.08),
-    0 16px 36px -10px rgba(15, 23, 42, 0.2);
+    0 4px 6px -1px var(--shadow-tint-weak),
+    0 16px 36px -10px var(--shadow-tint);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
@@ -2746,35 +2773,35 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #0f172a;
-  font-size: 0.72rem;
+  color: var(--text-1);
+  font-size: var(--fs-2xs);
   text-align: left;
   cursor: pointer;
 }
 .preset-dd-row:hover {
-  background: rgba(15, 23, 42, 0.045);
+  background: var(--hover-wash);
 }
 .preset-dd-row:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .preset-dd-row--muted {
-  color: #64748b;
+  color: var(--text-4);
   font-weight: 500;
 }
 .preset-dd-row--create {
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .preset-dd-divider {
   height: 1px;
   margin: 4px 6px;
-  background: rgba(148, 163, 184, 0.28);
+  background: var(--surface-wash-strong);
 }
 .preset-dd-empty {
   padding: 0.35rem 0.55rem 0.2rem;
-  font-size: 0.68rem;
-  color: #94a3b8;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
 }
 .preset-dd-item {
   position: relative;
@@ -2784,10 +2811,10 @@ onBeforeUnmount(() => {
   border-radius: 8px;
 }
 .preset-dd-item:hover {
-  background: rgba(15, 23, 42, 0.04);
+  background: var(--hover-wash);
 }
 .preset-dd-item:focus-within {
-  background: rgba(37, 99, 235, 0.06);
+  background: var(--accent-subtle);
 }
 .preset-dd-main {
   box-sizing: border-box;
@@ -2798,8 +2825,8 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: #0f172a;
-  font-size: 0.72rem;
+  color: var(--text-1);
+  font-size: var(--fs-2xs);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -2808,7 +2835,7 @@ onBeforeUnmount(() => {
   outline: none;
 }
 .preset-dd-main--active {
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
 }
 .preset-dd-name {
   display: block;
@@ -2831,16 +2858,16 @@ onBeforeUnmount(() => {
   /* Ярлыки поверх строки справа, текст не зажимается второй колонкой */
   background: linear-gradient(
     to right,
-    rgba(255, 255, 255, 0),
-    rgba(255, 255, 255, 0.78) 30%,
-    rgba(255, 255, 255, 0.97) 52%,
-    rgba(255, 255, 255, 0.99) 100%
+    var(--surface-1-fade),
+    var(--surface-translucent) 30%,
+    var(--surface-1-fade-end) 52%,
+    var(--surface-1-fade-end) 100%
   );
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 0.14s ease,
+    opacity var(--dur-base) var(--ease),
     visibility 0.14s;
 }
 @media (hover: hover) {
@@ -2859,10 +2886,10 @@ onBeforeUnmount(() => {
     pointer-events: auto;
     background: linear-gradient(
       to right,
-      rgba(255, 255, 255, 0),
-      rgba(255, 255, 255, 0.85) 35%,
-      rgba(255, 255, 255, 0.98) 60%,
-      rgba(255, 255, 255, 0.99) 100%
+      var(--surface-1-fade),
+      var(--surface-translucent) 35%,
+      var(--surface-translucent) 60%,
+      var(--surface-1-fade-end) 100%
     );
   }
 }
@@ -2877,23 +2904,23 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: #475569;
+  color: var(--text-3);
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    color 0.12s ease,
-    transform 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
 .preset-row-act:hover:not(:disabled) {
-  background: rgba(15, 23, 42, 0.08);
-  color: #0f172a;
+  background: var(--hover-wash-strong);
+  color: var(--text-1);
 }
 .preset-row-act:active:not(:disabled) {
   transform: scale(0.93);
 }
 .preset-row-act--danger:hover:not(:disabled) {
-  background: rgba(220, 38, 38, 0.1);
-  color: #b91c1c;
+  background: var(--danger-subtle-hover);
+  color: var(--danger-text);
 }
 .preset-row-act:disabled {
   opacity: 0.35;
@@ -2904,8 +2931,8 @@ onBeforeUnmount(() => {
   height: 8px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: linear-gradient(135deg, #f59e0b, #ea580c);
-  box-shadow: 0 0 0 2px rgba(251, 146, 60, 0.35);
+  background: linear-gradient(135deg, var(--warning), var(--warning-strong));
+  box-shadow: 0 0 0 2px var(--warning-glow);
 }
 .preset-ico {
   width: 1rem;
@@ -2921,54 +2948,21 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   padding-left: 0.85rem;
-  border-left: 1px solid rgba(148, 163, 184, 0.35);
+  border-left: 1px solid var(--border);
   margin-left: auto;
   flex-shrink: 0;
 }
 .user {
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   color: var(--note-list-meta);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.btn {
-  padding: 0.35rem 0.6rem;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 500;
-  background: #fff;
-  color: #475569;
-  transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
-}
-.btn.secondary:hover {
-  background: var(--list-row-hover);
-  border-color: rgba(100, 116, 139, 0.45);
-  color: #334155;
-}
+/* Базовые `.btn` / `.btn.primary` / `.btn.secondary` / `.btn.ghost` — в assets/ui.css. */
 .btn.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.22);
-}
-.btn.primary:hover {
-  background: var(--accent-hover);
-}
-.btn.ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text-muted);
-}
-.btn.ghost:hover {
-  background: rgba(148, 163, 184, 0.12);
-  color: #334155;
+  box-shadow: 0 1px 2px var(--accent-glow);
 }
 .workspace-body {
   display: flex;
@@ -2987,7 +2981,7 @@ onBeforeUnmount(() => {
   z-index: 2;
 }
 .col-gutter:hover {
-  background: rgba(15, 23, 42, 0.06);
+  background: var(--hover-wash);
 }
 .folders-aside {
   border-right: 1px solid var(--sidebar-edge);
@@ -3000,7 +2994,7 @@ onBeforeUnmount(() => {
   max-height: calc(100vh - 52px);
   overflow: hidden;
   font-family: system-ui, -apple-system, 'Segoe UI', 'Inter', Roboto, sans-serif;
-  color: #1f2937;
+  color: var(--text-1);
 }
 .folders-aside--rail-collapsed {
   padding: 0.35rem 0.2rem;
@@ -3010,15 +3004,15 @@ onBeforeUnmount(() => {
   min-height: 6rem;
   border: 1px solid var(--sidebar-edge);
   border-radius: 8px;
-  background: #fff;
-  font-size: 1.35rem;
+  background: var(--surface-1);
+  font-size: var(--fs-xl);
   font-weight: 600;
   cursor: pointer;
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
   line-height: 1;
 }
 .folders-aside-rail-expand:hover {
-  background: #f8fafc;
+  background: var(--surface-2);
 }
 .notes-list-rail-expand {
   flex-shrink: 0;
@@ -3027,17 +3021,17 @@ onBeforeUnmount(() => {
   max-height: calc(100vh - 52px);
   margin: 0;
   border: none;
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
+  border-right: 1px solid var(--border-subtle);
   border-radius: 0;
-  background: linear-gradient(180deg, #fafbfc 0%, #f4f5f8 100%);
-  font-size: 1.35rem;
+  background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface-canvas) 100%);
+  font-size: var(--fs-xl);
   font-weight: 600;
   cursor: pointer;
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
   line-height: 1;
 }
 .notes-list-rail-expand:hover {
-  background: #eef2f7;
+  background: var(--surface-4);
 }
 .list-toolbar-main-row {
   display: flex;
@@ -3068,32 +3062,32 @@ onBeforeUnmount(() => {
   width: 1.65rem;
   height: 1.65rem;
   padding: 0;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--surface-1);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
-  color: #475569;
+  color: var(--text-3);
 }
 .btn-notes-list-hide:hover {
-  background: #f8fafc;
+  background: var(--surface-2);
 }
 .btn-nav-panel-hide {
   box-sizing: border-box;
   width: 1.65rem;
   height: 1.65rem;
   padding: 0;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-solid);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface-2);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
-  color: #475569;
+  color: var(--text-3);
 }
 .btn-nav-panel-hide:hover {
-  background: #f1f5f9;
+  background: var(--surface-3);
 }
 .col-gutter--disabled {
   pointer-events: none;
@@ -3105,7 +3099,7 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-panel {
-  box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.04);
+  box-shadow: inset -1px 0 0 var(--shadow-tint-weak);
 }
 .folder-nav {
   display: flex;
@@ -3129,7 +3123,7 @@ onBeforeUnmount(() => {
 .folder-all-row--frame {
   border: 1px solid var(--sidebar-edge);
   border-radius: 8px;
-  background: #fff;
+  background: var(--surface-1);
   overflow: hidden;
   align-items: stretch;
 }
@@ -3201,26 +3195,26 @@ onBeforeUnmount(() => {
   width: 1.38rem;
   height: 1.38rem;
   padding: 0;
-  border: 1px solid rgba(203, 213, 225, 0.9);
+  border: 1px solid var(--border-solid);
   border-radius: 8px;
-  background: #f8fafc;
-  color: #94a3b8;
-  font-size: 1.02rem;
+  background: var(--surface-2);
+  color: var(--text-4);
+  font-size: var(--fs-base);
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 1px 2px var(--shadow-tint-weak);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 0.14s ease,
-    visibility 0.14s ease,
-    transform 0.14s ease,
-    background 0.12s ease,
-    box-shadow 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
+    opacity var(--dur-base) var(--ease),
+    visibility var(--dur-base) var(--ease),
+    transform var(--dur-base) var(--ease),
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 .folder-all-row--folders-scope:hover .folder-add-folder-btn--overlay,
 .folder-add-folder-btn--overlay:focus-visible {
@@ -3229,13 +3223,13 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 .folder-add-folder-btn--overlay:hover {
-  background: #f1f5f9;
-  border-color: rgba(148, 163, 184, 0.55);
-  color: #64748b;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.07);
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text-4);
+  box-shadow: 0 1px 3px var(--shadow-tint-weak);
 }
 .folder-add-folder-btn--overlay:focus-visible {
-  outline: 2px solid rgba(148, 163, 184, 0.65);
+  outline: 2px solid var(--border-strong);
   outline-offset: 1px;
 }
 @media (hover: none) {
@@ -3257,10 +3251,10 @@ onBeforeUnmount(() => {
   width: 1.38rem;
   height: 1.38rem;
   padding: 0;
-  font-size: 0.92rem;
+  font-size: var(--fs-md);
   border-radius: 8px;
-  border: 1px solid #e5e7eb;
-  background: #f8fafc;
+  border: 1px solid var(--border-solid);
+  background: var(--surface-2);
 }
 .folder-notes-scope-slot--no-panel-hide .nav-scope-folders-all-btn {
   padding-right: calc(1.42rem + 0.36rem);
@@ -3271,35 +3265,35 @@ onBeforeUnmount(() => {
 
 .nav-scope-label {
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: var(--fs-xs);
   letter-spacing: -0.02em;
-  color: #111827;
+  color: var(--text-1);
 }
 .folder-filter-all.on .nav-scope-label {
-  color: #111827;
+  color: var(--text-1);
 }
 .nav-scope-count {
   font-weight: 500;
-  font-size: 0.72rem;
-  color: #94a3b8;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   opacity: 1;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
 .folder-filter-all.on .nav-scope-count {
-  color: #7c8a9e;
+  color: var(--text-4);
 }
 .folder-nav-folders-panel .folder-filter .tag-count.nav-scope-count,
 .folder-nav-tags-panel .folder-filter .tag-count.nav-scope-count {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #94a3b8;
+  color: var(--text-4);
   opacity: 1;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .folder-nav-folders-panel .folder-filter-all.on .nav-scope-count,
 .folder-nav-tags-panel .folder-filter-all.on .nav-scope-count {
-  color: #7c8a9e;
+  color: var(--text-4);
 }
 
 /* Строка «Все метки (N)» — одной линией, без переноса «Все / метки» */
@@ -3321,20 +3315,20 @@ onBeforeUnmount(() => {
 }
 .nav-scope-tags-heading {
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: var(--fs-xs);
   letter-spacing: -0.02em;
-  color: #111827;
+  color: var(--text-1);
 }
 .folder-nav-tags-panel .folder-filter-all.on .nav-scope-tags-heading {
-  color: #111827;
+  color: var(--text-1);
 }
 .folder-nav-tags-panel .folder-filter-all.on .nav-scope-tags-count {
-  color: #7c8a9e;
+  color: var(--text-4);
 }
 .nav-scope-tags-count {
   font-weight: 500;
-  font-size: 0.72rem;
-  color: #94a3b8;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   opacity: 1;
   font-variant-numeric: tabular-nums;
 }
@@ -3372,19 +3366,19 @@ onBeforeUnmount(() => {
   overflow: hidden;
   pointer-events: none;
   font-family: inherit;
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-4);
   align-self: stretch;
   transition:
-    max-width 0.18s ease,
-    width 0.18s ease,
-    opacity 0.14s ease,
-    visibility 0.14s ease,
-    padding 0.14s ease;
+    max-width var(--dur-slow) var(--ease),
+    width var(--dur-slow) var(--ease),
+    opacity var(--dur-base) var(--ease),
+    visibility var(--dur-base) var(--ease),
+    padding var(--dur-base) var(--ease);
 }
 .tags-scope-search::placeholder {
-  color: #94a3b8;
+  color: var(--text-4);
   opacity: 0.85;
 }
 .folder-scope-notes-parent.tags-all-row-scope:hover .tags-scope-search,
@@ -3421,10 +3415,10 @@ onBeforeUnmount(() => {
   padding: 0;
   pointer-events: none;
   transition:
-    max-width 0.18s ease,
-    opacity 0.14s ease,
-    visibility 0.14s ease,
-    padding 0.14s ease;
+    max-width var(--dur-slow) var(--ease),
+    opacity var(--dur-base) var(--ease),
+    visibility var(--dur-base) var(--ease),
+    padding var(--dur-base) var(--ease);
 }
 .btn-tags-expand-all {
   flex: 0 0 auto;
@@ -3438,7 +3432,7 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: #94a3b8;
+  color: var(--text-4);
   cursor: pointer;
 }
 .btn-tags-expand-all svg {
@@ -3447,8 +3441,8 @@ onBeforeUnmount(() => {
   display: block;
 }
 .btn-tags-expand-all:hover:not(:disabled) {
-  color: #475569;
-  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-3);
+  background: var(--surface-wash);
 }
 .btn-tags-expand-all:disabled {
   opacity: 0.35;
@@ -3493,10 +3487,10 @@ onBeforeUnmount(() => {
   height: 13px;
   flex-shrink: 0;
   /* Спокойный серый, без синего акцента строки «Все метки» */
-  accent-color: #64748b;
+  accent-color: var(--text-4);
 }
 .tags-scope-only-wrap:hover input {
-  accent-color: #475569;
+  accent-color: var(--text-3);
 }
 
 .tag-all-wrap {
@@ -3526,7 +3520,7 @@ onBeforeUnmount(() => {
 .folder-nav-calendar-sticky {
   flex-shrink: 0;
   padding: 0.35rem 0.4rem 0.25rem;
-  border-top: 1px solid #eceef2;
+  border-top: 1px solid var(--border-solid);
   background: transparent;
 }
 .folder-nav-folders-scroll--collapsed,
@@ -3544,9 +3538,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-solid);
   border-radius: 8px;
-  background: #fafbfc;
+  background: var(--surface-2);
   box-shadow: none;
 }
 .folder-nav-tags-panel {
@@ -3559,7 +3553,7 @@ onBeforeUnmount(() => {
 .folder-nav-folders-sticky {
   flex-shrink: 0;
   padding: 0.26rem 0.32rem 0.18rem;
-  border-bottom: 1px solid #eceef2;
+  border-bottom: 1px solid var(--border-solid);
   background: transparent;
   border-radius: 8px 8px 0 0;
 }
@@ -3571,26 +3565,26 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
-  color: #64748b;
+  color: var(--text-4);
   padding: 0;
 }
 .section-chevron:hover {
   background: var(--sidebar-hover);
-  color: #374151;
+  color: var(--text-2);
 }
 .section-chevron-spacer {
   width: 1.35rem;
   flex-shrink: 0;
 }
 .folder-nav-folders-panel .folder-filter {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .folder-nav-folders-panel .folder-filter .tag-count {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .folder-rows {
   display: flex;
@@ -3605,7 +3599,7 @@ onBeforeUnmount(() => {
   border-radius: 5px;
 }
 .folder-nav-folders-scroll .nav-row.folder-sidebar-row .nav-row-label {
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .folder-nav-folders-scroll .btn-rename,
 .folder-nav-folders-scroll .btn-del {
@@ -3615,10 +3609,10 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 .folder-nav-folders-scroll .btn-rename {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .folder-nav-folders-scroll .btn-del {
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
   line-height: 1;
 }
 .folder-filter-all {
@@ -3663,9 +3657,9 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 .folder-nav-tags-panel .folder-filter .tag-count {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .tag-filter {
   display: flex;
@@ -3683,6 +3677,11 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: left;
+  font-size: var(--fs-compact);
+}
+.tag-sidebar-row--search-path .tag-sidebar-name {
+  color: var(--text-4);
+  font-weight: 400;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row {
   padding: 0.13rem 0.26rem;
@@ -3691,28 +3690,28 @@ onBeforeUnmount(() => {
 }
 
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row-label {
-  font-size: 0.68rem;
+  font-size: var(--fs-compact);
   line-height: 1.2;
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .nav-row.on .nav-row-label {
-  font-size: 0.68rem;
+  font-size: var(--fs-compact);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row .tag-count {
-  font-size: 0.58rem;
+  font-size: var(--fs-compact);
   line-height: 1.1;
 }
 .folder-nav-tags-panel .section-chevron,
 .folder-nav-tags-panel .section-chevron-spacer {
   width: 1.12rem;
   min-height: 1.42rem;
-  font-size: 0.6rem;
+  font-size: var(--fs-2xs);
 }
 
 .folder-nav-folders-panel .section-chevron,
 .folder-nav-folders-panel .section-chevron-spacer {
   width: 1.12rem;
   min-height: 1.42rem;
-  font-size: 0.6rem;
+  font-size: var(--fs-2xs);
 }
 .folder-nav-tags-panel .folder-filter-all.tag-filter {
   min-height: 0;
@@ -3721,9 +3720,9 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   width: 1.2rem;
   text-align: center;
-  font-size: 0.62rem;
-  line-height: 1.5;
-  color: #64748b;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
+  color: var(--text-4);
   border-radius: 4px;
   cursor: pointer;
   user-select: none;
@@ -3731,7 +3730,7 @@ onBeforeUnmount(() => {
 .folder-nav-tags-panel .tag-chevron {
   width: 1rem;
   min-width: 1rem;
-  font-size: 0.66rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -3759,8 +3758,8 @@ onBeforeUnmount(() => {
     padding: 0;
     gap: 0;
     transition:
-      max-width 0.18s ease,
-      opacity 0.12s ease;
+      max-width var(--dur-slow) var(--ease),
+      opacity var(--dur-fast) var(--ease);
   }
   .folder-nav-tags-panel .nav-row.tag-sidebar-row:hover .nav-row-actions--tag-filter {
     max-width: 4rem;
@@ -3788,8 +3787,8 @@ onBeforeUnmount(() => {
     padding: 0;
     gap: 0;
     transition:
-      max-width 0.18s ease,
-      opacity 0.12s ease;
+      max-width var(--dur-slow) var(--ease),
+      opacity var(--dur-fast) var(--ease);
   }
   .folder-nav-folders-scroll .nav-row.folder-sidebar-row:hover .nav-row-actions--folder-filter,
   .folder-nav-folders-scroll .nav-row.folder-sidebar-row .nav-row-actions--folder-filter:focus-within {
@@ -3813,132 +3812,132 @@ onBeforeUnmount(() => {
   min-height: 1rem;
   padding: 0;
   border-radius: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.5);
-  background: #fff;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
   cursor: pointer;
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   line-height: 1;
-  color: #64748b;
+  color: var(--text-4);
 }
 .folder-nav-tags-panel .btn-tag-filter-conj:not(.on) {
-  border-color: rgba(22, 163, 74, 0.42);
-  color: #15803d;
-  background: rgba(240, 253, 244, 0.78);
+  border-color: var(--success-border);
+  color: var(--success-text);
+  background: var(--success-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-minus:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-minus:not(.on) {
-  border-color: rgba(220, 38, 38, 0.42);
-  color: #b91c1c;
-  background: rgba(254, 242, 242, 0.78);
+  border-color: var(--danger-border-strong);
+  color: var(--danger-text);
+  background: var(--danger-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-plus:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-plus:not(.on) {
-  border-color: rgba(37, 99, 235, 0.42);
-  color: var(--accent, #2563eb);
-  background: rgba(239, 246, 255, 0.78);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-plus:hover:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-plus:hover:not(.on) {
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent, #2563eb);
-  background: rgba(239, 246, 255, 0.6);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-plus.on,
 .folder-nav-folders-scroll .btn-tag-filter-plus.on {
-  border-color: rgba(37, 99, 235, 0.62);
-  background: rgba(37, 99, 235, 0.2);
-  color: #1d4ed8;
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent-border-strong);
+  background: var(--accent-subtle-strong);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
 }
 .folder-nav-tags-panel .btn-tag-filter-conj:hover:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-conj:hover:not(.on) {
-  border-color: rgba(22, 163, 74, 0.45);
-  color: #15803d;
-  background: rgba(240, 253, 244, 0.92);
+  border-color: var(--success-border);
+  color: var(--success-text);
+  background: var(--success-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-conj.on,
 .folder-nav-folders-scroll .btn-tag-filter-conj.on {
-  border-color: rgba(22, 163, 74, 0.62);
-  background: rgba(22, 163, 74, 0.22);
-  color: #166534;
-  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.14);
+  border-color: var(--success-border-strong);
+  background: var(--success-subtle);
+  color: var(--success-strong);
+  box-shadow: inset 0 0 0 1px var(--success-glow);
 }
 .folder-nav-tags-panel .btn-tag-filter-minus:hover:not(.on),
 .folder-nav-folders-scroll .btn-tag-filter-minus:hover:not(.on) {
-  border-color: rgba(220, 38, 38, 0.38);
-  color: var(--danger);
-  background: rgba(254, 242, 242, 0.75);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+  background: var(--danger-subtle);
 }
 .folder-nav-tags-panel .btn-tag-filter-minus.on,
 .folder-nav-folders-scroll .btn-tag-filter-minus.on {
-  border-color: rgba(220, 38, 38, 0.58);
-  background: rgba(254, 202, 202, 0.65);
-  color: #b91c1c;
-  box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.12);
+  border-color: var(--danger-border-strong);
+  background: var(--danger-subtle-hover);
+  color: var(--danger-text);
+  box-shadow: inset 0 0 0 1px var(--danger-glow);
 }
 .folder-nav-folders-scroll .nav-row.folder-sidebar-row.folder-sidebar-row--exclude {
-  background: rgba(254, 226, 226, 0.45);
-  border-color: rgba(220, 38, 38, 0.28);
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
 }
 .folder-nav-folders-scroll .nav-row.folder-sidebar-row.folder-sidebar-row--exclude .folder-label {
   font-weight: 600;
-  color: #991b1b;
+  color: var(--danger-strong);
 }
 .folder-nav-folders-scroll .nav-row.folder-sidebar-row.folder-sidebar-row--exclude .tag-count {
   opacity: 0.9;
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct {
-  background: rgba(220, 252, 231, 0.52);
-  border-color: rgba(22, 163, 74, 0.28);
+  background: var(--success-subtle);
+  border-color: var(--success-border);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .nav-row-label--tag {
-  color: #15803d;
+  color: var(--success-text);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .tag-sidebar-name {
   font-weight: 600;
-  color: #166534;
+  color: var(--success-strong);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--conjunct .tag-count {
   opacity: 0.92;
-  color: #16a34a;
+  color: var(--success);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--exclude {
-  background: rgba(254, 226, 226, 0.45);
-  border-color: rgba(220, 38, 38, 0.28);
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--exclude .nav-row-label--tag {
-  color: #991b1b;
+  color: var(--danger-strong);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--exclude .tag-sidebar-name {
   font-weight: 600;
-  color: #991b1b;
+  color: var(--danger-strong);
 }
 .folder-nav-tags-panel .nav-row.tag-sidebar-row.tag-sidebar-row--exclude .tag-count {
   opacity: 0.9;
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 .tag-chevron:hover {
   background: var(--sidebar-hover);
-  color: #374151;
+  color: var(--text-2);
 }
 .tag-chevron-spacer {
   visibility: hidden;
   pointer-events: none;
 }
 .nav-row .tag-count {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   opacity: 0.72;
   flex-shrink: 0;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .folder-nav-footer {
   flex-shrink: 0;
   margin-top: auto;
   padding-top: 0.4rem;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--border-solid);
 }
 .folder-filter {
   display: block;
@@ -3950,12 +3949,12 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: pointer;
   font: inherit;
-  font-size: 0.72rem;
-  color: #374151;
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 .folder-filter:hover:not(.on) {
   background: var(--sidebar-hover);
@@ -3967,19 +3966,19 @@ onBeforeUnmount(() => {
 .folder-filter.on {
   background: var(--sidebar-active);
   border-color: transparent;
-  color: #111827;
+  color: var(--text-1);
   font-weight: 600;
   box-shadow: none;
 }
 .trash-filter {
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   background: transparent;
-  color: #4b5563;
+  color: var(--text-3);
 }
 .trash-filter.on {
-  color: var(--danger);
-  border-color: rgba(220, 38, 38, 0.3);
-  background: rgba(254, 226, 226, 0.55);
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-subtle-hover);
   font-weight: 600;
 }
 .btn-rename {
@@ -3991,11 +3990,11 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   line-height: 1;
 }
 .btn-rename:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--sidebar-hover);
 }
 .nav-row {
@@ -4010,8 +4009,8 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: default;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 .nav-row:hover:not(.on) {
   background: var(--sidebar-hover);
@@ -4023,14 +4022,14 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 .nav-row.on .tag-count {
-  color: #6b7280;
+  color: var(--text-4);
   font-weight: 600;
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   opacity: 1;
 }
 .nav-row.on .folder-label,
 .nav-row.on .tag-sidebar-name {
-  color: #111827;
+  color: var(--text-1);
   font-weight: 600;
 }
 .nav-row-label {
@@ -4044,16 +4043,16 @@ onBeforeUnmount(() => {
   padding: 0;
   margin: 0;
   font: inherit;
-  font-size: 0.72rem;
-  color: #374151;
+  font-size: var(--fs-2xs);
+  color: var(--text-2);
   text-align: left;
 }
 /* Папки: чуть крупнее текст строки (+~1 pt к базовому 0.72rem) */
 .nav-row:not(.tag-sidebar-row) .nav-row-label {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .nav-row-label:focus-visible {
-  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline: 2px solid var(--accent-border);
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -4066,7 +4065,7 @@ onBeforeUnmount(() => {
 @media (hover: hover) {
   .nav-row .nav-row-actions {
     opacity: 0;
-    transition: opacity 0.12s ease;
+    transition: opacity var(--dur-fast) var(--ease);
   }
   .nav-row:hover .nav-row-actions {
     opacity: 1;
@@ -4085,17 +4084,17 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
 }
 .btn-del:hover {
-  color: var(--danger);
+  color: var(--danger-text);
   background: var(--sidebar-hover);
 }
 
 .notes-list-col {
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
-  background: linear-gradient(180deg, #fafbfc 0%, #f4f5f8 100%);
+  border-right: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface-canvas) 100%);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -4103,9 +4102,9 @@ onBeforeUnmount(() => {
 }
 .list-toolbar {
   padding: 0.42rem 0.6rem 0.42rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-veil);
 }
 .list-toolbar-trash-row {
   display: flex;
@@ -4114,24 +4113,24 @@ onBeforeUnmount(() => {
 }
 .btn-empty-trash {
   width: 100%;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   padding: 0.38rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--danger);
-  background: #fff;
-  color: var(--danger);
+  background: var(--surface-1);
+  color: var(--danger-text);
   cursor: pointer;
 }
 .btn-empty-trash:hover:not(:disabled) {
-  background: rgba(220, 38, 38, 0.08);
+  background: var(--danger-subtle);
 }
 .btn-empty-trash:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 .sort-lab {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -4143,11 +4142,11 @@ onBeforeUnmount(() => {
   max-width: 15rem;
   padding: 0.34rem 0.45rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.7rem;
-  background: #fff;
-  color: #475569;
+  font-size: var(--fs-2xs);
+  background: var(--surface-1);
+  color: var(--text-3);
 }
 .list-scroll {
   flex: 1;
@@ -4156,7 +4155,7 @@ onBeforeUnmount(() => {
 }
 .load-hint {
   margin: 0.35rem 0;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .list {
   list-style: none;
@@ -4172,7 +4171,7 @@ onBeforeUnmount(() => {
 .list--refreshing {
   opacity: 0.72;
   pointer-events: none;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-base) var(--ease);
 }
 .list li.trashrow {
   display: flex;
@@ -4189,24 +4188,24 @@ onBeforeUnmount(() => {
   padding: 0.32rem 0.45rem 0.36rem;
   border-radius: 10px;
   border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--surface-veil);
   cursor: pointer;
   font: inherit;
   color: inherit;
   transition:
-    border-color 0.14s ease,
-    background 0.14s ease,
-    box-shadow 0.14s ease;
+    border-color var(--dur-base) var(--ease),
+    background var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease);
 }
 .note-item:hover {
-  background: #fff;
-  border-color: rgba(148, 163, 184, 0.35);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  background: var(--surface-1);
+  border-color: var(--border);
+  box-shadow: 0 1px 3px var(--shadow-tint-weak);
 }
 .note-item.current {
-  border-color: rgba(37, 99, 235, 0.38);
+  border-color: var(--accent-border);
   background: var(--list-row-active);
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+  box-shadow: 0 0 0 1px var(--accent-glow);
 }
 .trash-actions {
   display: flex;
@@ -4214,34 +4213,22 @@ onBeforeUnmount(() => {
   gap: 0.32rem;
   padding: 0 0.15rem;
 }
-.btn-mini {
-  font-size: 0.72rem;
-  padding: 0.22rem 0.45rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  cursor: pointer;
-  color: inherit;
-}
-.btn-mini.danger {
-  border-color: var(--danger);
-  color: var(--danger);
-}
+/* Базовый `.btn-mini` и вариант `.danger` — в assets/ui.css. */
 .dates {
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
   flex-wrap: wrap;
-  font-size: 0.625rem;
-  line-height: 1.35;
+  font-size: var(--fs-tiny);
+  line-height: var(--lh-snug);
   font-weight: 450;
   font-variant-numeric: tabular-nums;
   color: var(--note-list-meta);
   letter-spacing: 0.01em;
 }
 .dates-compact {
-  font-size: 0.5625rem;
-  line-height: 1.3;
+  font-size: var(--fs-tiny);
+  line-height: var(--lh-snug);
   gap: 0.18rem;
 }
 .dates-compact .meta-prefix {
@@ -4252,14 +4239,14 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 .meta-prefix {
-  font-size: 0.58rem;
+  font-size: var(--fs-meta-label);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #cbd5e1;
+  color: var(--text-4);
 }
 .dates-compact .meta-prefix {
-  font-size: 0.5rem;
+  font-size: var(--fs-micro);
 }
 .note-title {
   display: -webkit-box;
@@ -4270,8 +4257,8 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   word-break: break-word;
   font-weight: 500;
-  font-size: 0.7rem;
-  line-height: 1.35;
+  font-size: var(--fs-note);
+  line-height: var(--lh-snug);
   letter-spacing: -0.01em;
   margin-bottom: 0.12rem;
   color: var(--note-list-title);
@@ -4284,9 +4271,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
-  font-size: 0.6rem;
-  line-height: 1.32;
-  color: #94a3b8;
+  font-size: var(--fs-preview);
+  line-height: var(--lh-snug);
+  color: var(--text-4);
   margin-bottom: 0.14rem;
 }
 .note-item.current .note-title {
@@ -4294,7 +4281,7 @@ onBeforeUnmount(() => {
   font-weight: 560;
 }
 .meta {
-  font-size: 0.5625rem;
+  font-size: var(--fs-tiny);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -4308,39 +4295,39 @@ onBeforeUnmount(() => {
   max-width: 100%;
 }
 .note-tag-badge {
-  font-size: 0.54rem;
+  font-size: var(--fs-badge);
   font-weight: 500;
   padding: 0.05rem 0.32rem;
   border-radius: 6px;
-  background: rgba(248, 250, 252, 0.98);
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  color: #697586;
-  line-height: 1.25;
+  background: var(--surface-2-translucent);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-4);
+  line-height: var(--lh-tight);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .folder-badge {
-  font-size: 0.58rem;
+  font-size: var(--fs-meta-label);
   font-weight: 500;
   padding: 0.08rem 0.35rem;
   border-radius: 999px;
   /* Чуть более тёплая «папочная» заливка, чтобы не смешивать с нейтральными чипами меток */
-  background: rgba(238, 242, 255, 0.98);
-  border: 1px solid rgba(129, 140, 248, 0.35);
-  color: #4c5692;
+  background: var(--info-subtle);
+  border: 1px solid var(--info-border);
+  color: var(--info-text);
 }
 .err {
-  color: var(--danger);
-  font-size: 0.75rem;
+  color: var(--danger-text);
+  font-size: var(--fs-2xs);
 }
 .empty {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   color: var(--note-list-meta);
   margin: 1.25rem 0;
   text-align: center;
-  line-height: 1.5;
+  line-height: var(--lh-normal);
 }
 .editor-shell {
   flex: 1;
@@ -4349,6 +4336,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
   min-height: 0;
   max-height: calc(100vh - 52px);
+}
+.workspace--fit .editor-shell {
+  max-height: none;
+}
+.workspace--fit .folders-aside,
+.workspace--fit .notes-list-col {
+  max-height: none;
 }
 
 .workspace--narrow .workspace-header {
@@ -4376,6 +4370,9 @@ onBeforeUnmount(() => {
 .workspace--narrow .header-user .user {
   display: none;
 }
+.workspace--narrow .note-fit-toggle-text {
+  display: none;
+}
 .workspace--narrow .header-user {
   border-left: none;
   margin-left: 0;
@@ -4392,10 +4389,10 @@ onBeforeUnmount(() => {
   max-height: none;
   z-index: 200;
   transform: translateX(-100%);
-  transition: transform 0.22s ease;
+  transition: transform var(--dur-slow) var(--ease);
   padding-top: calc(0.65rem + env(safe-area-inset-top, 0px));
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  box-shadow: 4px 0 28px rgba(15, 23, 42, 0.18);
+  box-shadow: 4px 0 28px var(--shadow-tint);
 }
 .workspace--narrow .folders-aside.folders-aside--drawer-open {
   transform: translateX(0);
@@ -4427,5 +4424,43 @@ onBeforeUnmount(() => {
 .workspace--narrow .workspace-body {
   flex: 1;
   min-height: 0;
+}
+
+/* Тач-режим: цели нажатия не меньше 40×40 px и читаемый мелкий текст. */
+@media (max-width: 768px) {
+  .header-menu-btn,
+  .preset-trigger,
+  .sort-select,
+  .search-input {
+    min-height: var(--tap-min);
+  }
+  .header-menu-btn {
+    min-width: var(--tap-min);
+  }
+  .nav-row,
+  .note-row {
+    min-height: var(--tap-min);
+  }
+  .tag-chevron {
+    min-width: 1.6rem;
+    min-height: 1.6rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .search-input,
+  .sort-select,
+  .preset-trigger {
+    font-size: var(--fs-xs);
+  }
+  .note-row-title,
+  .nav-row-label {
+    font-size: var(--fs-xs);
+  }
+  .note-row-meta,
+  .dates,
+  .tag-count {
+    font-size: var(--fs-2xs);
+  }
 }
 </style>

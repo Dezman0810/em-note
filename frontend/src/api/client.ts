@@ -17,9 +17,17 @@ import type {
   Habit,
   HabitPublicLink,
   PublicHabitsPayload,
+  GrammarCheckResult,
 } from './types'
 
+import { cachedGet, clearRequestCache, invalidateCache } from './requestCache'
+
 export type TagAttachByNameResponse = { note: Note; tag: Tag }
+
+/** Метки и папки меняются редко; правки на сервере сбрасывают кеш явно. */
+const REFERENCE_TTL_MS = 15_000
+
+export { clearRequestCache }
 
 const TOKEN_STORAGE_KEY = 'note_token'
 
@@ -74,6 +82,10 @@ export const adminApi = {
   },
   async setCanUseHabits(userId: string, can_use_habits: boolean): Promise<AdminUserRow> {
     const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_habits })
+    return data
+  },
+  async setCanUseGrammar(userId: string, can_use_grammar: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_grammar })
     return data
   },
   async resetPassword(userId: string): Promise<{ email: string; temporary_password: string }> {
@@ -153,22 +165,29 @@ function serializeRepeatKeyQuery(params: Record<string, unknown>): string {
 
 export const notesApi = {
   async listReminders(params: { from: string; to: string }): Promise<Note[]> {
-    const { data } = await api.get<Note[]>('/api/notes/reminders', { params })
-    return data
+    return cachedGet(`notes:reminders:${params.from}:${params.to}`, 0, async () => {
+      const { data } = await api.get<Note[]>('/api/notes/reminders', { params })
+      return data
+    })
   },
   async list(params?: NotesListParams): Promise<Note[]> {
-    const { data } = await api.get<Note[]>('/api/notes', {
-      params: { ...params, _ts: Date.now() },
-      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    /* Только дедупликация одновременных вызовов: список не должен «залипать». */
+    return cachedGet(`notes:list:${serializeRepeatKeyQuery(params ?? {})}`, 0, async () => {
+      const { data } = await api.get<Note[]>('/api/notes', {
+        params: { ...params, _ts: Date.now() },
+        paramsSerializer: { serialize: serializeRepeatKeyQuery },
+      })
+      return data
     })
-    return data
   },
   async search(q: string, params?: NotesListParams): Promise<Note[]> {
-    const { data } = await api.get<Note[]>('/api/notes/search', {
-      params: { q, ...params, _ts: Date.now() },
-      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    return cachedGet(`notes:search:${q}:${serializeRepeatKeyQuery(params ?? {})}`, 0, async () => {
+      const { data } = await api.get<Note[]>('/api/notes/search', {
+        params: { q, ...params, _ts: Date.now() },
+        paramsSerializer: { serialize: serializeRepeatKeyQuery },
+      })
+      return data
     })
-    return data
   },
   async get(id: string): Promise<Note> {
     const { data } = await api.get<Note>(`/api/notes/${id}`)
@@ -215,6 +234,7 @@ export const notesApi = {
   /** Создать метку у владельца заметки по имени и прикрепить (устраняет Tag not found при Enter). */
   async attachTagByName(noteId: string, name: string): Promise<TagAttachByNameResponse> {
     const { data } = await api.post<TagAttachByNameResponse>(`/api/notes/${noteId}/tags/by-name`, { name })
+    invalidateCache('tags:')
     return data
   },
   async detachTag(noteId: string, tagId: string): Promise<Note> {
@@ -271,33 +291,40 @@ export const noteFilterPresetsApi = {
 
 export const foldersApi = {
   async list(forNoteId?: string): Promise<Folder[]> {
-    const { data } = await api.get<Folder[]>('/api/folders', {
-      params: {
-        ...(forNoteId ? { for_note_id: forNoteId } : {}),
-        /* сброс кэша браузера/прокси после DELETE и т.п. */
-        _t: Date.now(),
-      },
-      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    return cachedGet(`folders:list:${forNoteId ?? ''}`, REFERENCE_TTL_MS, async () => {
+      const { data } = await api.get<Folder[]>('/api/folders', {
+        params: {
+          ...(forNoteId ? { for_note_id: forNoteId } : {}),
+          /* сброс кэша браузера/прокси после DELETE и т.п. */
+          _t: Date.now(),
+        },
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+      })
+      return data
     })
-    return data
   },
   async noteCounts(): Promise<FolderNoteCounts> {
-    const { data } = await api.get<FolderNoteCounts>('/api/folders/note-counts', {
-      params: { _t: Date.now() },
-      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    return cachedGet('folders:counts', 0, async () => {
+      const { data } = await api.get<FolderNoteCounts>('/api/folders/note-counts', {
+        params: { _t: Date.now() },
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+      })
+      return data
     })
-    return data
   },
   async create(body: { name: string }): Promise<Folder> {
     const { data } = await api.post<Folder>('/api/folders', body)
+    invalidateCache('folders:')
     return data
   },
   async update(id: string, body: { name: string }): Promise<Folder> {
     const { data } = await api.patch<Folder>(`/api/folders/${id}`, body)
+    invalidateCache('folders:')
     return data
   },
   async remove(id: string): Promise<void> {
     await api.delete(`/api/folders/${id}`)
+    invalidateCache('folders:')
   },
 }
 
@@ -327,40 +354,48 @@ export function tagCountsResponseToMap(data: unknown): Record<string, number> {
 
 export const tagsApi = {
   async list(): Promise<Tag[]> {
-    const { data } = await api.get<Tag[]>('/api/tags', {
-      params: { _ts: Date.now() },
+    return cachedGet('tags:list', REFERENCE_TTL_MS, async () => {
+      const { data } = await api.get<Tag[]>('/api/tags', {
+        params: { _ts: Date.now() },
+      })
+      return data
     })
-    return data
   },
   async noteCounts(params?: TagsNoteCountsParams): Promise<TagNoteCount[]> {
-    const { data } = await api.get<unknown>('/api/tags/counts', {
-      params: { ...(params ?? {}), _ts: Date.now() },
-      paramsSerializer: { serialize: serializeRepeatKeyQuery },
+    /* Счётчики зависят от фильтров и меняются часто: только дедупликация, без TTL. */
+    return cachedGet(`tags:counts:${serializeRepeatKeyQuery(params ?? {})}`, 0, async () => {
+      const { data } = await api.get<unknown>('/api/tags/counts', {
+        params: { ...(params ?? {}), _ts: Date.now() },
+        paramsSerializer: { serialize: serializeRepeatKeyQuery },
+      })
+      if (!Array.isArray(data)) return []
+      const out: TagNoteCount[] = []
+      for (const row of data) {
+        if (!row || typeof row !== 'object') continue
+        const r = row as Record<string, unknown>
+        const id = r.tag_id ?? r.tagId
+        const raw = r.count
+        if (id == null) continue
+        const n = typeof raw === 'number' ? raw : Number(raw)
+        if (Number.isNaN(n)) continue
+        out.push({ tag_id: String(id), count: n })
+      }
+      return out
     })
-    if (!Array.isArray(data)) return []
-    const out: TagNoteCount[] = []
-    for (const row of data) {
-      if (!row || typeof row !== 'object') continue
-      const r = row as Record<string, unknown>
-      const id = r.tag_id ?? r.tagId
-      const raw = r.count
-      if (id == null) continue
-      const n = typeof raw === 'number' ? raw : Number(raw)
-      if (Number.isNaN(n)) continue
-      out.push({ tag_id: String(id), count: n })
-    }
-    return out
   },
   async create(body: { name: string; parent_id?: string | null }): Promise<Tag> {
     const { data } = await api.post<Tag>('/api/tags', body)
+    invalidateCache('tags:')
     return data
   },
   async update(id: string, body: { name?: string; parent_id?: string | null }): Promise<Tag> {
     const { data } = await api.patch<Tag>(`/api/tags/${id}`, body)
+    invalidateCache('tags:')
     return data
   },
   async remove(id: string): Promise<void> {
     await api.delete(`/api/tags/${id}`)
+    invalidateCache('tags:')
   },
 }
 
@@ -533,6 +568,13 @@ export const publicHabitsApi = {
       `/api/public/habits/${encodeURIComponent(token)}`,
       { params: anchor ? { anchor } : {} }
     )
+    return data
+  },
+}
+
+export const grammarApi = {
+  async check(text: string): Promise<GrammarCheckResult> {
+    const { data } = await api.post<GrammarCheckResult>('/api/grammar/check', { text })
     return data
   },
 }

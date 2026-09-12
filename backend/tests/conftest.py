@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401 — зарегистрировать модели
+from app.api.routers import auth as auth_router
 from app.config import settings
 from app.database import get_db
 from app.main import app
@@ -47,8 +48,16 @@ def _run_alembic(url: str) -> None:
 
 @pytest.fixture(autouse=True)
 def _match_admin_email_to_tagtest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Регистрация tagtest@example.com даёт can_create_notes как у владельца."""
+    """Регистрация tagtest@example.com даёт can_create_notes как у владельца.
+
+    Плюс: большинство тестов писались до флага can_create_notes и регистрируют
+    произвольные адреса, ожидая, что POST /api/notes работает. Поэтому в тестах
+    считаем владельцем любой адрес — админка (require_admin) при этом остаётся
+    доступной только tagtest@example.com, она сверяется с settings.admin_email
+    напрямую.
+    """
     monkeypatch.setattr(settings, "admin_email", "tagtest@example.com")
+    monkeypatch.setattr(auth_router, "is_instance_owner_email", lambda _email: True)
 
 
 async def _truncate_user_tables(engine) -> None:

@@ -99,13 +99,24 @@ class NoteRead(BaseModel):
 
     @classmethod
     def from_note_for_list(cls, note: "Note") -> "NoteRead":
-        """Список заметок: без тяжёлого content_json, укороченный content_plain для превью."""
-        base = cls.from_note(note)
-        return base.model_copy(
-            update={
-                "content_json": "{}",
-                "content_plain": _plain_preview_for_list(base.content_plain),
-            }
+        """Список заметок: без тяжёлого content_json, укороченный content_plain для превью.
+
+        Атрибут note.content_json намеренно не читается: в списках колонка отложена
+        через defer(), и обращение к ней вызвало бы дозагрузку на каждую заметку.
+        """
+        return cls(
+            id=note.id,
+            owner_id=note.owner_id,
+            title=note.title,
+            content_json="{}",
+            content_plain=_plain_preview_for_list(note.content_plain),
+            created_at=note.created_at,
+            updated_at=note.updated_at,
+            deleted_at=note.deleted_at,
+            folder_id=note.folder_id,
+            accent_color=note.accent_color or "",
+            reminder_at=note.reminder_at,
+            tag_ids=[t.id for t in note.tags],
         )
 
     @classmethod

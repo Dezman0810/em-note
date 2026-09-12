@@ -81,7 +81,7 @@ function remove() {
   border: 0;
 }
 .muted {
-  color: var(--text-muted, #64748b);
+  color: var(--text-4);
 }
 .audio-note-root {
   margin: 0.5rem 0;
@@ -89,7 +89,7 @@ function remove() {
 .audio-note-card {
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: rgba(37, 99, 235, 0.04);
+  background: var(--accent-subtle);
   overflow: hidden;
 }
 .audio-note-head {
@@ -97,8 +97,8 @@ function remove() {
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(255, 255, 255, 0.45);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-veil);
 }
 .audio-note-title-lab {
   flex: 1;
@@ -112,21 +112,21 @@ function remove() {
   border-radius: 6px;
   padding: 0.28rem 0.4rem;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-2);
   background: transparent;
 }
 .audio-note-title-input:not(:read-only) {
-  border-color: rgba(148, 163, 184, 0.45);
-  background: var(--panel, #fff);
+  border-color: var(--border);
+  background: var(--surface-1);
 }
 .audio-note-title-input::placeholder {
-  color: #94a3b8;
+  color: var(--text-4);
   font-weight: 500;
 }
 .audio-note-title-input:focus {
-  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline: 2px solid var(--accent-border);
   outline-offset: 0;
 }
 .audio-note-inner {
@@ -144,19 +144,19 @@ function remove() {
 }
 .audio-note-empty {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .audio-note-remove {
   flex-shrink: 0;
   padding: 0.22rem 0.5rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel);
   cursor: pointer;
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .audio-note-remove:hover {
-  background: rgba(220, 38, 38, 0.08);
+  background: var(--danger-subtle);
 }
 </style>

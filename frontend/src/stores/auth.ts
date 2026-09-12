@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { authApi, setAuthToken } from '../api/client'
+import { authApi, clearRequestCache, setAuthToken } from '../api/client'
 import type { User } from '../api/types'
 
 const TOKEN_KEY = 'note_token'
@@ -30,6 +30,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(email: string, password: string) {
     authEpoch++
+    clearRequestCache()
     const data = await authApi.login({ email: normalizeEmail(email), password })
     persistToken(data.access_token)
     user.value = await authApi.me()
@@ -69,6 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   function logout() {
     authEpoch++
+    clearRequestCache()
     persistToken(null)
     user.value = null
   }

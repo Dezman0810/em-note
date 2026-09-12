@@ -65,10 +65,11 @@ async function submit() {
   position: fixed;
   inset: 0;
   z-index: 2000;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--scrim-strong);
   display: grid;
   place-items: center;
   padding: 1.25rem;
+  animation: ui-fade-in var(--dur-slow) var(--ease);
 }
 .force-pw-card {
   width: 100%;
@@ -77,50 +78,62 @@ async function submit() {
   flex-direction: column;
   gap: 0.75rem;
   padding: 1.15rem 1.2rem 1.25rem;
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-xl);
+  color: var(--text-1);
+  animation: ui-pop-in var(--dur-slow) var(--ease);
 }
 h2 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: var(--fs-lg);
 }
 p.muted {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: var(--lh-normal);
 }
 label {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 input {
-  padding: 0.5rem 0.65rem;
-  border-radius: 6px;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--panel);
-  color: inherit;
+  background: var(--surface-1);
+  color: var(--text-1);
+  transition: var(--transition-colors);
+}
+input:focus {
+  border-color: var(--accent-border);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 button {
-  padding: 0.6rem;
-  border-radius: 8px;
+  padding: var(--space-5);
+  border-radius: var(--radius-md);
   border: none;
   background: var(--accent);
-  color: #fff;
-  font-weight: 600;
+  color: var(--text-on-accent);
+  font-weight: var(--fw-semibold);
   cursor: pointer;
+  transition: var(--transition-colors);
+}
+button:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 button:disabled {
   opacity: 0.6;
   cursor: default;
 }
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
   margin: 0;
-  font-size: 0.9rem;
+  font-size: var(--fs-sm);
 }
 </style>

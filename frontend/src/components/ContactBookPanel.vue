@@ -170,10 +170,10 @@ defineExpose({ reload: loadContacts, contacts })
   width: 100%;
   padding: 0.4rem 0.45rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.78rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
   color: inherit;
 }
 .contact-book-toggle {
@@ -184,14 +184,14 @@ defineExpose({ reload: loadContacts, contacts })
   border: none;
   background: transparent;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #334155;
+  color: var(--text-2);
   cursor: pointer;
   text-align: left;
 }
 .contact-book-toggle:hover {
-  color: #1d4ed8;
+  color: var(--accent-text);
 }
 .contact-book-chevron {
   display: inline-block;
@@ -200,18 +200,18 @@ defineExpose({ reload: loadContacts, contacts })
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
   border-left: 5px solid currentColor;
-  transition: transform 0.15s ease;
+  transition: transform var(--dur-base) var(--ease);
 }
 .contact-book-chevron.open {
   transform: rotate(90deg);
 }
 .contact-book-count {
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   padding: 0.1rem 0.4rem;
   border-radius: 999px;
-  background: rgba(100, 116, 139, 0.15);
-  color: #475569;
+  background: var(--surface-wash);
+  color: var(--text-3);
 }
 .contact-book-body {
   padding: 0.15rem 0 0.25rem;
@@ -228,19 +228,19 @@ defineExpose({ reload: loadContacts, contacts })
   min-width: 0;
   padding: 0.38rem 0.5rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.78rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
 }
 .contact-book-btn {
   padding: 0.38rem 0.65rem;
   border-radius: 10px;
-  border: 1px solid rgba(37, 99, 235, 0.28);
-  background: #fff;
-  color: #1d4ed8;
+  border: 1px solid var(--accent-border-soft);
+  background: var(--surface-1);
+  color: var(--accent-text);
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
@@ -265,8 +265,8 @@ defineExpose({ reload: loadContacts, contacts })
   gap: 0.35rem 0.65rem;
   padding: 0.4rem 0.5rem;
   border-radius: 10px;
-  background: rgba(248, 250, 252, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: var(--surface-2-translucent);
+  border: 1px solid var(--border-subtle);
 }
 .contact-book-item-main {
   min-width: 0;
@@ -276,11 +276,11 @@ defineExpose({ reload: loadContacts, contacts })
 }
 .contact-book-name {
   font-weight: 600;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .contact-book-email {
-  font-size: 0.72rem;
-  color: #64748b;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   word-break: break-all;
 }
 .contact-book-item-actions {
@@ -293,21 +293,21 @@ defineExpose({ reload: loadContacts, contacts })
   background: transparent;
   padding: 0;
   font: inherit;
-  font-size: 0.72rem;
-  color: #1d4ed8;
+  font-size: var(--fs-2xs);
+  color: var(--accent-text);
   cursor: pointer;
 }
 .contact-book-link--danger {
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 .contact-book-muted {
   margin: 0;
-  font-size: 0.72rem;
-  color: #64748b;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
 }
 .contact-book-err {
   margin: 0 0 0.35rem;
-  font-size: 0.72rem;
-  color: #b91c1c;
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
 }
 </style>

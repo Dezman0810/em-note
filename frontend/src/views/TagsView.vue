@@ -5,8 +5,11 @@ import NoteEditorColumn from '../components/NoteEditorColumn.vue'
 import { errMessage, foldersApi, notesApi, tagsApi } from '../api/client'
 import type { Folder, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
-import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
+import { fmtCompactMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
+import { noteBodyPreview, noteRowTooltip, sortNotes, type NoteSort } from '../utils/noteList'
+import { useNoteLayout } from '../composables/useNoteLayout'
+import { useTheme } from '../composables/useTheme'
 import {
   isTagAttachDragTypes,
   MIME_TAG_ID,
@@ -142,6 +145,8 @@ function onGutterUp() {
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
+const { label: themeLabel, icon: themeIcon, cycleTheme } = useTheme()
+const { innerScroll, setInnerScroll } = useNoteLayout()
 
 const tags = ref<Tag[]>([])
 const tagCountById = ref<Record<string, number>>({})
@@ -460,72 +465,33 @@ function applyRouteQuery() {
   }
 }
 
-type NoteSort =
-  | 'updated_desc'
-  | 'updated_asc'
-  | 'created_desc'
-  | 'created_asc'
-  | 'title_asc'
-  | 'title_desc'
-
 const noteSort = ref<NoteSort>('updated_desc')
 
-const sortedNotes = computed(() => {
-  const list = [...notes.value]
-  const s = noteSort.value
-  list.sort((a, b) => {
-    if (s === 'title_asc') {
-      return (a.title || '').localeCompare(b.title || '', 'ru', { sensitivity: 'base' })
-    }
-    if (s === 'title_desc') {
-      return (b.title || '').localeCompare(a.title || '', 'ru', { sensitivity: 'base' })
-    }
-    if (s === 'created_asc') {
-      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    }
-    if (s === 'created_desc') {
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    }
-    if (s === 'updated_asc') {
-      return new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
-    }
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-  })
-  return list
+const sortedNotes = computed(() => sortNotes(notes.value, noteSort.value))
+
+type TagNoteRowView = {
+  id: string
+  note: Note
+  title: string
+  preview: string
+  tooltip: string
+  folderName: string
+}
+
+/** Как в разделе «Заметки»: строки списка считаем один раз, а не в шаблоне на каждый рендер. */
+const noteRows = computed<TagNoteRowView[]>(() => {
+  const folderNameById = new Map(folders.value.map((f) => [f.id, f.name]))
+  return sortedNotes.value.map((n) => ({
+    id: n.id,
+    note: n,
+    title: n.title || DEFAULT_NOTE_TITLE,
+    preview: noteBodyPreview(n),
+    tooltip: noteRowTooltip(n),
+    folderName: n.folder_id ? (folderNameById.get(n.folder_id) ?? '') : '',
+  }))
 })
 
-/** Нативный title: полный заголовок и текст (с ограничением по длине), даты внизу. */
-const NOTE_ROW_TOOLTIP_BODY_MAX = 8000
-
-function noteRowDatesLines(n: Note): string[] {
-  const lines = [`Создано: ${fmtMsk(n.created_at)}`, `Изменено: ${fmtMsk(n.updated_at)}`]
-  if (n.deleted_at) lines.push(`Удалено: ${fmtMsk(n.deleted_at)}`)
-  return lines
-}
-
-function noteRowTooltip(n: Note): string {
-  const titleFull = (n.title || '').trim() || DEFAULT_NOTE_TITLE
-  const raw = (n.content_plain || '').replace(/\s+/g, ' ').trim()
-  let bodyTip = ''
-  if (raw) {
-    bodyTip =
-      raw.length > NOTE_ROW_TOOLTIP_BODY_MAX
-        ? `${raw.slice(0, NOTE_ROW_TOOLTIP_BODY_MAX).trimEnd()}…`
-        : raw
-  }
-  const lines: string[] = [titleFull]
-  if (bodyTip) lines.push('', bodyTip)
-  lines.push('', ...noteRowDatesLines(n))
-  return lines.join('\n')
-}
-
-function noteBodyPreview(n: Note): string {
-  const raw = (n.content_plain || '').replace(/\s+/g, ' ').trim()
-  if (!raw) return ''
-  const max = 140
-  if (raw.length <= max) return raw
-  return raw.slice(0, max).trimEnd() + '…'
-}
+const sortedNoteIds = computed(() => sortedNotes.value.map((n) => n.id))
 
 function tagNameTakenGlobally(raw: string): boolean {
   const n = raw.trim().toLowerCase()
@@ -765,9 +731,17 @@ function logout() {
   router.push('/login')
 }
 
-async function onEditorRefresh() {
-  await load()
-  await loadNotes()
+/** За одно действие в редакторе просьб обновиться приходит несколько — склеиваем в одну. */
+let editorRefreshTimer: ReturnType<typeof setTimeout> | null = null
+function onEditorRefresh() {
+  if (editorRefreshTimer) clearTimeout(editorRefreshTimer)
+  editorRefreshTimer = setTimeout(() => {
+    editorRefreshTimer = null
+    void (async () => {
+      await load()
+      await loadNotes()
+    })()
+  }, 150)
 }
 
 watch(selectedTagId, () => {
@@ -789,6 +763,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  if (editorRefreshTimer) clearTimeout(editorRefreshTimer)
+  editorRefreshTimer = null
   window.removeEventListener('mousemove', onGutterMove)
   window.removeEventListener('mouseup', onGutterUp)
   document.body.style.cursor = ''
@@ -797,7 +773,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="workspace">
+  <div class="workspace" :class="{ 'workspace--fit': innerScroll }">
     <header class="workspace-header">
       <div class="header-left">
         <h1 class="logo logo-wordmark" lang="ru">
@@ -828,6 +804,26 @@ onBeforeUnmount(() => {
         </button>
         <div class="header-user">
           <span v-if="auth.user" class="user">{{ auth.user.email }}</span>
+          <label
+            class="note-fit-toggle"
+            title="Заметка на высоту экрана: шапка и доступы всегда видны, скролл внутри текста"
+          >
+            <input
+              type="checkbox"
+              :checked="innerScroll"
+              @change="setInnerScroll(($event.target as HTMLInputElement).checked)"
+            />
+            <span class="note-fit-toggle-text">Скролл в заметке</span>
+          </label>
+          <button
+            type="button"
+            class="theme-toggle"
+            :aria-label="themeLabel"
+            :title="themeLabel"
+            @click="cycleTheme"
+          >
+            <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+          </button>
           <button type="button" class="btn ghost" @click="logout">Выйти</button>
         </div>
       </div>
@@ -899,7 +895,7 @@ onBeforeUnmount(() => {
                     : 'Новая метка в корень'
                 "
               />
-              <button type="submit" class="btn-sm primary" title="Добавить метку">+</button>
+              <button type="submit" class="btn-sm primary" aria-label="Добавить метку" title="Добавить метку">+</button>
             </form>
             <p class="muted small structure-hint">
               Стрелка — свернуть ветку. Ctrl+клик — выделить несколько; перетащите любую из них на цель
@@ -963,12 +959,22 @@ onBeforeUnmount(() => {
                   type="button"
                   draggable="false"
                   class="tag-rename-btn"
+                  aria-label="Переименовать метку"
                   title="Переименовать"
                   @click.stop="renameTag(t)"
                 >
                   ✎
                 </button>
-                <button type="button" draggable="false" class="linkish" @click.stop="remove(t)">×</button>
+                <button
+                  type="button"
+                  draggable="false"
+                  class="linkish"
+                  aria-label="Удалить метку"
+                  title="Удалить метку"
+                  @click.stop="remove(t)"
+                >
+                  ×
+                </button>
               </li>
             </ul>
           </div>
@@ -1000,25 +1006,24 @@ onBeforeUnmount(() => {
           <template v-else>
             <p v-if="notesLoading" class="muted load-hint">Загрузка заметок…</p>
             <ul v-else class="list">
-              <li v-for="n in sortedNotes" :key="n.id">
+              <li v-for="row in noteRows" :key="row.id">
                 <button
                   type="button"
                   class="note-item"
-                  :class="{ current: n.id === activeNoteId }"
-                  :title="noteRowTooltip(n)"
-                  @click="openNote(n.id)"
+                  :class="{ current: row.id === activeNoteId }"
+                  :title="row.tooltip"
+                  @click="openNote(row.id)"
                   @dragover="onNoteTagAttachDragOver"
-                  @drop="onNoteTagAttachDrop($event, n.id)"
+                  @drop="onNoteTagAttachDrop($event, row.id)"
                 >
-                  <span class="note-title">{{ n.title || DEFAULT_NOTE_TITLE }}</span>
-                  <span v-if="noteBodyPreview(n)" class="note-preview">{{ noteBodyPreview(n) }}</span>
+                  <span class="note-title">{{ row.title }}</span>
+                  <span v-if="row.preview" class="note-preview">{{ row.preview }}</span>
                   <span class="meta">
-                    <span v-if="n.folder_id" class="folder-badge">{{
-                      folders.find((x) => x.id === n.folder_id)?.name
-                    }}</span>
+                    <span v-if="row.folderName" class="folder-badge">{{ row.folderName }}</span>
                     <span class="dates dates-compact">
                       <span class="date-bit"
-                        ><span class="meta-prefix">Изм.</span>{{ fmtCompactMsk(n.updated_at) }}</span
+                        ><span class="meta-prefix">Изм.</span
+                        >{{ fmtCompactMsk(row.note.updated_at) }}</span
                       >
                     </span>
                   </span>
@@ -1043,7 +1048,7 @@ onBeforeUnmount(() => {
           v-if="activeNoteId"
           :key="activeNoteId"
           :note-id="activeNoteId"
-          :sorted-note-ids="sortedNotes.map((n) => n.id)"
+          :sorted-note-ids="sortedNoteIds"
           :editor-sync-signal="editorSyncSignal"
           @refresh="onEditorRefresh"
         />
@@ -1063,14 +1068,19 @@ onBeforeUnmount(() => {
   flex-direction: column;
   background: var(--bg);
 }
+.workspace--fit {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
 .workspace-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem 1rem;
   padding: 0.5rem 1rem 0.55rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-translucent);
   backdrop-filter: blur(10px);
   flex-shrink: 0;
 }
@@ -1085,26 +1095,26 @@ onBeforeUnmount(() => {
 }
 .logo-wordmark {
   font-family: 'Sora', 'Inter', system-ui, sans-serif;
-  font-size: 1.375rem;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.055em;
-  color: #0f172a;
+  color: var(--text-1);
 }
 .logo-brand {
   display: inline-flex;
   align-items: baseline;
 }
 .logo-brand-accent {
-  color: var(--accent, #2563eb);
+  color: var(--accent-text);
   font-weight: 700;
 }
 .logo-brand-dash {
-  color: #64748b;
+  color: var(--text-4);
   font-weight: 600;
   margin: 0 0.02em;
 }
 .header-sub {
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   color: var(--note-list-meta);
   text-transform: lowercase;
@@ -1121,54 +1131,28 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   padding-left: 0.5rem;
-  border-left: 1px solid rgba(148, 163, 184, 0.35);
+  border-left: 1px solid var(--border);
 }
 .user {
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
   max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.btn {
-  padding: 0.35rem 0.6rem;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 500;
-  background: #fff;
-  color: #475569;
-}
-.btn.secondary:hover {
-  background: var(--list-row-hover);
-}
-.btn.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: transparent;
-}
-.btn.primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.btn.ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text-muted);
-}
+/* Базовые `.btn` и его варианты — в assets/ui.css. */
 .btn-sm {
   padding: 0.28rem 0.44rem;
   border-radius: 8px;
   border: none;
   cursor: pointer;
   font-weight: 600;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .btn-sm.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 .workspace-body {
   display: flex;
@@ -1186,14 +1170,14 @@ onBeforeUnmount(() => {
   z-index: 2;
 }
 .col-gutter:hover {
-  background: rgba(37, 99, 235, 0.12);
+  background: var(--accent-subtle-hover);
 }
 .sidebar-panel {
-  box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.06);
+  box-shadow: inset -1px 0 0 var(--shadow-tint-weak);
 }
 .tags-aside {
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
-  background: linear-gradient(190deg, #f1f5f9 0%, #eef2f7 100%);
+  border-right: 1px solid var(--border-subtle);
+  background: linear-gradient(190deg, var(--surface-3) 0%, var(--surface-4) 100%);
   padding: 0.55rem 0.5rem;
   display: flex;
   flex-direction: column;
@@ -1202,8 +1186,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .aside-err {
-  font-size: 0.8rem;
-  color: var(--danger);
+  font-size: var(--fs-xs);
+  color: var(--danger-text);
   margin: 0 0 0.35rem;
 }
 .aside-inner-nav {
@@ -1218,11 +1202,11 @@ onBeforeUnmount(() => {
 }
 .aside-title {
   margin: 0 0 0.35rem;
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 650;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #64748b;
+  color: var(--text-4);
 }
 .manage-title {
   margin-top: 0.15rem;
@@ -1244,7 +1228,7 @@ onBeforeUnmount(() => {
   cursor: row-resize;
 }
 .folder-nav-v-gutter:hover {
-  background: rgba(37, 99, 235, 0.14);
+  background: var(--accent-subtle-hover);
 }
 .aside-manage {
   border-top: 1px solid var(--border);
@@ -1264,21 +1248,21 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   background: var(--panel);
 }
 .drop-root {
   padding: 0.45rem 0.5rem;
   border: 2px dashed var(--border);
   border-radius: 8px;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   text-align: center;
 }
 .drop-root.drop-active {
   border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(37, 99, 235, 0.06);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
 }
 .compact-tree {
   list-style: none;
@@ -1295,36 +1279,36 @@ onBeforeUnmount(() => {
   padding: 0.3rem 0.4rem;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--surface-veil);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .row.hilite {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
 .row.structure-multi {
-  background: rgba(37, 99, 235, 0.07);
+  background: var(--accent-subtle);
 }
 .row.structure-multi:not(.hilite) {
-  border-color: rgba(37, 99, 235, 0.45);
+  border-color: var(--accent-border);
 }
 .row.structure-multi.hilite {
   box-shadow:
     0 0 0 1px var(--accent),
-    0 0 0 3px rgba(37, 99, 235, 0.35);
+    0 0 0 3px var(--accent-ring);
 }
 .row.dragging {
   opacity: 0.55;
 }
 .structure-hint.small {
   margin: 0.35rem 0 0;
-  font-size: 0.65rem;
-  line-height: 1.4;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
 }
 .row.drop-target {
   border-color: var(--accent);
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--accent-subtle);
 }
 .drag-hint {
   cursor: grab;
@@ -1339,12 +1323,12 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 .note-count-badge {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   padding: 0.06rem 0.28rem;
   border-radius: 6px;
-  background: rgba(37, 99, 235, 0.12);
-  color: var(--accent);
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
 }
 .tag-rename-btn {
   flex-shrink: 0;
@@ -1355,18 +1339,18 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
   padding: 0;
 }
 .tag-rename-btn:hover {
-  color: var(--accent);
-  background: rgba(37, 99, 235, 0.1);
+  color: var(--accent-text);
+  background: var(--accent-subtle-hover);
 }
 .linkish {
   background: none;
   border: none;
-  color: var(--danger);
+  color: var(--danger-text);
   cursor: pointer;
   font: inherit;
   padding: 0 0.15rem;
@@ -1378,20 +1362,20 @@ onBeforeUnmount(() => {
   padding: 0.36rem 0.5rem;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
+  background: var(--surface-veil);
   cursor: pointer;
   font: inherit;
-  font-size: 0.72rem;
-  color: #475569;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
 }
 .folder-filter:hover:not(.on) {
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(148, 163, 184, 0.35);
+  background: var(--surface-translucent);
+  border-color: var(--border);
 }
 .folder-filter.on {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent);
+  background: var(--surface-translucent);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .tag-filter {
@@ -1411,13 +1395,14 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
+  font-size: 0.62rem;
 }
 .tag-chevron {
   flex-shrink: 0;
   width: 1.2rem;
   text-align: center;
-  font-size: 0.62rem;
-  color: #64748b;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   border-radius: 4px;
   cursor: pointer;
 }
@@ -1436,8 +1421,8 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 .notes-list-col {
-  border-right: 1px solid rgba(148, 163, 184, 0.28);
-  background: linear-gradient(180deg, #fafbfc 0%, #f4f5f8 100%);
+  border-right: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface-canvas) 100%);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1445,12 +1430,12 @@ onBeforeUnmount(() => {
 }
 .list-toolbar {
   padding: 0.5rem 0.55rem 0.4rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--surface-veil);
 }
 .sort-lab {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -1461,10 +1446,10 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 0.34rem 0.45rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.7rem;
-  background: #fff;
+  font-size: var(--fs-2xs);
+  background: var(--surface-1);
 }
 .list-scroll {
   flex: 1;
@@ -1488,8 +1473,8 @@ onBeforeUnmount(() => {
   text-align: left;
   padding: 0.45rem 0.5rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-translucent);
   cursor: pointer;
   font: inherit;
   color: inherit;
@@ -1498,12 +1483,12 @@ onBeforeUnmount(() => {
   gap: 0.2rem;
 }
 .note-item:hover {
-  background: #fff;
-  border-color: rgba(37, 99, 235, 0.25);
+  background: var(--surface-1);
+  border-color: var(--accent-border-soft);
 }
 .note-item.current {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.2);
+  box-shadow: 0 0 0 1px var(--accent-glow);
 }
 .note-title {
   display: -webkit-box;
@@ -1514,8 +1499,8 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   word-break: break-word;
   font-weight: 600;
-  font-size: 0.8rem;
-  line-height: 1.35;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
 }
 .note-preview {
   display: -webkit-box;
@@ -1525,31 +1510,33 @@ onBeforeUnmount(() => {
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
-  line-height: 1.35;
+  line-height: var(--lh-snug);
 }
 .meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   color: var(--note-list-meta);
 }
 .folder-badge {
   padding: 0.06rem 0.35rem;
   border-radius: 6px;
-  background: rgba(148, 163, 184, 0.2);
+  background: var(--surface-wash);
 }
 .dates-compact {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  font-size: var(--fs-tiny);
 }
 .meta-prefix {
   opacity: 0.75;
   margin-right: 0.12rem;
+  font-size: var(--fs-micro);
 }
 .editor-shell {
   flex: 1;
@@ -1559,6 +1546,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+.workspace--fit .editor-shell {
+  max-height: none;
 }
 .editor-placeholder {
   flex: 1;
@@ -1570,25 +1560,25 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 .ph-int {
-  font-size: 1rem;
+  font-size: var(--fs-base);
   font-weight: 600;
   margin: 0 0 0.5rem;
-  color: #475569;
+  color: var(--text-3);
 }
 .ph-sub {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   max-width: 320px;
   text-align: center;
 }
 .empty {
   margin: 0.5rem 0;
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .hint-pad {
   padding: 0.75rem 0.35rem;
-  line-height: 1.45;
+  line-height: var(--lh-normal);
 }
 .load-hint {
   padding: 0.5rem;
@@ -1597,6 +1587,55 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
+}
+
+/* Мобильный расклад: три колонки складываются в столбик, ширины из inline-стилей
+   перебиваются, чтобы страница не уезжала в горизонтальный скролл. */
+@media (max-width: 768px) {
+  .workspace-header {
+    padding: var(--space-3) var(--space-5) var(--space-4);
+    gap: var(--space-3) var(--space-4);
+  }
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .header-user {
+    margin-left: auto;
+  }
+  .user {
+    max-width: 45vw;
+  }
+  .workspace-body {
+    flex-direction: column;
+  }
+  .tags-aside,
+  .notes-list-col {
+    width: 100% !important;
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .tags-aside {
+    max-height: 45vh;
+  }
+  .notes-list-col {
+    max-height: 50vh;
+  }
+  .sidebar-panel {
+    box-shadow: none;
+  }
+  /* Тянуть границы колонок пальцем всё равно нельзя. */
+  .col-gutter,
+  .folder-nav-v-gutter {
+    display: none;
+  }
+  .editor-shell {
+    min-height: 60vh;
+  }
+  .sort-select {
+    min-height: var(--tap-min);
+    font-size: var(--fs-xs);
+  }
 }
 </style>

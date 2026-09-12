@@ -120,30 +120,30 @@ async function copyDecrypted() {
   max-width: 100%;
   padding: 0.1rem 0.38rem 0.12rem;
   border-radius: 6px;
-  border: 1px solid rgba(37, 99, 235, 0.35);
-  background: rgba(37, 99, 235, 0.06);
-  font-size: 0.78rem;
-  line-height: 1.35;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-subtle);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
   user-select: none;
   white-space: nowrap;
 }
 .enc-inline-ico {
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
   flex-shrink: 0;
 }
 .enc-inline-lab {
   color: var(--text-muted);
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .enc-inline-btn {
   border: none;
-  background: rgba(37, 99, 235, 0.15);
-  color: var(--accent);
-  font-size: 0.65rem;
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
+  font-size: var(--fs-2xs);
   font-weight: 600;
   padding: 0.12rem 0.35rem;
   border-radius: 4px;
@@ -151,13 +151,13 @@ async function copyDecrypted() {
   flex-shrink: 0;
 }
 .enc-inline-btn:hover {
-  background: rgba(37, 99, 235, 0.25);
+  background: var(--accent-subtle-strong);
 }
 .enc-modal-root {
   position: fixed;
   inset: 0;
   z-index: 1100;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -167,17 +167,19 @@ async function copyDecrypted() {
 .enc-modal {
   width: min(380px, 100%);
   padding: 1rem 1.05rem;
-  border-radius: var(--radius-lg, 14px);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: var(--shadow-panel, 0 8px 40px rgba(15, 23, 42, 0.15));
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-xl);
+  color: var(--text-1);
+  animation: ui-pop-in var(--dur-slow) var(--ease);
 }
 .enc-modal-wide {
   width: min(480px, 100%);
 }
 .enc-modal-title {
   margin: 0 0 0.35rem;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
   font-weight: 650;
 }
 .enc-modal-hint {
@@ -188,7 +190,7 @@ async function copyDecrypted() {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   padding: 0.4rem 0.5rem;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -200,8 +202,8 @@ async function copyDecrypted() {
 }
 .enc-modal-err {
   margin: 0 0 0.5rem;
-  color: var(--danger);
-  font-size: 0.78rem;
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
 }
 .enc-modal-actions {
   display: flex;
@@ -214,14 +216,14 @@ async function copyDecrypted() {
   padding: 0.38rem 0.75rem;
   border-radius: 8px;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg);
 }
 .enc-modal-ok {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   border-color: transparent;
   font-weight: 600;
 }

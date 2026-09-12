@@ -9,9 +9,10 @@ from app.models.tag import Tag
 from app.utils.text import slugify
 
 
-async def _unique_slug(
+async def unique_slug(
     db: AsyncSession, user_id: uuid.UUID, parent_id: uuid.UUID | None, base_slug: str
 ) -> str:
+    """Свободный slug среди сиблингов; при коллизиях добавляет случайный суффикс."""
     slug = base_slug
     for _ in range(50):
         existing = await db.execute(
@@ -29,7 +30,8 @@ async def _unique_slug(
     )
 
 
-async def _recompute_depths(db: AsyncSession, tag: Tag) -> None:
+async def recompute_depths(db: AsyncSession, tag: Tag) -> None:
+    """depth = depth родителя + 1, рекурсивно для уже существующих потомков."""
     if tag.parent_id is None:
         tag.depth = 1
     else:
@@ -43,7 +45,7 @@ async def _recompute_depths(db: AsyncSession, tag: Tag) -> None:
         return
     children = await db.execute(select(Tag).where(Tag.parent_id == tag.id))
     for child in children.scalars().all():
-        await _recompute_depths(db, child)
+        await recompute_depths(db, child)
 
 
 async def get_or_create_root_tag(db: AsyncSession, owner_id: uuid.UUID, raw_name: str) -> Tag:
@@ -70,8 +72,8 @@ async def get_or_create_root_tag(db: AsyncSession, owner_id: uuid.UUID, raw_name
         slug="",
         depth=1,
     )
-    await _recompute_depths(db, tag)
-    tag.slug = await _unique_slug(db, owner_id, tag.parent_id, slugify(tag.name))
+    await recompute_depths(db, tag)
+    tag.slug = await unique_slug(db, owner_id, tag.parent_id, slugify(tag.name))
     db.add(tag)
     await db.flush()
     await db.refresh(tag)

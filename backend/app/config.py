@@ -11,6 +11,15 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/note"
 
+    # Пул соединений SQLAlchemy. Держите pool_size + max_overflow ниже
+    # max_connections Postgres (по умолчанию 100) с запасом на миграции и psql.
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    # Секунды ожидания свободного соединения, прежде чем отдать 500.
+    db_pool_timeout: int = 30
+    # Пересоздавать соединения раз в час: страхует от «умерших» TCP за NAT/пулером.
+    db_pool_recycle: int = 3600
+
     jwt_secret_key: str = "change-me-in-production-use-long-random-string"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
@@ -34,6 +43,10 @@ class Settings(BaseSettings):
     vosk_model_path: str = ""
     # Пусто — авто-поиск; в Docker задайте /usr/bin/ffmpeg (см. docker-compose) или полный путь на Windows
     ffmpeg_path: str = ""
+
+    # LanguageTool: публичный API или свой сервер (https://dev.languagetool.org/public-http-api)
+    languagetool_api_url: str = "https://api.languagetool.org/v2/check"
+    languagetool_language: str = "auto"
 
     # Общий SMTP для «Отправить заметку по почте», если у пользователя не задан свой (PUT /users/me/smtp).
     # Timeweb и др.: https://timeweb.com/ru/docs/pochta/nastrojka-pochtovyh-klientov/

@@ -45,10 +45,17 @@ async def patch_user_access(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить привычки у аккаунта администратора",
         )
+    if is_admin_user and body.can_use_grammar is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя отключить грамматику у аккаунта администратора",
+        )
     if body.can_create_notes is not None:
         user.can_create_notes = body.can_create_notes
     if body.can_use_habits is not None:
         user.can_use_habits = body.can_use_habits
+    if body.can_use_grammar is not None:
+        user.can_use_grammar = body.can_use_grammar
     await db.flush()
     await db.refresh(user)
     return user
@@ -64,7 +71,7 @@ async def reset_user_password(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     temporary = generate_temporary_password()
-    user.password_hash = hash_password(temporary)
+    user.password_hash = await hash_password(temporary)
     user.must_change_password = True
     await db.flush()
     return UserAdminPasswordReset(email=user.email, temporary_password=temporary)

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { errMessage, habitsApi, publicHabitsApi } from '../api/client'
 import type { Habit } from '../api/types'
 import { useAuthStore } from '../stores/auth'
+import { useTheme } from '../composables/useTheme'
 
 const ICONS = ['💧', '🏃', '📚', '🧘', '💊', '🍎', '✍️', '🧹', '🌙', '🎯', '🧠', '🚶']
 const WEEK = [
@@ -20,6 +21,7 @@ const WEEK = [
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const { label: themeLabel, icon: themeIcon, cycleTheme } = useTheme()
 const isPublic = computed(() => route.name === 'public-habits')
 const publicToken = computed(() => String(route.params.token || '').trim())
 const ownerName = ref('')
@@ -205,11 +207,16 @@ function slotMap(h: Habit) {
   return new Map(h.slots.map((s) => [s.day, s]))
 }
 
-function cellKind(h: Habit, iso: string): 'skip' | 'empty' | 'done' | 'missed' {
-  const s = slotMap(h).get(iso)
+type CellKind = 'skip' | 'empty' | 'done' | 'missed'
+
+function slotKind(s: Habit['slots'][number] | undefined): CellKind {
   if (!s) return 'skip'
   if (s.state === 'done' || s.state === 'missed') return s.state
   return 'empty'
+}
+
+function cellKind(h: Habit, iso: string): CellKind {
+  return slotKind(slotMap(h).get(iso))
 }
 
 const avgPercent = computed(() => {
@@ -361,13 +368,36 @@ function replaceHabit(row: Habit) {
   habits.value = habits.value.map((h) => (h.id === row.id ? row : h))
 }
 
+type BoardCell = { iso: string; kind: CellKind; comment: string; title: string }
+type BoardRow = { habit: Habit; cells: BoardCell[] }
+
+/**
+ * Готовая сетка доски. В шаблоне на каждую ячейку вызывались `cellKind`,
+ * `cellComment` и `cellTitle` — до девяти раз, и каждый из них строил `Map`
+ * из всех отметок привычки заново. На 20 привычках за две недели это были
+ * тысячи лишних построений Map на один рендер.
+ */
+const boardRows = computed<BoardRow[]>(() => {
+  const cols = boardCols.value
+  return habits.value.map((h) => {
+    const byDay = slotMap(h)
+    return {
+      habit: h,
+      cells: cols.map((col) => {
+        const comment = String(byDay.get(col.iso)?.comment || '').trim()
+        return {
+          iso: col.iso,
+          kind: slotKind(byDay.get(col.iso)),
+          comment,
+          title: comment ? `${col.iso} — ${comment}` : col.iso,
+        }
+      }),
+    }
+  })
+})
+
 function cellComment(h: Habit, iso: string) {
   return String(slotMap(h).get(iso)?.comment || '').trim()
-}
-
-function cellTitle(h: Habit, iso: string) {
-  const note = cellComment(h, iso)
-  return note ? `${iso} — ${note}` : iso
 }
 
 const noteHabitId = ref<string | null>(null)
@@ -460,6 +490,15 @@ onMounted(() => {
           </div>
         </template>
         <span v-else class="user">{{ ownerName }}</span>
+        <button
+          type="button"
+          class="theme-toggle"
+          :aria-label="themeLabel"
+          :title="themeLabel"
+          @click="cycleTheme"
+        >
+          <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+        </button>
       </div>
     </header>
 
@@ -563,36 +602,42 @@ onMounted(() => {
             <span class="b-num">{{ col.num }}</span>
             <span v-if="col.isToday" class="b-today">сегодня</span>
           </div>
-          <template v-for="h in habits" :key="h.id">
-            <div class="b-name-cell" :class="{ editing: editingId === h.id }">
-              <span class="hab-icon">{{ h.icon || '💧' }}</span>
+          <template v-for="row in boardRows" :key="row.habit.id">
+            <div class="b-name-cell" :class="{ editing: editingId === row.habit.id }">
+              <span class="hab-icon">{{ row.habit.icon || '💧' }}</span>
               <span class="hab-meta">
-                <span class="hab-smile">{{ h.stage_emoji }}</span>
-                <span class="hab-count">{{ h.done_count }}/{{ h.target_days }}</span>
+                <span class="hab-smile">{{ row.habit.stage_emoji }}</span>
+                <span class="hab-count">{{ row.habit.done_count }}/{{ row.habit.target_days }}</span>
               </span>
-              <span class="hab-title" :title="h.title">{{ h.title }}</span>
+              <span class="hab-title" :title="row.habit.title">{{ row.habit.title }}</span>
               <div v-if="!isPublic" class="hab-hover-acts">
-                <button type="button" class="btn-mini" @click="startEdit(h)">Изменить</button>
-                <button type="button" class="btn-mini danger" @click="removeHabit(h)">Удалить</button>
+                <button type="button" class="btn-mini" @click="startEdit(row.habit)">Изменить</button>
+                <button type="button" class="btn-mini danger" @click="removeHabit(row.habit)">
+                  Удалить
+                </button>
               </div>
             </div>
             <button
-              v-for="col in boardCols"
-              :key="h.id + col.iso"
+              v-for="cell in row.cells"
+              :key="row.habit.id + cell.iso"
               type="button"
               class="b-cell"
-              :class="[`is-${cellKind(h, col.iso)}`, { 'has-note': !!cellComment(h, col.iso) }]"
-              :disabled="cellKind(h, col.iso) === 'skip' || busyId === h.id"
-              :title="cellTitle(h, col.iso)"
-              @click="onBoardClick(h, col.iso)"
-              @contextmenu="openNote(h, col.iso, $event)"
+              :class="[`is-${cell.kind}`, { 'has-note': !!cell.comment }]"
+              :disabled="cell.kind === 'skip' || busyId === row.habit.id"
+              :title="cell.title"
+              @click="onBoardClick(row.habit, cell.iso)"
+              @contextmenu="openNote(row.habit, cell.iso, $event)"
             >
-              <span v-if="cellKind(h, col.iso) === 'done'" class="mark-sym ok">✓</span>
-              <span v-else-if="cellKind(h, col.iso) === 'missed'" class="mark-sym no">✕</span>
-              <span v-else-if="cellKind(h, col.iso) === 'empty'" class="box" />
-              <span v-if="cellComment(h, col.iso)" class="note-dot" aria-hidden="true" />
+              <span v-if="cell.kind === 'done'" class="mark-sym ok">✓</span>
+              <span v-else-if="cell.kind === 'missed'" class="mark-sym no">✕</span>
+              <span v-else-if="cell.kind === 'empty'" class="box" />
+              <span v-if="cell.comment" class="note-dot" aria-hidden="true" />
             </button>
-            <div v-if="!isPublic && editingId === h.id" class="edit-box b-edit" :style="{ gridColumn: '1 / -1' }">
+            <div
+              v-if="!isPublic && editingId === row.habit.id"
+              class="edit-box b-edit"
+              :style="{ gridColumn: '1 / -1' }"
+            >
               <div class="icon-pick">
                 <button
                   v-for="ic in ICONS"
@@ -631,7 +676,9 @@ onMounted(() => {
                 <input v-model.number="editSort" class="target-input" type="number" min="1" max="999" />
               </label>
               <div class="edit-actions">
-                <button type="button" class="btn primary" @click="saveEdit(h.id)">Сохранить</button>
+                <button type="button" class="btn primary" @click="saveEdit(row.habit.id)">
+                  Сохранить
+                </button>
                 <button type="button" class="btn ghost" @click="cancelEdit">Отмена</button>
               </div>
             </div>
@@ -669,7 +716,7 @@ onMounted(() => {
   min-width: 0;
   overflow-x: auto;
   background:
-    radial-gradient(1200px 420px at 10% -10%, rgba(190, 242, 100, 0.18), transparent 55%),
+    radial-gradient(1200px 420px at 10% -10%, var(--positive-subtle), transparent 55%),
     var(--bg);
 }
 .workspace-header {
@@ -678,8 +725,8 @@ onMounted(() => {
   align-items: center;
   gap: 0.75rem 1rem;
   padding: 0.5rem 1rem 0.55rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(255, 255, 255, 0.82);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-translucent);
   backdrop-filter: blur(10px);
   flex-shrink: 0;
 }
@@ -698,25 +745,25 @@ onMounted(() => {
 }
 .logo-wordmark {
   font-family: 'Sora', 'Inter', system-ui, sans-serif;
-  font-size: 1.375rem;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.055em;
-  color: #0f172a;
+  color: var(--text-1);
 }
 .logo-brand {
   display: inline-flex;
 }
 .logo-brand-accent {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .logo-brand-dash {
-  color: #64748b;
+  color: var(--text-4);
 }
 .header-sub {
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
   font-weight: 650;
-  color: #4d7c0f;
-  background: rgba(190, 242, 100, 0.35);
+  color: var(--positive-text);
+  background: var(--positive-subtle-strong);
   padding: 0.18rem 0.5rem;
   border-radius: 999px;
 }
@@ -733,7 +780,7 @@ onMounted(() => {
   gap: 0.45rem;
 }
 .user {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
 }
 .page {
@@ -753,13 +800,13 @@ onMounted(() => {
 }
 .hero h1 {
   margin: 0;
-  font-size: 1.45rem;
+  font-size: var(--fs-xl);
   letter-spacing: -0.03em;
 }
 .hero-sub {
   margin: 0.25rem 0 0;
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .hero-right {
   display: flex;
@@ -771,7 +818,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 650;
   color: var(--text-muted);
 }
@@ -780,8 +827,8 @@ onMounted(() => {
   padding: 0.32rem 0.4rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: #fff;
-  color: #0f172a;
+  background: var(--surface-1);
+  color: var(--text-1);
 }
 .range-bar {
   display: flex;
@@ -790,12 +837,12 @@ onMounted(() => {
   gap: 0.55rem 0.75rem;
 }
 .range-len {
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 650;
   color: var(--text-muted);
 }
 .range-hint {
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
 .hero-smile {
@@ -809,9 +856,9 @@ onMounted(() => {
   line-height: 1;
 }
 .hero-pct {
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
-  color: #4d7c0f;
+  color: var(--positive-text);
 }
 .board-wrap {
   width: 100%;
@@ -824,15 +871,15 @@ onMounted(() => {
   min-width: min(100%, 52rem);
 }
 .b-head {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
-  color: #64748b;
+  color: var(--text-4);
   text-align: center;
 }
 .b-name {
   text-align: left;
   padding: 0 0.3rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .b-col {
   display: flex;
@@ -846,11 +893,11 @@ onMounted(() => {
   text-transform: uppercase;
 }
 .b-num {
-  font-size: 0.78rem;
-  color: #0f172a;
+  font-size: var(--fs-xs);
+  color: var(--text-1);
 }
 .b-today {
-  font-size: 0.52rem;
+  font-size: var(--fs-2xs);
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -864,20 +911,20 @@ onMounted(() => {
   max-width: none;
   min-height: 2.45rem;
   padding: 0.28rem 0.42rem;
-  background: #fff;
+  background: var(--surface-1);
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--border-subtle);
 }
 .hab-icon {
   flex-shrink: 0;
-  font-size: 1.35rem;
+  font-size: var(--fs-xl);
   line-height: 1;
 }
 .hab-title {
   flex: 0 0 auto;
   font-weight: 750;
-  font-size: 0.95rem;
-  line-height: 1.2;
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
   white-space: nowrap;
 }
 .hab-meta {
@@ -887,11 +934,11 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .hab-smile {
-  font-size: 1.28rem;
+  font-size: var(--fs-xl);
   line-height: 1;
 }
 .hab-count {
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 650;
   color: var(--text-muted);
   white-space: nowrap;
@@ -904,9 +951,9 @@ onMounted(() => {
   transform: translateY(-50%);
   gap: 0.18rem;
   padding: 0.12rem;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--surface-translucent);
   border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 4px 14px var(--shadow-tint);
 }
 .b-name-cell:hover .hab-hover-acts,
 .b-name-cell:focus-within .hab-hover-acts,
@@ -928,28 +975,28 @@ onMounted(() => {
   position: relative;
   min-height: 2.45rem;
   border-radius: 7px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: #fff;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
   cursor: pointer;
   display: grid;
   place-items: center;
   padding: 0;
 }
 .b-cell.is-skip {
-  background: #e8eaee;
-  border-color: #d5d8de;
+  background: var(--surface-4);
+  border-color: var(--border-solid);
   cursor: default;
 }
 .b-cell.is-empty {
-  background: #fff;
+  background: var(--surface-1);
 }
 .b-cell.is-done {
-  background: #d9f99d;
-  border-color: #84cc16;
+  background: var(--positive-subtle-strong);
+  border-color: var(--positive-border);
 }
 .b-cell.is-missed {
-  background: #fecaca;
-  border-color: #ef4444;
+  background: var(--danger-subtle-hover);
+  border-color: var(--danger-border-strong);
 }
 .b-cell:disabled {
   cursor: default;
@@ -957,20 +1004,20 @@ onMounted(() => {
 .box {
   width: 0.95rem;
   height: 0.95rem;
-  border: 2px solid #94a3b8;
+  border: 2px solid var(--border-strong);
   border-radius: 4px;
-  background: #fff;
+  background: var(--surface-1);
 }
 .mark-sym {
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
   font-weight: 800;
   line-height: 1;
 }
 .mark-sym.ok {
-  color: #3f6212;
+  color: var(--positive-text);
 }
 .mark-sym.no {
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 .note-dot {
   position: absolute;
@@ -979,23 +1026,23 @@ onMounted(() => {
   width: 0.38rem;
   height: 0.38rem;
   border-radius: 999px;
-  background: #2563eb;
+  background: var(--accent);
 }
 .note-mask {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background: rgba(15, 23, 42, 0.28);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   padding: 1rem;
 }
 .note-pop {
   width: min(26rem, 100%);
-  background: #fff;
+  background: var(--surface-1);
   border-radius: 14px;
   padding: 0.85rem 0.95rem;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 16px 40px var(--shadow-tint);
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
@@ -1003,7 +1050,7 @@ onMounted(() => {
 .note-head {
   margin: 0;
   font-weight: 700;
-  font-size: 0.92rem;
+  font-size: var(--fs-md);
 }
 .note-text {
   width: 100%;
@@ -1031,8 +1078,8 @@ onMounted(() => {
 .strip-day {
   flex: 1 1 0;
   min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: #fff;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
   border-radius: 10px;
   padding: 0.35rem 0.1rem;
   cursor: pointer;
@@ -1042,26 +1089,26 @@ onMounted(() => {
   gap: 0.12rem;
 }
 .strip-wd {
-  font-size: clamp(0.5rem, 0.9vw, 0.68rem);
-  color: #94a3b8;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   text-transform: uppercase;
   font-weight: 700;
 }
 .strip-num {
-  font-size: clamp(0.7rem, 1.3vw, 0.95rem);
+  font-size: clamp(var(--fs-2xs), 1.3vw, var(--fs-md));
   font-weight: 750;
-  color: #0f172a;
+  color: var(--text-1);
 }
 .strip-day.today {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 .strip-day.anchor {
-  background: #ecfccb;
-  border-color: #84cc16;
+  background: var(--positive-subtle);
+  border-color: var(--positive-border);
 }
 .strip-hint {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -1069,13 +1116,13 @@ onMounted(() => {
 }
 .btn-today {
   padding: 0.15rem 0.45rem;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
 }
 .composer,
 .card,
 .edit-box {
   background: var(--panel);
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid var(--border-subtle);
   border-radius: 16px;
   box-shadow: var(--shadow-soft);
 }
@@ -1100,7 +1147,7 @@ onMounted(() => {
   align-items: center;
   gap: 0.35rem;
   padding: 0.45rem 0.6rem;
-  background: #fff;
+  background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: 12px;
 }
@@ -1108,19 +1155,19 @@ onMounted(() => {
   width: 14rem;
   min-width: 10rem;
   font: inherit;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   padding: 0.32rem 0.4rem;
   border-radius: 8px;
   border: 1px solid var(--border);
 }
 .btn.secondary.on {
-  border-color: #84cc16;
-  background: #ecfccb;
+  border-color: var(--positive-border);
+  background: var(--positive-subtle);
 }
 .public-hint {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .public-mood {
   display: flex;
@@ -1150,35 +1197,35 @@ onMounted(() => {
   width: 1.85rem;
   height: 1.85rem;
   border: 1px solid transparent;
-  background: #f8fafc;
+  background: var(--surface-2);
   border-radius: 8px;
   cursor: pointer;
 }
 .icon-btn.on {
-  border-color: #84cc16;
-  background: #ecfccb;
+  border-color: var(--positive-border);
+  background: var(--positive-subtle);
 }
 .dow-btn {
   min-width: 2rem;
   padding: 0.28rem 0.32rem;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 650;
-  color: #64748b;
+  color: var(--text-4);
 }
 .dow-btn.on {
-  background: #ecfccb;
-  border-color: #84cc16;
-  color: #3f6212;
+  background: var(--positive-subtle);
+  border-color: var(--positive-border);
+  color: var(--positive-text);
 }
 .target-lab {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   flex-shrink: 0;
   white-space: nowrap;
@@ -1219,8 +1266,8 @@ onMounted(() => {
 .slot {
   flex: 1 1 0;
   min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  background: #fff;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-1);
   border-radius: 8px;
   padding: 0.18rem 0.08rem;
   cursor: pointer;
@@ -1230,32 +1277,32 @@ onMounted(() => {
   gap: 0.05rem;
 }
 .slot.is-done {
-  background: #ecfccb;
-  border-color: #84cc16;
+  background: var(--positive-subtle);
+  border-color: var(--positive-border);
 }
 .slot.is-missed {
-  background: #fef2f2;
-  border-color: #f87171;
+  background: var(--danger-subtle);
+  border-color: var(--danger-border-strong);
 }
 .slot.today {
-  box-shadow: 0 0 0 2px rgba(132, 204, 22, 0.45);
+  box-shadow: 0 0 0 2px var(--positive-glow);
 }
 .slot-d {
-  font-size: clamp(0.52rem, 0.95vw, 0.72rem);
+  font-size: var(--fs-2xs);
   font-weight: 700;
   white-space: nowrap;
-  color: #334155;
+  color: var(--text-2);
 }
 .slot-m {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 800;
   line-height: 1;
 }
 .slot.is-done .slot-m {
-  color: #3f6212;
+  color: var(--positive-text);
 }
 .slot.is-missed .slot-m {
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 .card-acts {
   display: flex;
@@ -1274,48 +1321,69 @@ onMounted(() => {
   display: flex;
   gap: 0.4rem;
 }
-.btn-mini {
-  font-size: 0.72rem;
-  padding: 0.22rem 0.45rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: #fff;
-  cursor: pointer;
-}
-.btn-mini.danger {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-.err {
-  color: var(--danger);
-  margin: 0;
-}
+/* Базовый `.btn-mini`, `.err`, `.muted`, `.empty` — в assets/ui.css. */
+.err,
 .muted,
 .empty {
-  color: var(--text-muted);
   margin: 0;
 }
-.btn {
-  font: inherit;
-  border-radius: 8px;
-  padding: 0.38rem 0.7rem;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: #fff;
-}
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.btn.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn.ghost {
-  background: transparent;
-}
-.btn.secondary {
-  background: #fff;
+/* Базовые `.btn` и его варианты — в assets/ui.css. */
+
+/* Мобильный расклад: страница не уезжает по горизонтали, скроллится только доска. */
+@media (max-width: 768px) {
+  .workspace {
+    overflow-x: hidden;
+  }
+  .workspace-header {
+    padding: var(--space-3) var(--space-5) var(--space-4);
+    gap: var(--space-3) var(--space-4);
+  }
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .header-user {
+    margin-left: auto;
+  }
+  .user {
+    max-width: 45vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .page {
+    padding: var(--space-6) var(--space-5) var(--space-9);
+  }
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-5);
+  }
+  .hero-right {
+    width: 100%;
+  }
+  /* Горизонтальный скролл остаётся у самой доски — это ожидаемо. */
+  .board-wrap {
+    -webkit-overflow-scrolling: touch;
+  }
+  .composer,
+  .share-box {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  .date-input {
+    min-height: var(--tap-min);
+    font-size: var(--fs-xs);
+  }
+  .note-text {
+    font-size: var(--fs-xs);
+  }
+  .b-cell,
+  .strip-day {
+    min-height: var(--tap-min);
+  }
+  .note-pop {
+    width: 100%;
+  }
 }
 </style>

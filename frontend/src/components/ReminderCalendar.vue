@@ -348,9 +348,9 @@ function isToday(d: Date): boolean {
       </div>
     </div>
     <div class="rem-cal-nav">
-      <button type="button" class="rem-cal-arrow" title="Назад" @click="prev">‹</button>
+      <button type="button" class="rem-cal-arrow" aria-label="Назад" title="Назад" @click="prev">‹</button>
       <span class="rem-cal-range" :title="titleRangeTooltip">{{ titleRange }}</span>
-      <button type="button" class="rem-cal-arrow" title="Вперёд" @click="next">›</button>
+      <button type="button" class="rem-cal-arrow" aria-label="Вперёд" title="Вперёд" @click="next">›</button>
       <button type="button" class="rem-cal-today" @click="today">Сегодня</button>
     </div>
     <p
@@ -461,13 +461,13 @@ function isToday(d: Date): boolean {
   flex-shrink: 0;
   margin-bottom: 0.4rem;
   padding: 0.55rem 0.5rem 0.35rem;
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow-soft, 0 1px 3px rgba(15, 23, 42, 0.06));
+  box-shadow: var(--shadow-sm);
   font-family: inherit;
-  font-size: 0.8125rem;
-  color: #334155;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
   --rem-cal-list-h: 220px;
 }
 .rem-cal--resizable {
@@ -478,8 +478,8 @@ function isToday(d: Date): boolean {
   pointer-events: none;
 }
 .rem-cal--embed {
-  font-size: 0.75rem;
-  color: #475569;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
 }
 .rem-cal--embed .rem-cal-head {
   margin-bottom: 0.35rem;
@@ -494,7 +494,7 @@ function isToday(d: Date): boolean {
   width: 100%;
 }
 .rem-cal-title {
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -507,7 +507,7 @@ function isToday(d: Date): boolean {
   gap: 3px;
   padding: 2px;
   border-radius: 8px;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--surface-wash);
 }
 .rem-cal-views button {
   flex: 1;
@@ -516,7 +516,7 @@ function isToday(d: Date): boolean {
   align-items: center;
   justify-content: center;
   font-family: inherit;
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   padding: 0.2rem 0.35rem;
   border-radius: 6px;
@@ -527,9 +527,9 @@ function isToday(d: Date): boolean {
 }
 .rem-cal-views button.on {
   background: var(--panel);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 2px var(--shadow-tint-weak);
 }
 .rem-cal-nav {
   display: flex;
@@ -549,41 +549,41 @@ function isToday(d: Date): boolean {
   border-radius: 8px;
   background: transparent;
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
   line-height: 1;
   color: var(--text-muted);
-  transition: background 0.12s ease;
+  transition: background var(--dur-fast) var(--ease);
 }
 .rem-cal-arrow:hover {
   background: var(--list-row-hover);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .rem-cal-range {
   flex: 1;
   min-width: 0;
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-4);
   text-align: center;
 }
 .rem-cal-today {
   font-family: inherit;
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   padding: 0.2rem 0.4rem;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: #64748b;
+  color: var(--text-4);
   cursor: pointer;
 }
 .rem-cal-today:hover {
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 .rem-cal-hint {
   margin: 0 0 0.35rem;
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
 .rem-cal-dow {
@@ -591,11 +591,11 @@ function isToday(d: Date): boolean {
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
   margin-bottom: 4px;
-  font-size: 0.5625rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #94a3b8;
+  color: var(--text-4);
   text-align: center;
 }
 .rem-cal-grid {
@@ -608,23 +608,23 @@ function isToday(d: Date): boolean {
   border-radius: 8px;
   padding: 0.16rem 0.18rem;
   background: var(--list-row-hover);
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   display: flex;
   flex-direction: column;
   gap: 2px;
   border: 1px solid transparent;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--dur-fast) var(--ease);
 }
 .rem-cal-cell--dots:hover {
-  border-color: rgba(37, 99, 235, 0.25);
+  border-color: var(--accent-border-soft);
 }
 .rem-cal-daynum {
-  font-size: 0.625rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--text-3);
 }
 .rem-cal-daynum--today {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .rem-cal-dots {
   display: flex;
@@ -641,15 +641,15 @@ function isToday(d: Date): boolean {
   flex-shrink: 0;
 }
 .rem-dot--in-scope {
-  background: #6d87b5;
-  box-shadow: 0 0 0 1px rgba(90, 110, 150, 0.35);
+  background: var(--cal-in-scope);
+  box-shadow: 0 0 0 1px var(--cal-in-scope-ring);
 }
 .rem-dot--out-scope {
-  background: #c0807a;
-  box-shadow: 0 0 0 1px rgba(160, 95, 90, 0.32);
+  background: var(--cal-out-scope);
+  box-shadow: 0 0 0 1px var(--cal-out-scope-ring);
 }
 .rem-more {
-  font-size: 0.55rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
 .rem-cal-week-grid {
@@ -660,7 +660,7 @@ function isToday(d: Date): boolean {
 .rem-cal-wcol {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-md);
   padding: 0.35rem 0.3rem 0.45rem;
   background: var(--bg);
   min-height: 4.25rem;
@@ -668,26 +668,26 @@ function isToday(d: Date): boolean {
   flex-direction: column;
 }
 .rem-cal-wcol--has {
-  border-color: rgba(37, 99, 235, 0.22);
+  border-color: var(--accent-border-soft);
 }
 .rem-cal-whead {
-  font-size: 0.5625rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  color: #94a3b8;
+  color: var(--text-4);
   margin-bottom: 0.3rem;
   display: flex;
   flex-direction: column;
   gap: 1px;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .rem-cal-wnum {
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--text-3);
 }
 .rem-cal-whead--today,
 .rem-cal-whead--today .rem-cal-wnum {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .rem-cal-wdots {
   flex: 1;
@@ -718,7 +718,7 @@ function isToday(d: Date): boolean {
   color: var(--note-list-title);
 }
 .rem-cal-daylist .rem-cal-ntime {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   color: var(--note-list-meta);
   font-variant-numeric: tabular-nums;
 }
@@ -742,18 +742,18 @@ function isToday(d: Date): boolean {
   border-radius: 6px;
   cursor: row-resize;
   flex-shrink: 0;
-  background: rgba(148, 163, 184, 0.12);
+  background: var(--surface-wash);
   border: 1px solid transparent;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 .rem-cal-resize:hover {
-  background: rgba(37, 99, 235, 0.14);
-  border-color: rgba(37, 99, 235, 0.22);
+  background: var(--accent-subtle-hover);
+  border-color: var(--accent-border-soft);
 }
 .rem-cal-resize:active {
-  background: rgba(37, 99, 235, 0.2);
+  background: var(--accent-subtle-strong);
 }
 .rem-cal-dayitem {
   width: 100%;
@@ -762,38 +762,38 @@ function isToday(d: Date): boolean {
   align-items: flex-start;
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
-  border-radius: var(--radius-md, 10px);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--panel);
   cursor: pointer;
   font-family: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   margin-bottom: 0.35rem;
   transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
 .rem-cal-dayitem:hover {
-  border-color: rgba(37, 99, 235, 0.35);
-  box-shadow: var(--shadow-soft, 0 1px 3px rgba(15, 23, 42, 0.06));
+  border-color: var(--accent-border);
+  box-shadow: var(--shadow-sm);
 }
 .rem-cal-dayitem--in-scope {
-  border-color: rgba(90, 110, 150, 0.45);
-  background: rgba(109, 135, 181, 0.09);
+  border-color: var(--cal-in-scope-border);
+  background: var(--cal-in-scope-subtle);
 }
 .rem-cal-dayitem--in-scope:hover {
-  border-color: rgba(90, 110, 150, 0.58);
+  border-color: var(--cal-in-scope-border-strong);
 }
 .rem-cal-dayitem--out-scope {
-  border-color: rgba(180, 110, 105, 0.42);
-  background: rgba(192, 128, 122, 0.08);
+  border-color: var(--cal-out-scope-border);
+  background: var(--cal-out-scope-subtle);
 }
 .rem-cal-dayitem--out-scope:hover {
-  border-color: rgba(180, 110, 105, 0.55);
+  border-color: var(--cal-out-scope-border-strong);
 }
 .rem-cal-empty {
   margin: 0.45rem 0;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
 }
 </style>

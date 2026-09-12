@@ -7,6 +7,8 @@ export interface User {
   can_create_notes: boolean
   /** Если false — раздел «Привычки» скрыт (выдаёт админ). */
   can_use_habits: boolean
+  /** Если false — нет проверки орфографии и грамматики в заметке. */
+  can_use_grammar: boolean
   /** Единственный email из настроек API; видит админку. */
   is_admin: boolean
   /** После сброса админом: нужно задать свой пароль. */
@@ -20,6 +22,56 @@ export interface AdminUserRow {
   created_at: string
   can_create_notes: boolean
   can_use_habits: boolean
+  can_use_grammar: boolean
+}
+
+export interface GrammarIssue {
+  offset: number
+  length: number
+  message: string
+  short_message: string
+  replacements: string[]
+  issue_type: string
+}
+
+export interface GrammarSegment {
+  text: string
+  kind: 'ok' | 'error' | 'fix' | string
+  message: string
+  before: string
+  after: string
+}
+
+export interface GrammarChange {
+  before: string
+  after: string
+  message: string
+  kind: string
+}
+
+export interface GrammarSuggestion {
+  id: string
+  label: string
+  text: string
+  change_count: number
+  original_parts: GrammarSegment[]
+  revised_parts: GrammarSegment[]
+  changes: GrammarChange[]
+}
+
+export interface GrammarAdvice {
+  before: string
+  after: string
+  message: string
+  options: string[]
+}
+
+export interface GrammarCheckResult {
+  original: string
+  suggestions: GrammarSuggestion[]
+  issues: GrammarIssue[]
+  advice?: GrammarAdvice[]
+  language: string
 }
 
 export interface HabitPublicLink {

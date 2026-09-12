@@ -279,10 +279,10 @@ async function formatPython() {
 <style scoped>
 .code-snippet-node {
   border: 1px solid var(--border);
-  border-radius: 8px;
-  margin: 0.5rem 0;
+  border-radius: var(--radius-md);
+  margin: var(--space-4) 0;
   overflow: hidden;
-  background: #f1f5f9;
+  background: var(--surface-3);
 }
 .code-snippet-head {
   display: flex;
@@ -291,24 +291,29 @@ async function formatPython() {
   gap: 0.45rem 0.65rem;
   padding: 0.5rem 0.65rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.78rem;
-  background: var(--panel);
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
+  color: var(--text-2);
 }
 .code-snippet-head-spacer {
   flex: 1;
   min-width: 0.5rem;
 }
 .code-snippet-btn {
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-2);
+  color: var(--text-2);
   cursor: pointer;
   font: inherit;
   white-space: nowrap;
+  transition: var(--transition-colors);
 }
 .code-snippet-btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  background: var(--surface-3);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 .code-snippet-btn:disabled {
   opacity: 0.45;
@@ -320,15 +325,22 @@ async function formatPython() {
 .code-snippet-title {
   min-width: 6rem;
   max-width: 14rem;
-  padding: 0.2rem 0.45rem;
-  border-radius: 6px;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-2);
+  color: var(--text-1);
   font: inherit;
+  transition: var(--transition-colors);
+}
+.code-snippet-title:focus {
+  border-color: var(--accent-border);
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 .code-snippet-title-read {
   font-weight: 600;
-  color: var(--text, inherit);
+  color: var(--text-1);
 }
 .code-snippet-lang-wrap {
   display: inline-flex;
@@ -336,35 +348,40 @@ async function formatPython() {
   gap: 0.35rem;
 }
 .code-snippet-lang-lab {
-  color: var(--muted, #64748b);
-  font-size: 0.72rem;
+  color: var(--text-4);
+  font-size: var(--fs-2xs);
 }
 .code-snippet-lang {
-  padding: 0.2rem 0.35rem;
-  border-radius: 6px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-2);
+  color: var(--text-1);
   font: inherit;
   cursor: pointer;
+  transition: var(--transition-colors);
 }
 .code-snippet-lang-read {
-  font-size: 0.72rem;
-  color: var(--muted, #64748b);
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
 }
 .code-snippet-err {
   margin: 0;
   padding: 0.35rem 0.65rem 0;
-  font-size: 0.72rem;
-  color: #b91c1c;
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
 }
 .code-snippet-body {
   padding: 0.55rem 0.65rem 0.65rem;
 }
+/* Подложка редактора кода остаётся светлой в обеих темах: палитра подсветки
+   синтаксиса задана в `utils/codeMirrorTheme.ts` светлыми токенами GitHub. */
 .code-snippet-cm {
-  border: 1px solid rgba(148, 163, 184, 0.55);
-  border-radius: 6px;
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #fff;
+  background: var(--code-surface);
+  color: var(--code-text);
 }
 .code-snippet-cm :deep(.cm-editor) {
   min-height: 7rem;

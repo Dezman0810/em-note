@@ -7,6 +7,9 @@ import type { Note } from '../api/types'
 import NoteEditor from '../components/NoteEditor.vue'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
+import { useTheme } from '../composables/useTheme'
+
+const { label: themeLabel, icon: themeIcon, cycleTheme } = useTheme()
 
 const route = useRoute()
 const token = computed(() => String(route.params.token || '').trim())
@@ -180,6 +183,15 @@ onBeforeUnmount(async () => {
       >
         {{ publicFocusMode ? 'Шапка' : 'Только заметка' }}
       </button>
+      <button
+        type="button"
+        class="theme-toggle"
+        :aria-label="themeLabel"
+        :title="themeLabel"
+        @click="cycleTheme"
+      >
+        <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+      </button>
     </header>
     <p v-if="loading" class="muted">Загрузка…</p>
     <p v-else-if="error" class="err">{{ error }}</p>
@@ -253,33 +265,33 @@ onBeforeUnmount(async () => {
 }
 .public-fs-btn {
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 500;
   padding: 0.32rem 0.6rem;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: var(--panel, #f8fafc);
-  color: #475569;
+  background: var(--surface-2);
+  color: var(--text-3);
   cursor: pointer;
   flex-shrink: 0;
   margin-left: auto;
 }
 .public-fs-btn:hover {
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent, #2563eb);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 .public-fs-btn[aria-pressed='true'] {
-  background: rgba(37, 99, 235, 0.1);
-  border-color: rgba(37, 99, 235, 0.42);
-  color: var(--accent, #2563eb);
+  background: var(--accent-subtle-hover);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 .brand {
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
 }
 .title-input {
   width: 100%;
-  font-size: 1.15rem;
+  font-size: var(--fs-lg);
   font-weight: 650;
   padding: 0.38rem 0;
   margin-bottom: 0.35rem;
@@ -292,6 +304,6 @@ onBeforeUnmount(async () => {
   margin: 0 0 0.75rem;
 }
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 </style>

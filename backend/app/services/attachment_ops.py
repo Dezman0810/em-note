@@ -1,19 +1,54 @@
+import asyncio
 import uuid
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.note_attachment import NoteAttachment
+from app.utils.http_cache import IMMUTABLE_CACHE_CONTROL, etag_matches, make_etag
 
 _MAX_READ_CHUNK = 1024 * 1024
 
 
-def ensure_attachments_dir() -> Path:
+def _ensure_attachments_dir_blocking() -> Path:
     p = Path(settings.attachments_dir)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+async def ensure_attachments_dir() -> Path:
+    return await asyncio.to_thread(_ensure_attachments_dir_blocking)
+
+
+async def remove_attachment_file(path: Path) -> None:
+    """Удаление файла с диска вне event loop."""
+    await asyncio.to_thread(path.unlink, missing_ok=True)
+
+
+async def attachment_file_exists(path: Path) -> bool:
+    return await asyncio.to_thread(path.is_file)
+
+
+def attachment_file_response(
+    row: NoteAttachment, path: Path, if_none_match: str | None
+) -> Response:
+    """Отдача файла с длинным кешем и 304 по If-None-Match.
+
+    Содержимое вложения неизменяемо: storage_key уникален, файл не перезаписывается.
+    """
+    etag = make_etag(row.id, row.storage_key, row.size_bytes, row.created_at)
+    headers = {"Cache-Control": IMMUTABLE_CACHE_CONTROL, "ETag": etag}
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return FileResponse(
+        path,
+        media_type=row.content_type or "application/octet-stream",
+        filename=row.original_filename or "download",
+        headers=headers,
+    )
 
 
 def safe_attachment_filename(name: str) -> str:
@@ -32,13 +67,15 @@ async def create_attachment_for_note(
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No filename")
 
-    base_dir = ensure_attachments_dir()
+    base_dir = await ensure_attachments_dir()
     storage_key = str(uuid.uuid4())
     dest = base_dir / storage_key
 
     total = 0
     try:
-        with dest.open("wb") as out:
+        # open/write/close — блокирующие вызовы, каждый уходит в поток.
+        handle = await asyncio.to_thread(dest.open, "wb")
+        try:
             while True:
                 chunk = await file.read(_MAX_READ_CHUNK)
                 if not chunk:
@@ -49,12 +86,14 @@ async def create_attachment_for_note(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         detail="File too large",
                     )
-                out.write(chunk)
+                await asyncio.to_thread(handle.write, chunk)
+        finally:
+            await asyncio.to_thread(handle.close)
     except HTTPException:
-        dest.unlink(missing_ok=True)
+        await remove_attachment_file(dest)
         raise
     except OSError:
-        dest.unlink(missing_ok=True)
+        await remove_attachment_file(dest)
         raise HTTPException(status_code=500, detail="Failed to save file")
 
     content_type = file.content_type or "application/octet-stream"

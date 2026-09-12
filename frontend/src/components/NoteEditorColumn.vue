@@ -11,6 +11,7 @@ import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
 import { contentHasAudio, contentHasExcalidraw } from '../utils/tiptapContent'
+import { useNoteLayout } from '../composables/useNoteLayout'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { isTagAttachDragTypes, readDroppedTagIds } from '../utils/dndTags'
 
@@ -24,6 +25,7 @@ const emit = defineEmits<{ refresh: [] }>()
 
 const router = useRouter()
 const auth = useAuthStore()
+const { innerScroll } = useNoteLayout()
 
 const note = ref<Note | null>(null)
 const title = ref('')
@@ -40,7 +42,56 @@ const publicShareExpanded = ref(false)
 const emailSharesExpanded = ref(false)
 /** Запрос заметки с API; при переключении не скрываем редактор целиком */
 const fetching = ref(false)
+/** Полоска сверху: только если загрузка затянулась, чтобы быстрый клик не мигал. */
+const showFetchProgress = ref(false)
+/** Плавная смена тела заметки: старая остаётся на экране, затем короткая смена прозрачности. */
+const bodySwap = ref<'in' | 'out'>('in')
 let loadGen = 0
+let fetchProgressTimer: ReturnType<typeof setTimeout> | null = null
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function beginFetchVisual() {
+  showFetchProgress.value = false
+  if (fetchProgressTimer) clearTimeout(fetchProgressTimer)
+  fetchProgressTimer = setTimeout(() => {
+    fetchProgressTimer = null
+    showFetchProgress.value = true
+  }, 160)
+}
+
+function endFetchVisual() {
+  if (fetchProgressTimer) {
+    clearTimeout(fetchProgressTimer)
+    fetchProgressTimer = null
+  }
+  showFetchProgress.value = false
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Evernote-подобный обмен: пока сеть отвечает, на экране предыдущая заметка.
+ * Быстрый ответ — почти без анимации. Долгий — тонкая полоска и короткая смена.
+ */
+async function revealLoadedNote(elapsedMs: number, hadPrevious: boolean, apply: () => void) {
+  if (prefersReducedMotion() || !hadPrevious || elapsedMs < 110) {
+    apply()
+    bodySwap.value = 'in'
+    return
+  }
+  bodySwap.value = 'out'
+  await waitMs(elapsedMs > 450 ? 140 : 90)
+  apply()
+  await nextTick()
+  requestAnimationFrame(() => {
+    bodySwap.value = 'in'
+  })
+}
 const saving = ref(false)
 const error = ref('')
 const autoSaveOk = ref(false)
@@ -441,59 +492,68 @@ async function clearReminderQuick() {
   await updateReminderAt(null)
 }
 
-/** Системные метки по содержимому / полям заметки (владелец, не корзина). */
-async function syncSystemTag(tagName: string, shouldAttach: boolean) {
-  if (!note.value || !isOwner.value || !noteBodyEditable.value) return
+/**
+ * Системные метки по содержимому / полям заметки (владелец, не корзина).
+ * Возвращает true, если метка реально прикреплена или снята: `syncAutoTags`
+ * собирает результаты и просит обновить список один раз, а не после каждой метки.
+ */
+async function syncSystemTag(tagName: string, shouldAttach: boolean): Promise<boolean> {
+  if (!note.value || !isOwner.value || !noteBodyEditable.value) return false
   let tag = tags.value.find((t) => t.name === tagName)
   if (shouldAttach && !tag) {
     try {
       tag = await tagsApi.create({ name: tagName })
       tags.value = await tagsApi.list()
     } catch {
-      return
+      return false
     }
   }
-  if (!tag) return
+  if (!tag) return false
   const attached = note.value.tag_ids.includes(tag.id)
   try {
     if (shouldAttach && !attached) {
       note.value = await notesApi.attachTag(note.value.id, tag.id)
-      emitRefresh()
-    } else if (!shouldAttach && attached) {
+      return true
+    }
+    if (!shouldAttach && attached) {
       note.value = await notesApi.detachTag(note.value.id, tag.id)
-      emitRefresh()
+      return true
     }
   } catch {
     /* не блокируем сохранение текста */
   }
+  return false
 }
 
 async function syncSchemaTag() {
-  await syncSystemTag(SCHEMA_TAG_NAME, contentHasExcalidraw(contentJson.value))
+  return syncSystemTag(SCHEMA_TAG_NAME, contentHasExcalidraw(contentJson.value))
 }
 
 async function syncReminderTag() {
-  await syncSystemTag(REMINDER_TAG_NAME, !!note.value?.reminder_at)
+  return syncSystemTag(REMINDER_TAG_NAME, !!note.value?.reminder_at)
 }
 
 async function syncAudioTag() {
-  await syncSystemTag(AUDIO_TAG_NAME, contentHasAudio(contentJson.value))
+  return syncSystemTag(AUDIO_TAG_NAME, contentHasAudio(contentJson.value))
 }
 
 async function syncPublicLinkTag() {
-  await syncSystemTag(PUBLIC_LINK_TAG_NAME, !!publicLink.value)
+  return syncSystemTag(PUBLIC_LINK_TAG_NAME, !!publicLink.value)
 }
 
 async function syncEmailShareTag() {
-  await syncSystemTag(EMAIL_SHARE_TAG_NAME, shares.value.length > 0)
+  return syncSystemTag(EMAIL_SHARE_TAG_NAME, shares.value.length > 0)
 }
 
 async function syncAutoTags() {
-  await syncSchemaTag()
-  await syncReminderTag()
-  await syncAudioTag()
-  await syncPublicLinkTag()
-  await syncEmailShareTag()
+  const changed = [
+    await syncSchemaTag(),
+    await syncReminderTag(),
+    await syncAudioTag(),
+    await syncPublicLinkTag(),
+    await syncEmailShareTag(),
+  ].some(Boolean)
+  if (changed) emitRefresh()
 }
 
 function shareRecipientLabel(s: NoteShare): string {
@@ -612,18 +672,26 @@ async function load() {
   const gen = ++loadGen
   autoSaveOk.value = false
   fetching.value = true
+  beginFetchVisual()
   error.value = ''
   mailSendHistory.value = []
   mailHistoryFetchError.value = ''
   const requestedId = props.noteId
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+  const hadPrevious = !!note.value
   try {
     const [n, allTags] = await Promise.all([notesApi.get(requestedId), tagsApi.list()])
     if (gen !== loadGen || requestedId !== props.noteId) return
-    note.value = n
-    title.value = n.title
-    contentJson.value = n.content_json || '{}'
-    tags.value = allTags
-    tagQuery.value = ''
+    const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt
+    await revealLoadedNote(elapsed, hadPrevious, () => {
+      if (gen !== loadGen) return
+      note.value = n
+      title.value = n.title
+      contentJson.value = n.content_json || '{}'
+      tags.value = allTags
+      tagQuery.value = ''
+    })
+    if (gen !== loadGen || requestedId !== props.noteId) return
     const amOwner = !!(auth.user && n.owner_id === auth.user.id)
     shares.value = amOwner ? await sharesApi.list(n.id) : []
     publicLink.value = null
@@ -652,9 +720,11 @@ async function load() {
     note.value = null
     mailSendHistory.value = []
     mailHistoryFetchError.value = ''
+    bodySwap.value = 'in'
   } finally {
     if (gen === loadGen) {
       fetching.value = false
+      endFetchVisual()
       await nextTick()
       syncLastSavedFromEditor()
       autoSaveOk.value = true
@@ -1193,6 +1263,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(async () => {
+  endFetchVisual()
   unbindReminderPopoverListeners()
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('keydown', onEditorFocusKeydown)
@@ -1212,6 +1283,8 @@ watch(
       title.value = ''
       contentJson.value = '{}'
       fetching.value = false
+      endFetchVisual()
+      bodySwap.value = 'in'
       error.value = ''
       autoSaveOk.value = false
       editorFocusMode.value = false
@@ -1238,9 +1311,17 @@ watch(
 <template>
   <div
     class="editor-column"
-    :class="{ 'editor-column--focus': editorFocusMode }"
+    :class="{ 'editor-column--focus': editorFocusMode, 'editor-column--fit': innerScroll }"
     @keydown="onEditorColumnKeydown"
   >
+    <div
+      class="note-progress"
+      :class="{ 'note-progress--on': showFetchProgress }"
+      aria-hidden="true"
+    >
+      <span class="note-progress-bar" />
+    </div>
+    <p v-if="showFetchProgress" class="sr-only" aria-live="polite">Загрузка заметки</p>
     <template v-if="!noteId">
       <div class="editor-placeholder">
         <p class="ph-title">Заметка не выбрана</p>
@@ -1313,16 +1394,15 @@ watch(
           </template>
         </div>
         <div
-          v-if="(fetching && note) || (saving && !isTrashed) || (isOwner && !isTrashed)"
+          v-if="(saving && !isTrashed) || (isOwner && !isTrashed)"
           class="bar-tail"
         >
           <div
-            v-if="(fetching && note) || (saving && !isTrashed)"
+            v-if="saving && !isTrashed"
             class="bar-status"
             aria-live="polite"
           >
-            <span v-if="fetching && note" class="save-indicator muted">Загрузка заметки…</span>
-            <span v-if="saving && !isTrashed" class="save-indicator muted">Сохранение…</span>
+            <span class="save-indicator muted">Сохранение…</span>
           </div>
           <button
             v-if="isOwner && !isTrashed"
@@ -1340,10 +1420,16 @@ watch(
       <p v-else-if="sharedReadOnlyHint" class="readonly-share-hint muted small">Только чтение</p>
       <p v-if="error" class="err">{{ error }}</p>
       <template v-if="fetching && !note">
-        <p class="muted load-hint-editor">Загрузка…</p>
+        <div class="editor-main editor-skeleton" aria-hidden="true">
+          <div class="skel skel-title" />
+          <div class="skel skel-line" />
+          <div class="skel skel-line skel-line--short" />
+          <div class="skel skel-block" />
+        </div>
       </template>
       <template v-else-if="note">
-        <div class="editor-main" :class="{ 'editor-fetching': fetching }">
+        <div class="editor-main" :class="{ 'editor-swap-out': bodySwap === 'out' }">
+        <div class="note-meta">
         <input
           v-model="title"
           class="title-input"
@@ -1466,12 +1552,16 @@ watch(
             </span>
           </div>
         </div>
+        </div>
 
+        <div class="note-body">
         <NoteEditor
+          :key="note?.id ?? 'empty'"
           v-model:contentJson="contentJson"
           :editable="noteBodyEditable"
           :note-id="note?.id ?? null"
         />
+        </div>
 
         <section v-if="isOwner && !isTrashed" class="share-hub share-hub--after-editor" aria-label="Обмен и доступ">
           <div class="share-hub-toolbar">
@@ -1676,6 +1766,7 @@ watch(
 
 <style scoped>
 .editor-column {
+  position: relative;
   min-width: 0;
   flex: 1;
   display: flex;
@@ -1684,6 +1775,50 @@ watch(
   background: var(--bg);
   overflow-y: auto;
   max-height: calc(100vh - 52px);
+}
+.editor-column--fit {
+  overflow: hidden;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  padding-bottom: 0.7rem;
+}
+.note-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 8;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.note-progress--on {
+  opacity: 1;
+}
+.note-progress-bar {
+  display: block;
+  height: 100%;
+  width: 36%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translateX(-120%);
+}
+.note-progress--on .note-progress-bar {
+  animation: note-progress-slide 1.05s var(--ease) infinite;
+}
+@keyframes note-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  60% {
+    transform: translateX(180%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
 }
 .editor-column--focus {
   position: fixed;
@@ -1695,25 +1830,28 @@ watch(
   height: 100dvh;
   overflow-y: auto;
   box-sizing: border-box;
-  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.14);
+  box-shadow: -12px 0 40px var(--shadow-tint);
   padding: max(0.65rem, env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px))
     calc(1.5rem + env(safe-area-inset-bottom, 0px)) max(1rem, env(safe-area-inset-left, 0px));
 }
+.editor-column--focus.editor-column--fit {
+  overflow: hidden;
+}
 .btn-editor-focus {
   font: inherit;
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   padding: 0.28rem 0.55rem;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--panel);
-  color: #475569;
+  color: var(--text-3);
   cursor: pointer;
   flex-shrink: 0;
 }
 .btn-editor-focus:hover {
-  border-color: rgba(37, 99, 235, 0.35);
-  color: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 .bar-note-nav {
   display: inline-flex;
@@ -1731,27 +1869,27 @@ watch(
   min-width: 13ch;
   text-align: center;
   white-space: nowrap;
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-variant-numeric: tabular-nums;
-  color: #64748b;
+  color: var(--text-4);
   padding: 0 0.15rem;
   user-select: none;
 }
 .btn-note-nav {
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   line-height: 1;
   min-width: 1.85rem;
   padding: 0.26rem 0.35rem;
   border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
-  color: #475569;
+  color: var(--text-3);
   cursor: pointer;
 }
 .btn-note-nav:hover:not(:disabled) {
   background: var(--sidebar-hover);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .btn-note-nav:disabled {
   opacity: 0.35;
@@ -1769,6 +1907,11 @@ watch(
     padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
     padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
     padding-bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  }
+  .editor-column--fit {
+    min-height: 0;
+    height: 100%;
+    padding-bottom: calc(0.7rem + env(safe-area-inset-bottom, 0px));
   }
   .editor-column--focus {
     min-height: 100dvh;
@@ -1788,40 +1931,118 @@ watch(
 }
 .ph-title {
   margin: 0 0 0.35rem;
-  font-size: 0.9rem;
+  font-size: var(--fs-md);
   font-weight: 600;
-  color: #374151;
+  color: var(--text-2);
 }
 .ph-hint {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   max-width: 260px;
-}
-.load-hint-editor {
-  margin: 1rem 0;
-  font-size: 0.88rem;
 }
 .editor-main {
   min-width: 0;
+  transition: opacity var(--dur-slow) var(--ease);
 }
-.editor-fetching {
-  opacity: 0.55;
+.editor-column--fit .editor-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-column--fit .bar,
+.editor-column--fit .note-meta,
+.editor-column--fit .share-hub,
+.editor-column--fit .trash-banner,
+.editor-column--fit .readonly-share-hint,
+.editor-column--fit .err {
+  flex-shrink: 0;
+}
+.editor-column--fit .note-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-column--fit .share-hub--after-editor {
+  margin-top: 0.65rem;
+}
+.editor-column--fit .share-hub-drop {
+  max-height: 28vh;
+  overflow-y: auto;
+}
+.editor-swap-out {
+  opacity: 0;
   pointer-events: none;
-  user-select: none;
-  transition: opacity 0.12s ease;
+}
+.editor-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding-top: 0.15rem;
+}
+.skel {
+  border-radius: var(--radius-sm, 6px);
+  background: linear-gradient(
+    90deg,
+    var(--surface-3) 0%,
+    var(--surface-2) 45%,
+    var(--surface-3) 90%
+  );
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+.skel-title {
+  height: 1.7rem;
+  width: min(18rem, 70%);
+}
+.skel-line {
+  height: 0.7rem;
+  width: 92%;
+}
+.skel-line--short {
+  width: 58%;
+}
+.skel-block {
+  height: 9rem;
+  width: 100%;
+  margin-top: 0.4rem;
+}
+@keyframes skel-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .editor-main,
+  .note-progress {
+    transition: none;
+  }
+  .note-progress--on .note-progress-bar,
+  .skel {
+    animation: none;
+  }
+  .note-progress--on .note-progress-bar {
+    width: 100%;
+    transform: none;
+    opacity: 0.65;
+  }
 }
 .trash-banner {
-  background: rgba(185, 28, 28, 0.08);
-  border: 1px solid rgba(185, 28, 28, 0.25);
-  color: var(--danger);
+  background: var(--danger-subtle);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
   padding: 0.55rem 0.75rem;
   border-radius: 8px;
   margin-bottom: 0.75rem;
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
 }
 .readonly-share-hint {
   margin: -0.2rem 0 0.6rem;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   letter-spacing: 0.02em;
 }
 .note-dates {
@@ -1829,13 +2050,13 @@ watch(
 }
 .bar .btn.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   border: none;
   padding: 0.32rem 0.55rem;
   border-radius: 6px;
   cursor: pointer;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .folder-reminder-line {
   display: flex;
@@ -1854,7 +2075,7 @@ watch(
   min-width: 0;
 }
 .folder-lab {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 .folder-select {
@@ -1862,7 +2083,7 @@ watch(
   border-radius: 8px;
   border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
   background: var(--panel);
   color: inherit;
   min-width: 140px;
@@ -1885,7 +2106,7 @@ watch(
 }
 .reminder-readonly-sum {
   display: inline-block;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .reminder-clear-x {
   flex: 0 0 auto;
@@ -1899,17 +2120,17 @@ watch(
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: #94a3b8;
-  font-size: 1.1rem;
+  color: var(--text-4);
+  font-size: var(--fs-lg);
   line-height: 1;
   cursor: pointer;
   transition:
-    color 0.12s ease,
-    background 0.12s ease;
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
 .reminder-clear-x:hover:not(:disabled) {
-  color: var(--danger);
-  background: rgba(220, 38, 38, 0.08);
+  color: var(--danger-text);
+  background: var(--danger-subtle);
 }
 .reminder-clear-x:disabled {
   opacity: 0.45;
@@ -1924,24 +2145,24 @@ watch(
   border: 1px solid var(--border);
   background: var(--panel);
   font: inherit;
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #475569;
+  color: var(--text-3);
   cursor: pointer;
   max-width: 11rem;
   transition:
-    border-color 0.12s ease,
-    background 0.12s ease;
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
 .reminder-compact-btn:hover {
-  border-color: rgba(37, 99, 235, 0.3);
+  border-color: var(--accent-border-soft);
   background: var(--list-row-hover);
 }
 .reminder-compact-btn--open {
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: var(--accent-border);
 }
 .reminder-ico {
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
   opacity: 0.85;
 }
@@ -1950,11 +2171,11 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .reminder-compact-ph {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
 }
 .reminder-time-select {
   font-variant-numeric: tabular-nums;
@@ -1968,25 +2189,25 @@ watch(
   box-sizing: border-box;
   padding: 0.65rem 0.75rem 0.7rem;
   border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-1) 0%, var(--surface-2) 100%);
   box-shadow:
-    0 12px 32px rgba(15, 23, 42, 0.12),
-    0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+    0 12px 32px var(--shadow-tint),
+    0 0 0 1px var(--inset-highlight) inset;
   backdrop-filter: blur(8px);
 }
 .reminder-popover-title {
   margin: 0 0 0.5rem;
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
   font-weight: 650;
-  color: #1e293b;
+  color: var(--text-2);
   letter-spacing: -0.01em;
 }
 .reminder-popover-label {
   display: block;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #64748b;
+  color: var(--text-4);
   margin-top: 0.35rem;
   margin-bottom: 0.18rem;
 }
@@ -2000,14 +2221,14 @@ watch(
   border-radius: 8px;
   border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.78rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
   color: inherit;
 }
 .reminder-popover-input:focus {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 .reminder-popover-err {
   margin: 0.4rem 0 0;
@@ -2019,7 +2240,7 @@ watch(
   gap: 0.35rem;
   margin-top: 0.65rem;
   padding-top: 0.45rem;
-  border-top: 1px solid rgba(148, 163, 184, 0.25);
+  border-top: 1px solid var(--border-subtle);
 }
 .reminder-popover-btn {
   padding: 0.32rem 0.6rem;
@@ -2027,9 +2248,9 @@ watch(
   border: 1px solid var(--border);
   background: var(--panel);
   font: inherit;
-  font-size: 0.76rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
-  color: #475569;
+  color: var(--text-3);
   cursor: pointer;
 }
 .reminder-popover-btn:disabled {
@@ -2039,20 +2260,20 @@ watch(
 .reminder-popover-btn--primary {
   border: none;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   font-weight: 600;
 }
 .reminder-popover-btn--primary:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 .reminder-popover-btn--danger {
-  border-color: rgba(220, 38, 38, 0.35);
-  color: var(--danger);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
   background: transparent;
 }
 .reminder-popover-btn--danger:hover:not(:disabled) {
   border-color: var(--danger);
-  background: rgba(220, 38, 38, 0.06);
+  background: var(--danger-subtle);
 }
 .bar {
   display: flex;
@@ -2094,26 +2315,26 @@ watch(
   min-width: 0;
 }
 .save-indicator {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .back {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   font-weight: 500;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
 }
 .danger {
   background: transparent;
   border: 1px solid var(--danger);
-  color: var(--danger);
+  color: var(--danger-text);
   padding: 0.32rem 0.55rem;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .title-input {
   width: 100%;
-  font-size: 1.15rem;
+  font-size: var(--fs-lg);
   font-weight: 650;
   padding: 0.38rem 0;
   margin-bottom: 0.35rem;
@@ -2130,7 +2351,7 @@ watch(
   margin-bottom: 0.55rem;
 }
 .title-extras.tags-block.tags-block--drop {
-  outline: 2px dashed rgba(37, 99, 235, 0.55);
+  outline: 2px dashed var(--accent-border-strong);
   outline-offset: 3px;
   border-radius: 12px;
 }
@@ -2157,7 +2378,7 @@ watch(
   border-radius: 999px;
 }
 .chip-x-inline {
-  font-size: 0.92rem;
+  font-size: var(--fs-md);
   line-height: 1;
 }
 .tag-input-compact {
@@ -2166,24 +2387,24 @@ watch(
   padding: 0.14rem 0.5rem;
   min-height: 1.55rem;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.72rem;
-  background: #fff;
+  font-size: var(--fs-2xs);
+  background: var(--surface-1);
   color: inherit;
-  line-height: 1.3;
+  line-height: var(--lh-snug);
 }
 .tag-input-compact::placeholder {
-  color: #94a3b8;
-  font-size: 0.72rem;
+  color: var(--text-4);
+  font-size: var(--fs-2xs);
 }
 .tag-input-compact:hover {
-  border-color: rgba(100, 116, 139, 0.5);
+  border-color: var(--border-strong);
 }
 .tag-input-compact:focus {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 .suggestions-pop {
   left: 0;
@@ -2195,7 +2416,7 @@ watch(
 }
 .suggestion-compact {
   padding: 0.32rem 0.48rem;
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
 }
 .tag-chip-readonly {
   cursor: default;
@@ -2208,37 +2429,37 @@ watch(
   border-radius: 12px;
   background: var(--panel);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 4px 12px rgba(15, 23, 42, 0.03);
+    0 1px 2px var(--shadow-tint-weak),
+    0 4px 12px var(--shadow-tint-weak);
 }
 .tags-panel {
-  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%);
+  background: linear-gradient(180deg, var(--surface-1) 0%, var(--surface-2) 100%);
 }
 .panel-head {
   margin-bottom: 0.65rem;
 }
 .panel-head h2 {
   margin: 0 0 0.28rem;
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #64748b;
+  color: var(--text-4);
 }
 .panel > h2 {
   margin: 0 0 0.45rem;
-  font-size: 0.8125rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #334155;
+  color: var(--text-2);
 }
 .share-hub {
   margin-bottom: 1rem;
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: linear-gradient(165deg, rgba(239, 246, 255, 0.55) 0%, rgba(248, 250, 252, 0.98) 48%, #fff 100%);
+  border: 1px solid var(--border);
+  background: linear-gradient(165deg, var(--accent-subtle) 0%, var(--surface-2-translucent) 48%, var(--surface-1) 100%);
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 8px 24px rgba(15, 23, 42, 0.05);
+    0 1px 2px var(--shadow-tint-weak),
+    0 8px 24px var(--shadow-tint-weak);
   overflow: hidden;
 }
 .share-hub-toolbar {
@@ -2254,32 +2475,32 @@ watch(
   gap: 0.4rem;
   padding: 0.38rem 0.75rem;
   border-radius: 10px;
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--accent-border-soft);
+  background: var(--surface-translucent);
   cursor: pointer;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #1e40af;
+  color: var(--accent-text-strong);
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    box-shadow 0.12s ease;
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
 .share-hub-tile:hover {
-  background: #fff;
-  border-color: rgba(37, 99, 235, 0.4);
-  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.12);
+  background: var(--surface-1);
+  border-color: var(--accent-border);
+  box-shadow: 0 1px 4px var(--accent-glow);
 }
 .share-hub-ico {
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
   opacity: 0.92;
 }
 .share-hub-divider {
   width: 1px;
   height: 1.5rem;
-  background: rgba(148, 163, 184, 0.45);
+  background: var(--surface-wash-strong);
   flex-shrink: 0;
 }
 .share-hub-link-line {
@@ -2291,23 +2512,23 @@ watch(
   min-width: 0;
 }
 .share-hub-tile-label {
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #64748b;
+  color: var(--text-4);
 }
 .share-hub-role-pill {
-  font-size: 0.68rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   padding: 0.12rem 0.45rem;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  color: #1d4ed8;
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
 }
 .share-hub-role-pill--email {
-  background: rgba(5, 150, 105, 0.12);
-  color: #047857;
+  background: var(--success-subtle);
+  color: var(--success-strong);
 }
 .share-hub-expand {
   margin-left: auto;
@@ -2320,13 +2541,13 @@ watch(
   background: transparent;
   cursor: pointer;
   font: inherit;
-  font-size: 0.76rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--text-3);
 }
 .share-hub-expand:hover {
-  background: rgba(37, 99, 235, 0.06);
-  color: #1e40af;
+  background: var(--accent-subtle);
+  color: var(--accent-text-strong);
 }
 .share-hub-chevron {
   display: inline-block;
@@ -2335,7 +2556,7 @@ watch(
   border-right: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
   transform: rotate(-45deg);
-  transition: transform 0.15s ease;
+  transition: transform var(--dur-base) var(--ease);
   flex-shrink: 0;
 }
 .share-hub-chevron.open {
@@ -2343,8 +2564,8 @@ watch(
 }
 .share-hub-drop {
   padding: 0 0.75rem 0.65rem;
-  border-top: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.5);
+  border-top: 1px solid var(--border-solid);
+  background: var(--surface-veil);
 }
 .share-hub-subtoggle {
   display: flex;
@@ -2353,26 +2574,26 @@ watch(
   width: 100%;
   padding: 0.5rem 0.75rem;
   border: none;
-  border-top: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(248, 250, 252, 0.75);
+  border-top: 1px solid var(--border-solid);
+  background: var(--surface-2-translucent);
   cursor: pointer;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #334155;
+  color: var(--text-2);
   text-align: left;
 }
 .share-hub-subtoggle:hover {
-  background: rgba(241, 245, 249, 0.95);
+  background: var(--surface-3);
 }
 .share-hub-count {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   padding: 0.1rem 0.45rem;
   border-radius: 999px;
-  background: rgba(100, 116, 139, 0.15);
-  color: #475569;
+  background: var(--surface-wash);
+  color: var(--text-3);
 }
 .share-hub-drop-email {
   padding: 0.65rem 0.75rem 0.75rem;
@@ -2389,40 +2610,40 @@ watch(
   min-width: 0;
   padding: 0.4rem 0.55rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.78rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
   color: inherit;
 }
 .share-input:focus {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 .share-select {
   padding: 0.4rem 0.45rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.78rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
   color: inherit;
 }
 .share-hub-btn-secondary {
   padding: 0.4rem 0.7rem;
   border-radius: 10px;
-  border: 1px solid rgba(37, 99, 235, 0.28);
-  background: #fff;
-  color: #1d4ed8;
+  border: 1px solid var(--accent-border-soft);
+  background: var(--surface-1);
+  color: var(--accent-text);
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
 .share-hub-btn-secondary:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.06);
+  background: var(--accent-subtle);
 }
 .share-hub-btn-secondary:disabled {
   opacity: 0.55;
@@ -2443,9 +2664,9 @@ watch(
   gap: 0.45rem 0.65rem;
   padding: 0.4rem 0.5rem;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  font-size: 0.78rem;
+  background: var(--surface-translucent);
+  border: 1px solid var(--border-solid);
+  font-size: var(--fs-xs);
 }
 .share-email-who {
   flex: 1 1 8rem;
@@ -2457,13 +2678,13 @@ watch(
   min-width: 8.5rem;
   padding: 0.28rem 0.45rem;
   border-radius: 7px;
-  border: 1px solid rgba(203, 213, 225, 0.95);
-  font-size: 0.78rem;
-  background: #fff;
-  color: #334155;
+  border: 1px solid var(--border-solid);
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
+  color: var(--text-2);
 }
 .share-access-select:focus {
-  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline: 2px solid var(--accent-border);
   outline-offset: 1px;
 }
 .share-remove-btn {
@@ -2481,9 +2702,9 @@ watch(
   gap: 0.5rem;
   cursor: pointer;
   user-select: none;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #334155;
+  color: var(--text-2);
 }
 .public-switch input {
   position: absolute;
@@ -2495,9 +2716,9 @@ watch(
   width: 2.5rem;
   height: 1.35rem;
   border-radius: 999px;
-  background: #cbd5e1;
+  background: var(--border-solid);
   position: relative;
-  transition: background 0.15s ease;
+  transition: background var(--dur-base) var(--ease);
   flex-shrink: 0;
 }
 .public-switch-ui::after {
@@ -2508,12 +2729,12 @@ watch(
   width: calc(1.35rem - 4px);
   height: calc(1.35rem - 4px);
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  transition: transform 0.15s ease;
+  background: var(--surface-1);
+  box-shadow: 0 1px 2px var(--shadow-tint);
+  transition: transform var(--dur-base) var(--ease);
 }
 .public-switch input:checked + .public-switch-ui {
-  background: #2563eb;
+  background: var(--accent);
 }
 .public-switch input:checked + .public-switch-ui::after {
   transform: translateX(1.12rem);
@@ -2533,9 +2754,9 @@ watch(
   margin: 0.65rem 0 0.75rem;
 }
 .mode-label {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--text-3);
 }
 .mode-seg {
   display: inline-flex;
@@ -2549,17 +2770,17 @@ watch(
   margin: 0;
   padding: 0.4rem 0.85rem;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
   background: transparent;
-  color: #475569;
+  color: var(--text-3);
 }
 .mode-btn:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.06);
+  background: var(--accent-subtle);
 }
 .mode-btn.active {
-  background: rgba(37, 99, 235, 0.14);
-  color: #1d4ed8;
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .mode-btn:disabled {
@@ -2579,14 +2800,14 @@ watch(
   padding: 0.45rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--border);
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-family: ui-monospace, monospace;
-  background: #fff;
+  background: var(--surface-1);
   color: inherit;
 }
 .public-regen-hint {
   margin: 0.5rem 0 0;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
 }
 .sr-only {
   position: absolute;
@@ -2600,20 +2821,20 @@ watch(
 }
 .panel-desc {
   margin: 0;
-  font-size: 0.72rem;
-  line-height: 1.45;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
   color: var(--text-muted);
 }
 .panel-desc strong {
   font-weight: 600;
-  color: #334155;
+  color: var(--text-2);
 }
 .muted {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
 }
 .small {
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
 }
 .attached-row {
   display: flex;
@@ -2633,17 +2854,20 @@ watch(
   border-radius: 999px;
   font-size: 0.78rem;
 }
+.tag-chip.tag-chip-inline {
+  font-size: 0.72rem;
+}
 .chip-x {
   border: none;
   background: none;
   cursor: pointer;
   padding: 0 0.12rem;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   line-height: 1;
   color: var(--text-muted);
 }
 .chip-x:hover {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .tag-add {
   position: relative;
@@ -2654,25 +2878,25 @@ watch(
   max-width: 320px;
   padding: 0.42rem 0.55rem;
   border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.8rem;
-  background: #fff;
+  font-size: var(--fs-xs);
+  background: var(--surface-1);
   color: inherit;
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
+    border-color var(--dur-base) var(--ease),
+    box-shadow var(--dur-base) var(--ease);
 }
 .tag-input::placeholder {
-  color: #94a3b8;
+  color: var(--text-4);
 }
 .tag-input:hover {
-  border-color: rgba(100, 116, 139, 0.5);
+  border-color: var(--border-strong);
 }
 .tag-input:focus {
   outline: none;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 .suggestions {
   position: absolute;
@@ -2682,12 +2906,12 @@ watch(
   margin: 6px 0 0;
   padding: 0.35rem;
   list-style: none;
-  background: #fff;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow:
-    0 4px 6px rgba(15, 23, 42, 0.04),
-    0 12px 28px rgba(15, 23, 42, 0.1);
+    0 4px 6px var(--shadow-tint-weak),
+    0 12px 28px var(--shadow-tint);
   z-index: 10;
   max-height: 220px;
   overflow-y: auto;
@@ -2695,27 +2919,27 @@ watch(
 .suggestion {
   padding: 0.45rem 0.6rem;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   border-radius: 8px;
-  color: #334155;
+  color: var(--text-2);
 }
 .suggestion:hover,
 .suggestion-active {
-  background: #f1f5f9;
+  background: var(--surface-3);
 }
 .suggestion-create {
   margin-top: 0.15rem;
   padding-top: 0.5rem;
-  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  border-top: 1px solid var(--border-solid);
   display: flex;
   align-items: center;
   gap: 0.4rem;
   font-weight: 500;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .suggestion-create:hover,
 .suggestion-create.suggestion-active {
-  background: rgba(37, 99, 235, 0.06);
+  background: var(--accent-subtle);
 }
 .create-icon {
   display: inline-flex;
@@ -2724,13 +2948,13 @@ watch(
   width: 1.15rem;
   height: 1.15rem;
   border-radius: 6px;
-  background: rgba(37, 99, 235, 0.12);
-  font-size: 0.95rem;
+  background: var(--accent-subtle-hover);
+  font-size: var(--fs-md);
   line-height: 1;
   font-weight: 600;
 }
 .none {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .row {
   display: flex;
@@ -2745,25 +2969,9 @@ watch(
   border: 1px solid var(--border);
   background: var(--panel);
   color: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
-.btn {
-  padding: 0.38rem 0.6rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-  cursor: pointer;
-  color: inherit;
-  font-size: 0.78rem;
-}
-.btn.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: transparent;
-}
-.btn.primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
+/* Базовые `.btn` и его варианты — в assets/ui.css. */
 .shares {
   list-style: none;
   margin: 0.4rem 0 0;
@@ -2776,19 +2984,19 @@ watch(
   display: flex;
   gap: 0.55rem;
   align-items: center;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .linkish {
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
   padding: 0;
   font: inherit;
 }
 .err {
-  color: var(--danger);
-  font-size: 0.8rem;
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
 }
 code {
   font-size: 0.82em;
@@ -2799,29 +3007,32 @@ code {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.35);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
   padding: 1rem;
+  animation: ui-fade-in var(--dur-slow) var(--ease);
 }
 .modal {
-  background: var(--panel);
-  border-radius: 12px;
+  background: var(--surface-overlay);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-xl);
+  color: var(--text-1);
   max-width: 420px;
   width: 100%;
   padding: 1.1rem;
+  animation: ui-pop-in var(--dur-slow) var(--ease);
 }
 .modal h2 {
   margin: 0 0 0.45rem;
-  font-size: 1rem;
+  font-size: var(--fs-base);
 }
 .modal-label {
   display: block;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   font-weight: 500;
   margin-top: 0.55rem;
   margin-bottom: 0.22rem;
@@ -2833,7 +3044,7 @@ code {
   border-radius: 8px;
   border: 1px solid var(--border);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
   background: var(--bg);
   color: inherit;
 }
@@ -2852,27 +3063,27 @@ code {
 }
 .share-modal {
   border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--surface-1) 0%, var(--surface-2) 100%);
   box-shadow:
-    0 20px 50px rgba(15, 23, 42, 0.15),
-    0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+    0 20px 50px var(--shadow-tint),
+    0 0 0 1px var(--inset-highlight) inset;
   max-width: 440px;
 }
 .mail-send-history {
   list-style: none;
   margin: 0 0 0.75rem;
   padding: 0.35rem 0 0.65rem;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-  font-size: 0.8rem;
-  line-height: 1.45;
-  color: #475569;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-3);
 }
 .mail-send-history li {
   padding: 0.2rem 0;
 }
 .share-mail-bar {
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   padding: 0.32rem 0.55rem;
 }
 .share-hub-drop .public-mode-row {

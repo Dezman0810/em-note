@@ -1,6 +1,7 @@
+import asyncio
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
-import secrets
 
 import bcrypt
 from jose import JWTError, jwt
@@ -15,12 +16,21 @@ def generate_temporary_password(length: int = 12) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
-def hash_password(password: str) -> str:
+def _hash_password_blocking(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def verify_password(plain: str, hashed: str) -> bool:
+def _verify_password_blocking(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+async def hash_password(password: str) -> str:
+    """bcrypt считается десятки миллисекунд — держим его вне event loop."""
+    return await asyncio.to_thread(_hash_password_blocking, password)
+
+
+async def verify_password(plain: str, hashed: str) -> bool:
+    return await asyncio.to_thread(_verify_password_blocking, plain, hashed)
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:

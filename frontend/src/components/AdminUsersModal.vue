@@ -76,6 +76,25 @@ async function toggleHabits(row: AdminUserRow, ev: Event) {
   }
 }
 
+async function toggleGrammar(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':grammar'
+  err.value = ''
+  try {
+    await adminApi.setCanUseGrammar(row.id, next)
+    row.can_use_grammar = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
 function close() {
   revealed.value = null
   emit('update:open', false)
@@ -120,8 +139,9 @@ async function copyRevealed() {
           <button type="button" class="admin-close" aria-label="Закрыть" @click="close">×</button>
         </div>
         <p class="muted small admin-lead">
-          Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт.
-          Старый пароль узнать нельзя — он не хранится. Можно только сбросить и выдать новый.
+          Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт;
+          без «грамматики» в заметке нет проверки орфографии. Старый пароль узнать нельзя — он не
+          хранится. Можно только сбросить и выдать новый.
         </p>
         <div v-if="revealed" class="admin-revealed">
           <p>
@@ -141,6 +161,7 @@ async function copyRevealed() {
                 <th>Регистрация</th>
                 <th>Новые заметки</th>
                 <th>Привычки</th>
+                <th>Грамматика</th>
                 <th>Сбросить пароль</th>
               </tr>
             </thead>
@@ -167,6 +188,15 @@ async function copyRevealed() {
                     @change="toggleHabits(u, $event)"
                   />
                 </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_use_grammar"
+                    :disabled="pending === u.id + ':grammar'"
+                    :aria-label="`Грамматика для ${u.email}`"
+                    @change="toggleGrammar(u, $event)"
+                  />
+                </td>
                 <td class="admin-acts">
                   <button
                     type="button"
@@ -191,23 +221,26 @@ async function copyRevealed() {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--scrim);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding: 1.5rem 1rem;
   box-sizing: border-box;
   overflow-y: auto;
+  animation: ui-fade-in var(--dur-slow) var(--ease);
 }
 .admin-modal {
-  width: min(940px, 100%);
+  width: min(1080px, 100%);
   margin-top: min(8vh, 4rem);
-  border-radius: var(--radius-lg, 14px);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow-panel, 0 8px 40px rgba(15, 23, 42, 0.12));
+  box-shadow: var(--shadow-xl);
   padding: 1rem 1.1rem 1.15rem;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
+  color: var(--text-1);
+  animation: ui-pop-in var(--dur-slow) var(--ease);
 }
 .admin-modal-head {
   display: flex;
@@ -218,14 +251,14 @@ async function copyRevealed() {
 }
 .admin-modal-head h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: var(--fs-base);
   font-weight: 650;
-  color: var(--note-list-title-active, #0f172a);
+  color: var(--text-1);
 }
 .admin-close {
   border: none;
   background: transparent;
-  font-size: 1.35rem;
+  font-size: var(--fs-xl);
   line-height: 1;
   cursor: pointer;
   color: var(--text-muted);
@@ -238,7 +271,7 @@ async function copyRevealed() {
   margin: 0 0 0.75rem;
 }
 .err {
-  color: var(--danger);
+  color: var(--danger-text);
   margin: 0 0 0.5rem;
 }
 .admin-table-wrap {
@@ -249,7 +282,7 @@ async function copyRevealed() {
 .admin-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .admin-table th,
 .admin-table td {
@@ -259,7 +292,7 @@ async function copyRevealed() {
   vertical-align: middle;
 }
 .admin-table th {
-  font-size: 0.65rem;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--note-list-meta);
@@ -271,7 +304,7 @@ async function copyRevealed() {
 }
 .admin-date {
   white-space: nowrap;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .admin-chk {
   text-align: center;
@@ -287,11 +320,11 @@ async function copyRevealed() {
 .admin-reset,
 .admin-copy {
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   padding: 0.22rem 0.45rem;
   border-radius: 6px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface-1);
   cursor: pointer;
 }
 .admin-reset:disabled {
@@ -302,9 +335,9 @@ async function copyRevealed() {
   margin: 0 0 0.75rem;
   padding: 0.65rem 0.75rem;
   border-radius: 10px;
-  border: 1px solid #84cc16;
-  background: #f7fee7;
-  font-size: 0.8rem;
+  border: 1px solid var(--positive-border);
+  background: var(--positive-subtle);
+  font-size: var(--fs-xs);
 }
 .admin-revealed p {
   margin: 0 0 0.4rem;
@@ -314,8 +347,8 @@ async function copyRevealed() {
   margin-right: 0.45rem;
   padding: 0.2rem 0.4rem;
   border-radius: 6px;
-  background: #fff;
-  font-size: 0.92rem;
+  background: var(--surface-1);
+  font-size: var(--fs-md);
   letter-spacing: 0.02em;
 }
 </style>

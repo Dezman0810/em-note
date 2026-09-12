@@ -9,9 +9,7 @@ import {
   ref,
   watch,
 } from 'vue'
-import { createRoot } from 'react-dom/client'
-import * as React from 'react'
-import { ExcalidrawApp } from './ExcalidrawApp'
+import type { Root } from 'react-dom/client'
 
 const props = defineProps(nodeViewProps)
 
@@ -34,7 +32,9 @@ const fullscreenShellRef = ref<HTMLElement | null>(null)
 const shellInNativeFullscreen = ref(false)
 const fullscreenFallback = ref(false)
 const sceneKey = ref(0)
-let reactRoot: ReturnType<typeof createRoot> | null = null
+let reactRoot: Root | null = null
+/** Каждая попытка монтирования получает номер: пока грузится чанк, схему могли свернуть. */
+let mountGen = 0
 
 /** Почти на весь экран в окне браузера: перекрывает и шапку приложения (поиск, админка). */
 const noteWideUi = ref(false)
@@ -138,8 +138,19 @@ watch(
   { immediate: true }
 )
 
-function mountReact() {
+/**
+ * React, react-dom и @excalidraw грузятся отдельным чанком при первом раскрытии схемы:
+ * заметкам без схем этот код не нужен, а он самый тяжёлый в приложении.
+ */
+async function mountReact() {
   if (!hostRef.value) return
+  const gen = ++mountGen
+  const [{ createRoot }, React, { ExcalidrawApp }] = await Promise.all([
+    import('react-dom/client'),
+    import('react'),
+    import('./ExcalidrawApp'),
+  ])
+  if (gen !== mountGen || !hostRef.value) return
   if (reactRoot) {
     reactRoot.unmount()
     reactRoot = null
@@ -156,6 +167,7 @@ function mountReact() {
 }
 
 function unmountReact() {
+  mountGen++
   if (reactRoot) {
     reactRoot.unmount()
     reactRoot = null
@@ -167,7 +179,7 @@ watch(
   async (open) => {
     await nextTick()
     if (open) {
-      mountReact()
+      void mountReact()
     } else {
       unmountReact()
       noteWideUi.value = false
@@ -187,14 +199,14 @@ watch(
   () => sceneKey.value,
   () => {
     if (expanded.value && hostRef.value) {
-      mountReact()
+      void mountReact()
     }
   }
 )
 
 watch(excalReadOnly, () => {
   if (expanded.value && hostRef.value) {
-    mountReact()
+    void mountReact()
   }
 })
 
@@ -392,7 +404,7 @@ function onImportFile(ev: Event) {
   gap: 0.5rem 0.75rem;
   padding: 0.5rem 0.65rem;
   border-bottom: 1px solid var(--border);
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
 }
 .excal-toggle {
   padding: 0.25rem 0.5rem;
@@ -426,7 +438,7 @@ function onImportFile(ev: Event) {
   position: fixed;
   inset: 0;
   z-index: 10000;
-  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.45);
+  box-shadow: 0 0 0 9999px var(--shadow-tint-strong);
 }
 .excal-fullscreen-shell--note-wide {
   position: fixed;
@@ -434,7 +446,7 @@ function onImportFile(ev: Event) {
   max-height: none !important;
   margin: 0;
   flex: unset;
-  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.28);
+  box-shadow: 0 0 0 9999px var(--shadow-tint-strong);
   border-radius: 0;
 }
 .excal-innerbar {
@@ -457,12 +469,12 @@ function onImportFile(ev: Event) {
   background: var(--bg);
   cursor: pointer;
   font: inherit;
-  font-size: 0.76rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
 }
 .excal-fs-btn:hover {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .excal-host :deep(.excal-embed-footer-actions) {
   display: inline-flex;
@@ -473,19 +485,19 @@ function onImportFile(ev: Event) {
 .excal-host :deep(.excal-scroll-schema-btn) {
   padding: 0.32rem 0.65rem;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.55);
-  background: #fff;
-  color: #1e293b;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  color: var(--text-2);
   cursor: pointer;
   font: inherit;
-  font-size: 0.74rem;
+  font-size: var(--fs-2xs);
   font-weight: 500;
   white-space: nowrap;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 1px 2px var(--shadow-tint-weak);
 }
 .excal-host :deep(.excal-scroll-schema-btn:hover) {
-  border-color: rgba(100, 116, 139, 0.65);
-  background: #f8fafc;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 
 .excal-import {
@@ -493,7 +505,7 @@ function onImportFile(ev: Event) {
 }
 .excal-import-btn {
   cursor: pointer;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
 }
 .visually-hidden {

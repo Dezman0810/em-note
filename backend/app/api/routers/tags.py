@@ -1,12 +1,11 @@
-import uuid
+﻿import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, Uuid, column, func, select, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.folder import Folder
 from app.models.note import Note
 from app.models.note_tag import note_tag
 from app.models.note_user_personal_tag import note_user_personal_tag
@@ -14,7 +13,9 @@ from app.models.share import NoteShare
 from app.models.tag import Tag
 from app.models.user import User
 from app.schemas.tag import TagCreate, TagNoteCountRead, TagRead, TagUpdate
+from app.services.folder_access import assert_folders_owned
 from app.services.note_personal_view import folder_exclude_predicate, folder_scope_predicate
+from app.services.tag_ops import recompute_depths, unique_slug
 from app.services.tag_subtree import subtree_tag_ids
 from app.utils.text import slugify
 
@@ -36,7 +37,7 @@ async def _tag_name_taken(
     *,
     exclude_tag_id: uuid.UUID | None,
 ) -> bool:
-    """Дубликат имени среди всех меток пользователя (без учёта регистра)."""
+    """Р”СѓР±Р»РёРєР°С‚ РёРјРµРЅРё СЃСЂРµРґРё РІСЃРµС… РјРµС‚РѕРє РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ (Р±РµР· СѓС‡С‘С‚Р° СЂРµРіРёСЃС‚СЂР°)."""
     norm = name.strip()
     if not norm:
         return False
@@ -47,39 +48,6 @@ async def _tag_name_taken(
     if exclude_tag_id is not None:
         stmt = stmt.where(Tag.id != exclude_tag_id)
     return (await db.execute(stmt)).scalar_one_or_none() is not None
-
-
-async def _unique_slug(
-    db: AsyncSession, user_id: uuid.UUID, parent_id: uuid.UUID | None, base_slug: str
-) -> str:
-    slug = base_slug
-    for _ in range(50):
-        existing = await db.execute(
-            select(Tag.id).where(
-                Tag.user_id == user_id,
-                Tag.parent_id == parent_id,
-                Tag.slug == slug,
-            )
-        )
-        if existing.scalar_one_or_none() is None:
-            return slug
-        slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
-    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Could not allocate unique slug")
-
-
-async def _recompute_depths(db: AsyncSession, tag: Tag) -> None:
-    if tag.parent_id is None:
-        tag.depth = 1
-    else:
-        parent = await db.get(Tag, tag.parent_id)
-        if parent is None or parent.user_id != tag.user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid parent")
-        tag.depth = parent.depth + 1
-    if tag.id is None:
-        return
-    children = await db.execute(select(Tag).where(Tag.parent_id == tag.id))
-    for child in children.scalars().all():
-        await _recompute_depths(db, child)
 
 
 async def _would_create_cycle(db: AsyncSession, tag: Tag, new_parent_id: uuid.UUID) -> bool:
@@ -124,20 +92,11 @@ async def tag_note_counts(
 ) -> list[TagNoteCountRead]:
     raw = folder_id or []
     exclude_raw = exclude_folder_id or []
-    if exclude_raw:
-        for fid in exclude_raw:
-            folder = await db.get(Folder, fid)
-            if folder is None or folder.user_id != user.id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found"
-                )
+    await assert_folders_owned(db, exclude_raw, user.id)
     if unfoldered:
         scope_folder_ids: list[uuid.UUID] | None = None
     elif raw:
-        for fid in raw:
-            folder = await db.get(Folder, fid)
-            if folder is None or folder.user_id != user.id:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+        await assert_folders_owned(db, raw, user.id)
         scope_folder_ids = raw
     else:
         scope_folder_ids = None
@@ -148,32 +107,58 @@ async def tag_note_counts(
     tags_result = await db.execute(select(Tag).where(Tag.user_id == user.id))
     user_tags = list(tags_result.scalars().all())
     user_tags.sort(key=lambda t: (t.depth, t.name))
-    note_scope_sq = scope.subquery()
-    out: list[TagNoteCountRead] = []
-    for tag in user_tags:
-        tree_ids = subtree_tag_ids(tag.id, user_tags)
-        if not tree_ids:
-            out.append(TagNoteCountRead(tag_id=tag.id, count=0))
-            continue
-        canonical = (
-            select(note_tag.c.note_id.label("note_id")).where(
-                note_tag.c.note_id.in_(select(note_scope_sq.c.id)),
-                note_tag.c.note_id.in_(select(Note.id).where(Note.owner_id == user.id)),
-                note_tag.c.tag_id.in_(tree_ids),
+    if not user_tags:
+        return []
+
+    counts = await _subtree_note_counts(db, user.id, user_tags, scope)
+    return [TagNoteCountRead(tag_id=t.id, count=counts.get(t.id, 0)) for t in user_tags]
+
+
+async def _subtree_note_counts(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    user_tags: list[Tag],
+    scope: Select[tuple[uuid.UUID]],
+) -> dict[uuid.UUID, int]:
+    """РћРґРЅРёРј GROUP BY: РґР»СЏ РєР°Р¶РґРѕР№ РјРµС‚РєРё вЂ” С‡РёСЃР»Рѕ Р·Р°РјРµС‚РѕРє РёР· scope РІ РµС‘ РїРѕРґРґРµСЂРµРІРµ.
+
+    РњРµС‚РєР° В«РІРёСЃРёС‚В» РЅР° Р·Р°РјРµС‚РєРµ Р»РёР±Рѕ РєР°РЅРѕРЅРёС‡РµСЃРєРё (note_tags, С‚РѕР»СЊРєРѕ СЃРІРѕРё Р·Р°РјРµС‚РєРё),
+    Р»РёР±Рѕ Р»РёС‡РЅРѕ Сѓ РїРѕР»СѓС‡Р°С‚РµР»СЏ С€Р°СЂРёРЅРіР° (note_user_personal_tags) вЂ” РєР°Рє РІ С„РёР»СЊС‚СЂР°С… СЃРїРёСЃРєР°.
+    РџРѕРґРґРµСЂРµРІСЊСЏ СЂР°СЃРєСЂС‹РІР°СЋС‚СЃСЏ РІ VALUES-С‚Р°Р±Р»РёС†Сѓ (ancestor, descendant).
+    """
+    scope_ids = select(scope.subquery().c.id)
+    canonical = select(
+        note_tag.c.tag_id.label("tag_id"), note_tag.c.note_id.label("note_id")
+    ).where(
+        note_tag.c.note_id.in_(scope_ids),
+        note_tag.c.note_id.in_(select(Note.id).where(Note.owner_id == user_id)),
+    )
+    personal = select(
+        note_user_personal_tag.c.tag_id.label("tag_id"),
+        note_user_personal_tag.c.note_id.label("note_id"),
+    ).where(
+        note_user_personal_tag.c.user_id == user_id,
+        note_user_personal_tag.c.note_id.in_(scope_ids),
+    )
+    direct = canonical.union(personal).subquery("direct_tag_notes")
+
+    pairs = [(t.id, d) for t in user_tags for d in subtree_tag_ids(t.id, user_tags)]
+    tree = values(
+        column("ancestor", Uuid(as_uuid=True)),
+        column("descendant", Uuid(as_uuid=True)),
+        name="tag_tree",
+    ).data(pairs)
+
+    rows = (
+        await db.execute(
+            select(tree.c.ancestor, func.count(func.distinct(direct.c.note_id)))
+            .select_from(
+                tree.outerjoin(direct, direct.c.tag_id == tree.c.descendant)
             )
+            .group_by(tree.c.ancestor)
         )
-        personal = (
-            select(note_user_personal_tag.c.note_id.label("note_id")).where(
-                note_user_personal_tag.c.user_id == user.id,
-                note_user_personal_tag.c.note_id.in_(select(note_scope_sq.c.id)),
-                note_user_personal_tag.c.tag_id.in_(tree_ids),
-            )
-        )
-        combined = canonical.union_all(personal).subquery()
-        cnt_stmt = select(func.count(func.distinct(combined.c.note_id))).select_from(combined)
-        cnt_val = (await db.execute(cnt_stmt)).scalar_one()
-        out.append(TagNoteCountRead(tag_id=tag.id, count=int(cnt_val)))
-    return out
+    ).all()
+    return {tag_id: int(cnt) for tag_id, cnt in rows}
 
 
 @router.get("", response_model=list[TagRead])
@@ -197,14 +182,14 @@ async def create_tag(
     if not name_stripped or len(name_stripped) > 120:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Некорректное имя метки",
+            detail="РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РёРјСЏ РјРµС‚РєРё",
         )
     if body.parent_id is not None:
         await _assert_tag_ownership(db, body.parent_id, user.id)
     if await _tag_name_taken(db, user.id, name_stripped, exclude_tag_id=None):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Метка с таким именем уже существует",
+            detail="РњРµС‚РєР° СЃ С‚Р°РєРёРј РёРјРµРЅРµРј СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚",
         )
     tag = Tag(
         user_id=user.id,
@@ -213,8 +198,8 @@ async def create_tag(
         slug="",
         depth=1,
     )
-    await _recompute_depths(db, tag)
-    tag.slug = await _unique_slug(db, user.id, tag.parent_id, slugify(tag.name))
+    await recompute_depths(db, tag)
+    tag.slug = await unique_slug(db, user.id, tag.parent_id, slugify(tag.name))
     db.add(tag)
     await db.flush()
     await db.refresh(tag)
@@ -240,14 +225,14 @@ async def update_tag(
             if await _would_create_cycle(db, tag, new_parent):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cycle detected")
         tag.parent_id = new_parent
-        await _recompute_depths(db, tag)
+        await recompute_depths(db, tag)
 
     if "name" in updates and updates["name"] is not None:
         nm = updates["name"].strip()
         if not nm or len(nm) > 120:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Некорректное имя метки",
+                detail="РќРµРєРѕСЂСЂРµРєС‚РЅРѕРµ РёРјСЏ РјРµС‚РєРё",
             )
         tag.name = nm
 
@@ -255,9 +240,9 @@ async def update_tag(
         if await _tag_name_taken(db, user.id, tag.name, exclude_tag_id=tag.id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Метка с таким именем уже существует",
+                detail="РњРµС‚РєР° СЃ С‚Р°РєРёРј РёРјРµРЅРµРј СѓР¶Рµ СЃСѓС‰РµСЃС‚РІСѓРµС‚",
             )
-        tag.slug = await _unique_slug(db, user.id, tag.parent_id, slugify(tag.name))
+        tag.slug = await unique_slug(db, user.id, tag.parent_id, slugify(tag.name))
 
     await db.flush()
     await db.refresh(tag)
@@ -275,12 +260,12 @@ async def delete_tag(
     promote_to = tag.parent_id
     for child in children_result.scalars().all():
         child.parent_id = promote_to
-        await _recompute_depths(db, child)
+        await recompute_depths(db, child)
         if await _tag_name_taken(db, user.id, child.name, exclude_tag_id=child.id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Нельзя удалить: метка с таким именем уже есть. Переименуйте потомка.",
+                detail="РќРµР»СЊР·СЏ СѓРґР°Р»РёС‚СЊ: РјРµС‚РєР° СЃ С‚Р°РєРёРј РёРјРµРЅРµРј СѓР¶Рµ РµСЃС‚СЊ. РџРµСЂРµРёРјРµРЅСѓР№С‚Рµ РїРѕС‚РѕРјРєР°.",
             )
-        child.slug = await _unique_slug(db, user.id, child.parent_id, slugify(child.name))
+        child.slug = await unique_slug(db, user.id, child.parent_id, slugify(child.name))
     await db.flush()
     await db.delete(tag)

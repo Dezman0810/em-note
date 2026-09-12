@@ -11,7 +11,7 @@ import {
   getNoteTableCellMetricsAt,
 } from './tiptap/noteTableMenuMetrics'
 import TaskList from '@tiptap/extension-task-list'
-import { splitSelectedBlocksAtHardBreaks } from './tiptap/splitBlocksAtHardBreaks'
+import { wrapSelectedLinesAsList } from './tiptap/wrapSelectedLinesAsList'
 import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
 import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { CodeSnippetBlock } from './tiptap/CodeSnippetExtension'
@@ -26,11 +26,15 @@ import type { Editor } from '@tiptap/core'
 import type { EditorState, Transaction } from '@tiptap/pm/state'
 import { TableMap } from '@tiptap/pm/tables'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
-import { computed, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
-import { attachmentsApi, errMessage, publicNoteApi } from '../api/client'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { attachmentsApi, errMessage, grammarApi, publicNoteApi } from '../api/client'
+import type { GrammarCheckResult } from '../api/types'
+import { useNoteLayout } from '../composables/useNoteLayout'
+import { useAuthStore } from '../stores/auth'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 import { normalizePastedRichCodeHtml } from '../utils/normalizePastedRichCodeHtml'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
+import { applyPunctuationKeepingMarks } from '../utils/grammarMarks'
 import { rewriteAttachmentImagesInTipTapDoc } from '../utils/tiptapContent'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 import {
@@ -119,6 +123,41 @@ const encryptHint = ref('')
 let encryptRangeFrom = 0
 let encryptRangeTo = 0
 let encryptPlain = ''
+
+const auth = useAuthStore()
+const { innerScroll } = useNoteLayout()
+const GRAMMAR_MAX_CHARS = 8000
+const grammarDlg = ref(false)
+const grammarBusy = ref(false)
+const grammarErr = ref('')
+const grammarHint = ref('')
+const grammarOriginal = ref('')
+const grammarResult = ref<GrammarCheckResult | null>(null)
+const grammarChosen = ref('')
+let grammarFrom = 0
+let grammarTo = 0
+
+/**
+ * Что мы сами только что отдали наружу. Родитель кладёт это значение обратно в проп,
+ * и без сравнения по строке каждое нажатие клавиши приводило к лишнему разбору
+ * документа и двум `JSON.stringify` в watch ниже.
+ */
+let lastEmittedContentJson = ''
+let applyingExternal = false
+
+/**
+ * Панель инструментов перерисовывается по счётчику транзакций. За одно нажатие
+ * их бывает несколько, поэтому склеиваем их в один кадр.
+ */
+let toolbarTickScheduled = false
+function bumpToolbar() {
+  if (toolbarTickScheduled) return
+  toolbarTickScheduled = true
+  requestAnimationFrame(() => {
+    toolbarTickScheduled = false
+    toolbarTick.value++
+  })
+}
 
 function parseDoc(raw: string) {
   try {
@@ -235,13 +274,15 @@ const editor = useEditor({
   ],
   content: parseDoc(props.contentJson),
   onUpdate: ({ editor: ed }) => {
-    emit('update:contentJson', JSON.stringify(ed.getJSON()))
+    if (applyingExternal) return
+    lastEmittedContentJson = JSON.stringify(ed.getJSON())
+    emit('update:contentJson', lastEmittedContentJson)
   },
   onSelectionUpdate: () => {
-    toolbarTick.value++
+    bumpToolbar()
   },
   onTransaction: () => {
-    toolbarTick.value++
+    bumpToolbar()
   },
 })
 
@@ -261,15 +302,37 @@ watch(
   }
 )
 
-watch(
-  () => props.contentJson,
-  (v) => {
-    const ed = editor.value
-    if (!ed || ed.isDestroyed) return
-    const next = parseDoc(v)
-    const cur = ed.getJSON()
-    if (JSON.stringify(cur) === JSON.stringify(next)) return
+/**
+ * Какой заметке сейчас принадлежит документ в TipTap.
+ * Нужен отдельно от lastEmitted: после смены заметки строка JSON может
+ * совпасть с тем, что мы когда-то эмитили (вернулиcь к A), а на экране ещё B.
+ */
+let appliedNoteId: string | null | undefined = props.noteId
+
+function applyExternalContent(raw: string, force: boolean) {
+  const ed = editor.value
+  if (!ed || ed.isDestroyed || applyingExternal) return
+  if (!force && raw === lastEmittedContentJson) return
+  const next = parseDoc(raw)
+  if (!force && JSON.stringify(ed.getJSON()) === JSON.stringify(next)) {
+    lastEmittedContentJson = raw
+    return
+  }
+  applyingExternal = true
+  try {
     ed.commands.setContent(next, { emitUpdate: false })
+    lastEmittedContentJson = raw
+  } finally {
+    applyingExternal = false
+  }
+}
+
+watch(
+  () => [props.contentJson, props.noteId] as const,
+  ([v, noteId]) => {
+    const noteChanged = noteId !== appliedNoteId
+    appliedNoteId = noteId
+    applyExternalContent(v, noteChanged)
   }
 )
 
@@ -287,6 +350,14 @@ function normalizeToolbarHex(hex: string, fallback: string): string {
 const taskListOn = computed(() => {
   void toolbarTick.value
   return editor.value?.isActive('taskList') ?? false
+})
+const bulletListOn = computed(() => {
+  void toolbarTick.value
+  return editor.value?.isActive('bulletList') ?? false
+})
+const orderedListOn = computed(() => {
+  void toolbarTick.value
+  return editor.value?.isActive('orderedList') ?? false
 })
 
 const tableDd = ref<HTMLDetailsElement | null>(null)
@@ -508,6 +579,7 @@ function setColWidthOnTableColumnAtHint(
 watch(
   () => [toolbarTick.value, tableMenuInTable.value, tableDd.value?.open] as const,
   async () => {
+    if (!tableMenuInTable.value && !tableDd.value?.open) return
     const m = tableCellMetrics.value
     if (m) {
       draftColW.value = m.widthPx != null ? String(m.widthPx) : ''
@@ -550,11 +622,6 @@ function applyColWidthOnly() {
 const boldOn = computed(() => {
   void toolbarTick.value
   return editor.value?.isActive('bold') ?? false
-})
-
-const italicOn = computed(() => {
-  void toolbarTick.value
-  return editor.value?.isActive('italic') ?? false
 })
 
 const textColorDd = ref<HTMLDetailsElement | null>(null)
@@ -625,17 +692,19 @@ function onHighlightSummaryClick(ev: MouseEvent) {
   closeHighlightDd()
 }
 
-/** Несколько абзацев или строк в одном абзаце (переносы) → отдельные пункты чек-листа. */
-function toggleChecklist() {
+/** Не давать клику по Ж/К/списку сбрасывать выделение в тексте (закреплённая панель лежит поверх). */
+function onToolbarMouseDown(ev: MouseEvent) {
+  const t = ev.target
+  if (t instanceof HTMLElement && t.closest('input, textarea, select')) return
+  ev.preventDefault()
+}
+
+function toggleLineList(kind: 'taskList' | 'bulletList' | 'orderedList') {
   const ed = editor.value
   if (!ed) return
   ed.chain()
     .focus()
-    .command(({ tr, state }) => {
-      splitSelectedBlocksAtHardBreaks(state, tr)
-      return true
-    })
-    .toggleTaskList()
+    .command(({ state, tr }) => wrapSelectedLinesAsList(state, tr, kind))
     .run()
 }
 
@@ -958,6 +1027,128 @@ function closeEncryptDialog() {
   encryptPlain = ''
 }
 
+const canUseGrammar = computed(() => !!auth.user?.can_use_grammar && !!props.editable)
+
+const grammarChosenSuggestion = computed(
+  () => grammarResult.value?.suggestions.find((s) => s.id === grammarChosen.value) ?? null
+)
+
+const grammarLeftParts = computed(() => {
+  const parts = grammarChosenSuggestion.value?.original_parts
+  if (parts?.length) return parts
+  return [{ text: grammarOriginal.value, kind: 'ok', message: '', before: '', after: '' }]
+})
+
+const grammarRightParts = computed(() => {
+  const parts = grammarChosenSuggestion.value?.revised_parts
+  if (parts?.length) return parts
+  return [{ text: grammarChosenSuggestion.value?.text ?? grammarOriginal.value, kind: 'ok', message: '', before: '', after: '' }]
+})
+
+const grammarChanges = computed(() => grammarChosenSuggestion.value?.changes ?? [])
+const grammarAdvice = computed(() => grammarResult.value?.advice ?? [])
+
+const grammarCanApply = computed(() => {
+  const next = grammarChosenSuggestion.value?.text
+  return !!next && next !== grammarOriginal.value
+})
+
+function flashGrammarHint(msg: string) {
+  grammarHint.value = msg
+  window.setTimeout(() => {
+    grammarHint.value = ''
+  }, 4000)
+}
+
+function captureGrammarSelection(): boolean {
+  const ed = editor.value
+  if (!ed) {
+    grammarFrom = 0
+    grammarTo = 0
+    grammarOriginal.value = ''
+    return false
+  }
+  const { empty, from, to } = ed.state.selection
+  if (empty || from === to) {
+    grammarFrom = 0
+    grammarTo = 0
+    grammarOriginal.value = ''
+    return false
+  }
+  const text = ed.state.doc.textBetween(from, to, '\n', '\n')
+  if (!text.trim()) {
+    grammarFrom = 0
+    grammarTo = 0
+    grammarOriginal.value = ''
+    return false
+  }
+  if (text.length > GRAMMAR_MAX_CHARS) {
+    flashGrammarHint(`Слишком длинный фрагмент. Выделите не больше ${GRAMMAR_MAX_CHARS} знаков.`)
+    grammarFrom = 0
+    grammarTo = 0
+    grammarOriginal.value = ''
+    return false
+  }
+  grammarFrom = from
+  grammarTo = to
+  grammarOriginal.value = text
+  return true
+}
+
+function onGrammarMouseDown() {
+  captureGrammarSelection()
+}
+
+function openGrammarDialog() {
+  grammarErr.value = ''
+  grammarResult.value = null
+  grammarChosen.value = ''
+  const captured = grammarFrom < grammarTo && grammarOriginal.value.trim().length > 0
+  if (!captured && !captureGrammarSelection()) {
+    if (!grammarHint.value) flashGrammarHint('Выделите текст, который нужно проверить.')
+    return
+  }
+  grammarDlg.value = true
+  void runGrammarCheck()
+}
+
+function closeGrammarDialog() {
+  grammarDlg.value = false
+  grammarBusy.value = false
+  grammarErr.value = ''
+  grammarResult.value = null
+  grammarFrom = 0
+  grammarTo = 0
+  grammarOriginal.value = ''
+}
+
+async function runGrammarCheck() {
+  grammarBusy.value = true
+  grammarErr.value = ''
+  try {
+    const result = await grammarApi.check(grammarOriginal.value)
+    grammarResult.value = result
+    const first = result.suggestions.find((s) => s.text !== result.original) ?? result.suggestions[0]
+    grammarChosen.value = first?.id ?? ''
+  } catch (e) {
+    grammarErr.value = errMessage(e)
+  } finally {
+    grammarBusy.value = false
+  }
+}
+
+function applyGrammarSuggestion() {
+  const ed = editor.value
+  const next = grammarChosenSuggestion.value?.text
+  if (!ed || !next || !grammarCanApply.value) return
+  const ok = applyPunctuationKeepingMarks(ed, grammarFrom, grammarTo, next)
+  if (!ok) {
+    flashGrammarHint('Не удалось вставить знаки, не задев слова и оформление.')
+    return
+  }
+  closeGrammarDialog()
+}
+
 async function confirmEncrypt() {
   const ed = editor.value
   if (!ed) return
@@ -995,7 +1186,12 @@ async function confirmEncrypt() {
   }
 }
 
+onMounted(() => {
+  window.addEventListener('scroll', bumpToolbar, true)
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('scroll', bumpToolbar, true)
   registerAttachmentBlobResolver(null)
   if (recording.value && mediaRecorder) {
     try {
@@ -1010,34 +1206,51 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="editor-wrap" v-if="editor">
-    <div class="toolbar" v-if="editable">
+  <div class="editor-wrap" :class="{ 'editor-wrap--fit': innerScroll }" v-if="editor">
+    <div class="toolbar" v-if="editable" @mousedown="onToolbarMouseDown">
       <button
         type="button"
         class="tb tb-letter"
         title="Жирный"
+        aria-label="Жирный"
         :class="{ tbOn: boldOn }"
+        :aria-pressed="boldOn"
         @click="editor.chain().focus().toggleBold().run()"
       >
         Ж
       </button>
       <button
         type="button"
-        class="tb tb-letter"
-        title="Курсив"
-        :class="{ tbOn: italicOn }"
-        @click="editor.chain().focus().toggleItalic().run()"
+        class="tb"
+        :class="{ tbOn: bulletListOn }"
+        title="Список: у каждой выделенной строки свой маркер"
+        aria-label="Список"
+        :aria-pressed="bulletListOn"
+        @click="toggleLineList('bulletList')"
       >
-        К
+        Список
       </button>
-      <button type="button" class="tb" @click="editor.chain().focus().toggleBulletList().run()">Список</button>
+      <button
+        type="button"
+        class="tb"
+        :class="{ tbOn: orderedListOn }"
+        title="Нумерация: у каждой выделенной строки свой номер"
+        aria-label="Нумерация"
+        :aria-pressed="orderedListOn"
+        @click="toggleLineList('orderedList')"
+      >
+        Нумерация
+      </button>
       <button
         type="button"
         class="tb"
         :class="{ tbOn: taskListOn }"
-        @click="toggleChecklist()"
+        title="Чек-бокс: у каждой выделенной строки свой флажок"
+        aria-label="Чек-бокс"
+        :aria-pressed="taskListOn"
+        @click="toggleLineList('taskList')"
       >
-        Чек-лист
+        Чек-бокс
       </button>
       <details ref="tableDd" class="table-dd">
         <summary
@@ -1052,16 +1265,36 @@ onBeforeUnmount(() => {
           <template v-if="!showTableRowColPanel">
             <p class="table-dd-hint">Вставить таблицу (первая строка — заголовок):</p>
             <div class="table-dd-grid">
-              <button type="button" class="table-dd-preset" @click="insertNoteTable(2, 2, true)">
+              <button
+                type="button"
+                class="table-dd-preset"
+                aria-label="Таблица 2 столбца на 2 строки"
+                @click="insertNoteTable(2, 2, true)"
+              >
                 2×2
               </button>
-              <button type="button" class="table-dd-preset" @click="insertNoteTable(3, 3, true)">
+              <button
+                type="button"
+                class="table-dd-preset"
+                aria-label="Таблица 3 столбца на 3 строки"
+                @click="insertNoteTable(3, 3, true)"
+              >
                 3×3
               </button>
-              <button type="button" class="table-dd-preset" @click="insertNoteTable(4, 4, true)">
+              <button
+                type="button"
+                class="table-dd-preset"
+                aria-label="Таблица 4 столбца на 4 строки"
+                @click="insertNoteTable(4, 4, true)"
+              >
                 4×4
               </button>
-              <button type="button" class="table-dd-preset" @click="insertNoteTable(3, 5, true)">
+              <button
+                type="button"
+                class="table-dd-preset"
+                aria-label="Таблица 3 столбца на 5 строк"
+                @click="insertNoteTable(3, 5, true)"
+              >
                 3×5
               </button>
             </div>
@@ -1142,7 +1375,12 @@ onBeforeUnmount(() => {
                     @blur="clampDraftColW"
                     @change="clampDraftColW"
                   />
-                  <button type="submit" class="table-dd-act table-dd-act--narrow" title="Применить ширину">
+                  <button
+                    type="submit"
+                    class="table-dd-act table-dd-act--narrow"
+                    aria-label="Применить ширину столбца"
+                    title="Применить ширину"
+                  >
                     OK
                   </button>
                 </form>
@@ -1291,6 +1529,16 @@ onBeforeUnmount(() => {
       >
         Зашифровать
       </button>
+      <button
+        v-if="canUseGrammar"
+        type="button"
+        class="tb"
+        title="Проверить выделенный текст: орфография, пунктуация, грамматика"
+        @mousedown="onGrammarMouseDown"
+        @click="openGrammarDialog"
+      >
+        Грамматика
+      </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
       <button
         type="button"
@@ -1334,6 +1582,7 @@ onBeforeUnmount(() => {
     <p v-if="fileUploadErr" class="record-err">{{ fileUploadErr }}</p>
     <p v-if="recordErr" class="record-err">{{ recordErr }}</p>
     <p v-if="encryptHint" class="encrypt-hint">{{ encryptHint }}</p>
+    <p v-if="grammarHint" class="encrypt-hint">{{ grammarHint }}</p>
     <EditorContent :editor="editor" class="editor-content" />
     <Teleport to="body">
       <div v-if="encryptDlg" class="enc-dlg-root" @click.self="closeEncryptDialog">
@@ -1359,6 +1608,87 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Teleport>
+    <Teleport to="body">
+      <div v-if="grammarDlg" class="enc-dlg-root" @click.self="closeGrammarDialog">
+        <div class="enc-dlg grammar-dlg" role="dialog" aria-labelledby="grammar-dlg-title">
+          <h3 id="grammar-dlg-title" class="enc-dlg-title">Грамматика и орфография</h3>
+          <p class="enc-dlg-lead muted small">
+            Сами меняем только знаки препинания. Цвет и заливку букв не сбрасываем. Слова не
+            подменяем — возможные замены справа как совет.
+          </p>
+          <p v-if="grammarBusy" class="muted small">Проверяю текст…</p>
+          <p v-if="grammarErr" class="enc-dlg-err">{{ grammarErr }}</p>
+          <div v-if="grammarResult && !grammarBusy" class="grammar-compare">
+            <div class="grammar-col">
+              <div class="grammar-col-lab">Сейчас</div>
+              <p class="grammar-text">
+                <span
+                  v-for="(part, idx) in grammarLeftParts"
+                  :key="'l' + idx"
+                  :class="['gseg', part.kind !== 'ok' ? 'gseg--' + part.kind : '']"
+                  :title="part.message || undefined"
+                  >{{ part.text }}</span
+                >
+              </p>
+            </div>
+            <div class="grammar-col">
+              <div class="grammar-col-lab">Знаки</div>
+              <p class="grammar-text grammar-text--new">
+                <span
+                  v-for="(part, idx) in grammarRightParts"
+                  :key="'r' + idx"
+                  :class="['gseg', part.kind !== 'ok' ? 'gseg--' + part.kind : '']"
+                  :title="part.message || undefined"
+                  >{{ part.text }}</span
+                >
+              </p>
+              <div v-if="grammarAdvice.length" class="grammar-advice">
+                <div class="grammar-col-lab">Совет — слова не меняем</div>
+                <ul class="grammar-changes grammar-advice-list">
+                  <li v-for="(item, idx) in grammarAdvice.slice(0, 16)" :key="'a' + idx">
+                    <span class="grammar-advice-old">{{ item.before }}</span>
+                    <span class="grammar-chg-arrow" aria-hidden="true">→</span>
+                    <span class="grammar-advice-new">{{ item.after }}</span>
+                    <span v-if="item.message" class="muted"> — {{ item.message }}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <ul v-if="grammarChanges.length && !grammarBusy" class="grammar-changes">
+            <li v-for="(change, idx) in grammarChanges.slice(0, 12)" :key="idx">
+              <span class="grammar-chg-old">{{ change.before || '∅' }}</span>
+              <span class="grammar-chg-arrow" aria-hidden="true">→</span>
+              <span class="grammar-chg-new">{{ change.after || '∅' }}</span>
+              <span v-if="change.message" class="muted"> — {{ change.message }}</span>
+            </li>
+          </ul>
+          <p
+            v-if="
+              grammarResult &&
+              !grammarBusy &&
+              !grammarCanApply &&
+              !grammarAdvice.length &&
+              !grammarChanges.length
+            "
+            class="muted small"
+          >
+            Ошибок не найдено.
+          </p>
+          <div class="enc-dlg-actions">
+            <button type="button" class="enc-dlg-btn" @click="closeGrammarDialog">Отмена</button>
+            <button
+              type="button"
+              class="enc-dlg-btn enc-dlg-primary"
+              :disabled="!grammarCanApply || grammarBusy"
+              @click="applyGrammarSuggestion"
+            >
+              Вставить знаки
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1368,38 +1698,65 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: var(--panel);
 }
+.editor-wrap--fit {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.editor-wrap--fit .toolbar {
+  position: sticky;
+  top: 0;
+  flex-shrink: 0;
+}
+.editor-wrap--fit .editor-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.editor-wrap--fit :deep(.ProseMirror) {
+  min-height: 100%;
+}
 .toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 25;
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem 0.55rem;
   align-items: center;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+  background: var(--panel);
+  box-shadow: 0 1px 0 var(--border);
+  user-select: none;
 }
 .record-err {
   margin: 0;
   padding: 0.25rem 0.75rem 0.45rem;
-  font-size: 0.72rem;
-  color: var(--danger);
-  background: rgba(220, 38, 38, 0.06);
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
+  background: var(--danger-subtle);
 }
 .tb-mic.tbOn {
-  border-color: #dc2626;
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.1);
+  border-color: var(--danger);
+  color: var(--danger-text);
+  background: var(--danger-subtle-hover);
 }
 .encrypt-hint {
   margin: 0;
   padding: 0.25rem 0.75rem 0.45rem;
-  font-size: 0.72rem;
-  color: var(--danger);
-  background: rgba(220, 38, 38, 0.06);
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
+  background: var(--danger-subtle);
 }
 .enc-dlg-root {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1409,25 +1766,27 @@ onBeforeUnmount(() => {
 .enc-dlg {
   width: min(400px, 100%);
   padding: 1rem 1.05rem;
-  border-radius: var(--radius-lg, 14px);
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--panel);
-  box-shadow: var(--shadow-panel, 0 8px 40px rgba(15, 23, 42, 0.15));
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-xl);
+  color: var(--text-1);
+  animation: ui-pop-in var(--dur-slow) var(--ease);
 }
 .enc-dlg-title {
   margin: 0 0 0.35rem;
-  font-size: 0.95rem;
+  font-size: var(--fs-md);
   font-weight: 650;
 }
 .enc-dlg-lead {
   margin: 0 0 0.65rem;
-  line-height: 1.4;
+  line-height: var(--lh-normal);
 }
 .enc-dlg-input {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: var(--fs-sm);
   padding: 0.4rem 0.5rem;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -1435,8 +1794,8 @@ onBeforeUnmount(() => {
 }
 .enc-dlg-err {
   margin: 0 0 0.5rem;
-  font-size: 0.78rem;
-  color: var(--danger);
+  font-size: var(--fs-xs);
+  color: var(--danger-text);
 }
 .enc-dlg-actions {
   display: flex;
@@ -1448,16 +1807,125 @@ onBeforeUnmount(() => {
   padding: 0.38rem 0.75rem;
   border-radius: 8px;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg);
 }
 .enc-dlg-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
   border-color: transparent;
   font-weight: 600;
+}
+.enc-dlg-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.grammar-dlg {
+  width: min(780px, 100%);
+}
+.grammar-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+  margin: 0 0 0.65rem;
+}
+.grammar-col-lab {
+  font-size: var(--fs-2xs);
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--note-list-meta);
+  margin-bottom: 0.28rem;
+}
+.grammar-text {
+  margin: 0;
+  min-height: 5rem;
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0.5rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  font: inherit;
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: var(--lh-normal);
+}
+.grammar-text--new {
+  border-color: var(--positive-border, var(--accent-border));
+  background: var(--positive-subtle, var(--surface-1));
+}
+.grammar-advice {
+  margin-top: 0.65rem;
+}
+.grammar-advice-list {
+  max-height: 10rem;
+}
+.grammar-advice-old {
+  color: var(--text-2);
+}
+.grammar-advice-new {
+  color: var(--text-1);
+  font-weight: 650;
+}
+.gseg--error {
+  background: var(--danger-subtle);
+  color: var(--danger-text);
+  border-bottom: 2px solid var(--danger);
+  border-radius: 2px;
+  box-decoration-break: clone;
+}
+.gseg--fix {
+  background: var(--positive-subtle);
+  color: var(--positive-text);
+  border-bottom: 2px solid var(--positive);
+  border-radius: 2px;
+  box-decoration-break: clone;
+}
+.grammar-changes {
+  margin: 0 0 0.65rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  font-size: var(--fs-2xs);
+  max-height: 7rem;
+  overflow: auto;
+}
+.grammar-changes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.28rem 0.35rem;
+  line-height: 1.35;
+}
+.grammar-chg-old {
+  color: var(--danger-text);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.grammar-chg-new {
+  color: var(--positive-text);
+  font-weight: 650;
+}
+.grammar-chg-arrow {
+  color: var(--text-4);
+}
+.grammar-issues {
+  margin: 0 0 0.55rem;
+  padding-left: 1.1rem;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+  line-height: 1.4;
+}
+@media (max-width: 640px) {
+  .grammar-compare {
+    grid-template-columns: 1fr;
+  }
 }
 .tb:disabled {
   opacity: 0.45;
@@ -1468,7 +1936,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .tb:hover {
@@ -1476,13 +1944,13 @@ onBeforeUnmount(() => {
 }
 .tbOn {
   border-color: var(--accent);
-  background: rgba(37, 99, 235, 0.08);
-  color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
 }
 .tb-letter {
   min-width: 1.65rem;
   font-weight: 700;
-  font-size: 0.82rem;
+  font-size: var(--fs-xs);
 }
 .word-dd {
   position: relative;
@@ -1517,12 +1985,12 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #334155;
+  color: var(--text-2);
   line-height: 1;
 }
 .word-dd-icon--letter {
   font-weight: 800;
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
   font-family: system-ui, 'Segoe UI', sans-serif;
 }
 .word-dd-icon--hi svg {
@@ -1543,17 +2011,17 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: 0 0.28rem;
   border-left: 1px solid var(--border);
-  background: rgba(148, 163, 184, 0.06);
+  background: var(--surface-wash);
 }
 .word-dd-chev {
-  font-size: 0.5rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
-  color: #64748b;
+  color: var(--text-4);
   transform: scaleY(0.85);
 }
 .word-dd:hover .word-dd-summary,
 .word-dd[open] .word-dd-summary {
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: var(--accent-border);
 }
 .word-dd-panel {
   position: absolute;
@@ -1565,7 +2033,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px var(--shadow-tint);
 }
 .word-dd-presets {
   display: flex;
@@ -1577,8 +2045,8 @@ onBeforeUnmount(() => {
   width: 1.25rem;
   height: 1.25rem;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.95);
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
+  border: 2px solid var(--surface-1);
+  box-shadow: 0 0 0 1px var(--shadow-tint);
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
@@ -1593,7 +2061,7 @@ onBeforeUnmount(() => {
   width: 1.25rem;
   height: 1.25rem;
   border-radius: 4px;
-  border: 1px solid rgba(15, 23, 42, 0.28);
+  border: 1px solid var(--border-strong);
   cursor: pointer;
   padding: 0;
   box-sizing: border-box;
@@ -1609,7 +2077,7 @@ onBeforeUnmount(() => {
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 0.35rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -1630,9 +2098,9 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   cursor: pointer;
   text-align: left;
 }
@@ -1654,7 +2122,7 @@ onBeforeUnmount(() => {
   min-height: 220px;
   padding: 0.75rem 1rem;
   outline: none;
-  line-height: 1.45;
+  line-height: var(--lh-normal);
 }
 .editor-content :deep(.ProseMirror::after) {
   content: '';
@@ -1664,17 +2132,45 @@ onBeforeUnmount(() => {
 .editor-content :deep(.ProseMirror > p) {
   margin: 0.2em 0;
 }
+/* Маркеры и номера: высота как у переноса в обычном тексте, без широкого отступа. */
+.editor-content :deep(.ProseMirror ul:not([data-type='taskList'])),
+.editor-content :deep(.ProseMirror ol) {
+  margin: 0.2em 0;
+  padding: 0 0 0 1.2em;
+  line-height: var(--lh-normal);
+}
+.editor-content :deep(.ProseMirror ul:not([data-type='taskList']) ul),
+.editor-content :deep(.ProseMirror ol ol),
+.editor-content :deep(.ProseMirror ul:not([data-type='taskList']) ol),
+.editor-content :deep(.ProseMirror ol ul:not([data-type='taskList'])) {
+  margin: 0;
+  padding-left: 1.15em;
+}
+.editor-content :deep(.ProseMirror ul:not([data-type='taskList']) > li),
+.editor-content :deep(.ProseMirror ol > li) {
+  margin: 0;
+  padding: 0;
+  line-height: var(--lh-normal);
+}
+.editor-content :deep(.ProseMirror ul:not([data-type='taskList']) > li > p),
+.editor-content :deep(.ProseMirror ol > li > p) {
+  margin: 0;
+  padding: 0;
+  line-height: var(--lh-normal);
+}
 .editor-content :deep(.ProseMirror img) {
   max-width: 100%;
   height: auto;
 }
 .editor-content :deep(.ProseMirror mark) {
   border-radius: 3px;
+  /* Заливка приходит из заметки инлайном и всегда пастельная — текст держим тёмным. */
+  color: var(--text-on-highlight);
   padding: 0.06em 0.1em;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
-/* Чек-лист: без отступов списка, пункт = одна строка «галочка | текст» как в примере */
+/* Чек-бокс: без отступов списка, пункт = одна строка «галочка | текст» */
 .editor-content :deep(ul[data-type='taskList']) {
   list-style: none;
   padding: 0;
@@ -1691,7 +2187,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   margin: 0;
-  padding: 0.1rem 0;
+  padding: 0;
   list-style: none;
 }
 .editor-content :deep(ul[data-type='taskList'] > li > label) {
@@ -1732,7 +2228,7 @@ onBeforeUnmount(() => {
 .editor-content :deep(ul[data-type='taskList'] > li > div > p) {
   margin: 0;
   padding: 0;
-  line-height: 1.4;
+  line-height: var(--lh-normal);
 }
 .editor-content :deep(ul[data-type='taskList'] > li[data-checked='true'] > div p) {
   opacity: 0.65;
@@ -1757,7 +2253,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   padding: 0.28rem 0.45rem;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: var(--fs-xs);
   user-select: none;
 }
 .table-dd-summary::-webkit-details-marker {
@@ -1767,13 +2263,13 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 .table-dd-chev {
-  font-size: 0.5rem;
-  color: #64748b;
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
   line-height: 1;
 }
 .table-dd:hover .table-dd-summary,
 .table-dd[open] .table-dd-summary {
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: var(--accent-border);
 }
 .table-dd-panel {
   position: absolute;
@@ -1785,13 +2281,13 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px var(--shadow-tint);
 }
 .table-dd-hint {
   margin: 0 0 0.4rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--text-3);
 }
 .table-dd-grid {
   display: grid;
@@ -1804,20 +2300,20 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   background: var(--bg);
   font: inherit;
-  font-size: 0.76rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   cursor: pointer;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .table-dd-preset:hover {
-  border-color: rgba(37, 99, 235, 0.4);
-  background: rgba(37, 99, 235, 0.06);
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
 }
 .table-dd-note {
   margin: 0.45rem 0 0;
-  font-size: 0.68rem;
-  line-height: 1.4;
-  color: var(--text-muted, #64748b);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
+  color: var(--text-4);
 }
 .table-dd-inp {
   width: 100%;
@@ -1828,7 +2324,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   color: inherit;
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--fs-xs);
 }
 .table-dd-actions {
   display: flex;
@@ -1836,11 +2332,11 @@ onBeforeUnmount(() => {
   gap: 0.35rem;
 }
 .table-dd-grp-lab {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted, #94a3b8);
+  color: var(--text-4);
   margin-top: 0.15rem;
 }
 .table-dd-grp-lab:first-child {
@@ -1867,20 +2363,20 @@ onBeforeUnmount(() => {
   background: transparent;
 }
 .table-dd-live-pill {
-  font-size: 0.62rem;
+  font-size: var(--fs-2xs);
   font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-text);
   white-space: nowrap;
   padding: 0.12rem 0.32rem;
   border-radius: 4px;
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--accent-subtle);
 }
 .table-dd-inp--inline {
   width: 3.75rem;
   min-width: 0;
   flex: 0 0 auto;
   padding: 0.26rem 0.32rem;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
 }
 .table-dd-act--narrow {
   flex: 0 0 auto;
@@ -1901,23 +2397,23 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   background: var(--bg);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: var(--fs-2xs);
   cursor: pointer;
-  color: #334155;
+  color: var(--text-2);
 }
 .table-dd-act:hover:not(:disabled) {
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: var(--accent-border);
 }
 .table-dd-act:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .table-dd-act.danger {
-  color: var(--danger, #b91c1c);
-  border-color: rgba(185, 28, 28, 0.35);
+  color: var(--danger-text);
+  border-color: var(--danger-border-strong);
 }
 .table-dd-act.danger:hover:not(:disabled) {
-  background: rgba(185, 28, 28, 0.06);
+  background: var(--danger-subtle);
 }
 
 .editor-content :deep(.tableWrapper) {
@@ -1933,7 +2429,7 @@ onBeforeUnmount(() => {
   width: auto;
   max-width: 100%;
   overflow: hidden;
-  font-size: 0.88rem;
+  font-size: var(--fs-sm);
 }
 .editor-content :deep(.tableWrapper td),
 .editor-content :deep(.tableWrapper th) {
@@ -1945,7 +2441,7 @@ onBeforeUnmount(() => {
   position: relative;
 }
 .editor-content :deep(.tableWrapper th) {
-  background: rgba(148, 163, 184, 0.14);
+  background: var(--surface-wash);
   font-weight: 600;
   text-align: left;
 }
@@ -1957,7 +2453,7 @@ onBeforeUnmount(() => {
   right: 0;
   top: 0;
   bottom: 0;
-  background: rgba(37, 99, 235, 0.12);
+  background: var(--accent-subtle-hover);
   pointer-events: none;
 }
 .editor-content :deep(.tableWrapper .column-resize-handle) {

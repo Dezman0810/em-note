@@ -193,6 +193,7 @@ onBeforeUnmount(() => {
           type="button"
           class="rz-img-align-btn"
           :class="{ on: wrap === 'left' }"
+          aria-label="Картинка слева, текст справа"
           title="Картинка слева, текст справа"
           @click.prevent="setWrap('left')"
         >
@@ -202,6 +203,7 @@ onBeforeUnmount(() => {
           type="button"
           class="rz-img-align-btn"
           :class="{ on: wrap === 'none' }"
+          aria-label="На всю ширину, без обтекания"
           title="На всю ширину, без обтекания"
           @click.prevent="setWrap('none')"
         >
@@ -211,6 +213,7 @@ onBeforeUnmount(() => {
           type="button"
           class="rz-img-align-btn"
           :class="{ on: wrap === 'right' }"
+          aria-label="Картинка справа, текст слева"
           title="Картинка справа, текст слева"
           @click.prevent="setWrap('right')"
         >
@@ -284,9 +287,9 @@ onBeforeUnmount(() => {
   gap: 2px;
   padding: 2px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  background: var(--surface-translucent);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px var(--shadow-tint-weak);
 }
 .rz-img-box:hover .rz-img-align,
 .rz-img-box--resizing .rz-img-align {
@@ -299,17 +302,17 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 5px;
   background: transparent;
-  color: #64748b;
+  color: var(--text-4);
   cursor: pointer;
-  font-size: 0.75rem;
+  font-size: var(--fs-2xs);
   line-height: 1;
 }
 .rz-img-align-btn.on {
-  background: rgba(37, 99, 235, 0.12);
-  color: var(--accent, #2563eb);
+  background: var(--accent-subtle-hover);
+  color: var(--accent-text);
 }
 .rz-img-align-btn:hover {
-  background: rgba(148, 163, 184, 0.18);
+  background: var(--surface-wash);
 }
 .rz-img-box {
   position: relative;
@@ -331,8 +334,8 @@ onBeforeUnmount(() => {
   position: absolute;
   z-index: 6;
   box-sizing: border-box;
-  background: #fff;
-  border: 1.5px solid var(--accent, #2563eb);
+  background: var(--surface-1);
+  border: 1.5px solid var(--accent);
   border-radius: 2px;
   opacity: 0;
   pointer-events: auto;
@@ -352,7 +355,7 @@ onBeforeUnmount(() => {
   height: 12px;
 }
 .rz-h--edge {
-  background: var(--accent, #2563eb);
+  background: var(--accent);
   border-radius: 1px;
 }
 .rz-h--n,
@@ -419,14 +422,14 @@ onBeforeUnmount(() => {
   bottom: 8px;
   transform: translateX(-50%);
   z-index: 3;
-  font-size: 0.6875rem;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: #fff;
-  background: rgba(15, 23, 42, 0.72);
+  color: var(--text-on-accent);
+  background: var(--scrim-strong);
   border-radius: 6px;
   padding: 0.12rem 0.4rem;
   pointer-events: none;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 </style>

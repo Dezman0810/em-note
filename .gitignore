@@ -27,6 +27,7 @@ deploy/airflow/airflow.env
 
 # Локальные бэкапы / выгрузки (не в репозиторий)
 backups/
+.tmp-redesign/
 
 # Cursor / IDE (локальные правила)
 .cursor/

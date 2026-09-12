@@ -18,6 +18,36 @@ export default defineConfig({
       'react-dom',
     ],
   },
+  build: {
+    /*
+     * Тяжёлые редакторы — отдельными чанками, иначе они попадали в основной бандл
+     * и замедляли первую отрисовку списка заметок. Excalidraw и CodeMirror
+     * подгружаются только при раскрытии схемы или блока кода.
+     */
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          excalidraw: ['@excalidraw/excalidraw', 'react', 'react-dom'],
+          tiptap: [
+            '@tiptap/vue-3',
+            '@tiptap/starter-kit',
+            '@tiptap/pm',
+            '@tiptap/extension-table',
+            '@tiptap/extension-image',
+            '@tiptap/extension-link',
+            '@tiptap/extension-highlight',
+            '@tiptap/extension-color',
+            '@tiptap/extension-text-style',
+            '@tiptap/extension-task-list',
+            '@tiptap/extension-task-item',
+          ],
+          codemirror: ['codemirror', '@codemirror/lang-sql', '@codemirror/lang-python'],
+          highlight: ['highlight.js'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1200,
+  },
   server: {
     host: true,
     port: devWebPort,

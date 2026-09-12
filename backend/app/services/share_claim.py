@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.share import NoteShare
 from app.models.user import User
-from app.services.share_recipient_tag import attach_share_access_email_personal_tag
+from app.services.share_recipient_tag import attach_share_access_email_personal_tags
 
 
 async def claim_invite_shares_for_user(db: AsyncSession, user: User) -> None:
@@ -22,5 +22,4 @@ async def claim_invite_shares_for_user(db: AsyncSession, user: User) -> None:
         .values(shared_with_user_id=user.id)
         .returning(NoteShare.note_id)
     )
-    for row in res.fetchall():
-        await attach_share_access_email_personal_tag(db, user.id, row[0])
+    await attach_share_access_email_personal_tags(db, user.id, [row[0] for row in res.fetchall()])

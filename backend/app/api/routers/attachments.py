@@ -2,8 +2,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -13,8 +12,13 @@ from app.models.note_attachment import NoteAttachment
 from app.models.user import User
 from app.schemas.attachment import AttachmentRead, TranscriptionRead
 from app.services.audio_transcribe import transcribe_audio_file
-from app.services.attachment_ops import create_attachment_for_note
-from app.services.note_access import get_note_for_read, require_note_edit
+from app.services.attachment_ops import (
+    attachment_file_exists,
+    attachment_file_response,
+    create_attachment_for_note,
+    remove_attachment_file,
+)
+from app.services.note_access import get_note_access, require_note_edit
 
 router = APIRouter(tags=["attachments"])
 
@@ -55,19 +59,16 @@ async def download_attachment(
     attachment_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
 ):
     row = await db.get(NoteAttachment, attachment_id)
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    await get_note_for_read(db, row.note_id, user.id)
+    await get_note_access(db, row.note_id, user.id)
     path = Path(settings.attachments_dir) / row.storage_key
-    if not path.is_file():
+    if not await attachment_file_exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
-    return FileResponse(
-        path,
-        media_type=row.content_type or "application/octet-stream",
-        filename=row.original_filename or "download",
-    )
+    return attachment_file_response(row, path, if_none_match)
 
 
 @router.delete("/attachments/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -83,4 +84,4 @@ async def delete_attachment(
     path = Path(settings.attachments_dir) / row.storage_key
     await db.delete(row)
     await db.flush()
-    path.unlink(missing_ok=True)
+    await remove_attachment_file(path)

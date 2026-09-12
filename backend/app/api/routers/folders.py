@@ -2,8 +2,9 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import exists, func, literal_column, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.deps import get_current_user, get_db
 from app.models.folder import Folder
@@ -18,7 +19,7 @@ from app.schemas.folder import (
     FolderRead,
     FolderUpdate,
 )
-from app.services.note_access import get_note_for_read
+from app.services.note_access import get_note_access
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
@@ -36,59 +37,38 @@ async def folder_note_counts(
     user: Annotated[User, Depends(get_current_user)],
 ) -> FolderNoteCountsRead:
     cond = _accessible_notes_filter(user.id)
-    total = (
-        await db.execute(select(func.count()).select_from(Note).where(cond))
-    ).scalar_one()
-    unfoldered = (
+    # Одним GROUP BY: «эффективная» папка — своя folder_id у владельца, личное
+    # размещение у получателя шаринга (uq_note_user_placement — не более одной строки).
+    placement = aliased(NoteUserPlacement)
+    effective_folder = case(
+        (Note.owner_id == user.id, Note.folder_id),
+        else_=placement.folder_id,
+    ).label("effective_folder_id")
+    grouped = (
         await db.execute(
-            select(func.count(Note.id))
-            .where(cond)
-            .where(
-                or_(
-                    (Note.owner_id == user.id) & Note.folder_id.is_(None),
-                    (Note.owner_id != user.id)
-                    & ~exists(
-                        select(literal_column("1")).select_from(NoteUserPlacement).where(
-                            NoteUserPlacement.user_id == user.id,
-                            NoteUserPlacement.note_id == Note.id,
-                            NoteUserPlacement.folder_id.isnot(None),
-                        )
-                    ),
-                )
+            select(effective_folder, func.count(Note.id))
+            .select_from(Note)
+            .outerjoin(
+                placement,
+                (placement.note_id == Note.id) & (placement.user_id == user.id),
             )
+            .where(cond)
+            .group_by(effective_folder)
         )
-    ).scalar_one()
+    ).all()
+    by_folder = {fid: int(cnt) for fid, cnt in grouped}
 
     folders_result = await db.execute(
-        select(Folder).where(Folder.user_id == user.id).order_by(Folder.name)
+        select(Folder.id).where(Folder.user_id == user.id).order_by(Folder.name)
     )
-    user_folders = list(folders_result.scalars().all())
-    folder_counts: list[FolderCountItem] = []
-    for folder in user_folders:
-        in_personal_share = exists(
-            select(literal_column("1")).select_from(NoteUserPlacement).where(
-                NoteUserPlacement.user_id == user.id,
-                NoteUserPlacement.note_id == Note.id,
-                NoteUserPlacement.folder_id == folder.id,
-            )
-        )
-        cnt = (
-            await db.execute(
-                select(func.count(Note.id))
-                .where(cond)
-                .where(
-                    or_(
-                        (Note.owner_id == user.id) & (Note.folder_id == folder.id),
-                        (Note.owner_id != user.id) & in_personal_share,
-                    )
-                )
-            )
-        ).scalar_one()
-        folder_counts.append(FolderCountItem(folder_id=folder.id, count=int(cnt)))
+    folder_counts = [
+        FolderCountItem(folder_id=fid, count=by_folder.get(fid, 0))
+        for fid in folders_result.scalars().all()
+    ]
 
     return FolderNoteCountsRead(
-        total=int(total),
-        unfoldered=int(unfoldered),
+        total=sum(by_folder.values()),
+        unfoldered=by_folder.get(None, 0),
         folder_counts=folder_counts,
     )
 
@@ -109,7 +89,7 @@ async def list_folders(
     for_note_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> list[Folder]:
     if for_note_id is not None:
-        await get_note_for_read(db, for_note_id, user.id)
+        await get_note_access(db, for_note_id, user.id)
         result = await db.execute(
             select(Folder).where(Folder.user_id == user.id).order_by(Folder.name)
         )

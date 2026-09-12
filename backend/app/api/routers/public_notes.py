@@ -3,8 +3,17 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,10 +28,15 @@ from app.models.note_public_link import NotePublicLink
 from app.models.share import ShareRole
 from app.schemas.attachment import AttachmentRead, TranscriptionRead
 from app.services.audio_transcribe import transcribe_audio_file
-from app.services.attachment_ops import create_attachment_for_note
+from app.services.attachment_ops import (
+    attachment_file_exists,
+    attachment_file_response,
+    create_attachment_for_note,
+)
 from app.schemas.habit import PublicHabitsPayload
 from app.schemas.note import NoteRead, NoteUpdate
 from app.schemas.public_link import PublicNotePayload
+from app.utils.http_cache import REVALIDATE_CACHE_CONTROL, etag_matches, make_etag
 from app.utils.json_compare import json_doc_equal
 from app.utils.text import plain_text_from_tiptap_json
 
@@ -50,8 +64,17 @@ async def _note_by_public_token(db: AsyncSession, token: str) -> tuple[Note, Not
 async def get_public_note(
     token: str,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> PublicNotePayload:
+    response: Response,
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
+) -> PublicNotePayload | Response:
     note, link = await _note_by_public_token(db, token)
+    # Любая правка заметки (владельцем или по ссылке) двигает updated_at; роль ссылки
+    # входит в ETag отдельно — она меняет can_edit без правки заметки.
+    etag = make_etag(note.id, note.updated_at, link.role)
+    headers = {"Cache-Control": REVALIDATE_CACHE_CONTROL, "ETag": etag}
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    response.headers.update(headers)
     can_edit = link.role == ShareRole.editor.value
     return PublicNotePayload(
         note=NoteRead.from_note_public(note),
@@ -149,27 +172,26 @@ async def public_download_attachment(
     token: str,
     attachment_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
 ):
     note, _link = await _note_by_public_token(db, token)
     row = await db.get(NoteAttachment, attachment_id)
     if row is None or row.note_id != note.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     path = Path(settings.attachments_dir) / row.storage_key
-    if not path.is_file():
+    if not await attachment_file_exists(path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
-    return FileResponse(
-        path,
-        media_type=row.content_type or "application/octet-stream",
-        filename=row.original_filename or "download",
-    )
+    return attachment_file_response(row, path, if_none_match)
 
 
 @router.get("/habits/{token}", response_model=PublicHabitsPayload)
 async def get_public_habits(
     token: str,
     db: Annotated[AsyncSession, Depends(get_db)],
+    response: Response,
     anchor: Annotated[str | None, Query()] = None,
-) -> PublicHabitsPayload:
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
+) -> PublicHabitsPayload | Response:
     from app.api.routers.habits import habits_for_owner
 
     row = (
@@ -183,8 +205,16 @@ async def get_public_habits(
     if owner is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ссылка недействительна или доступ отозван")
     habits = await habits_for_owner(db, owner.id, anchor)
-    return PublicHabitsPayload(
+    payload = PublicHabitsPayload(
         owner_name=owner.display_name or owner.email,
         habits=habits,
         can_edit=False,
     )
+    # Отметки дня живут в habit_checks и не двигают habits.updated_at, поэтому ETag
+    # считаем по самому ответу: экономит трафик, но не запросы к БД.
+    etag = make_etag(payload.model_dump_json())
+    headers = {"Cache-Control": REVALIDATE_CACHE_CONTROL, "ETag": etag}
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    response.headers.update(headers)
+    return payload

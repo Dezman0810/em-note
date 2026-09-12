@@ -48,14 +48,15 @@ services:
       ATTACHMENTS_DIR: /app/data/attachments
       # Образ backend/Dockerfile ставит ffmpeg в /usr/bin (не зависит от PATH хоста Windows)
       FFMPEG_PATH: /usr/bin/ffmpeg
-      # По умолчанию путь в образе; при SKIP_VOSK_DOWNLOAD=1 задайте в корневом .env: VOSK_MODEL_PATH=
-      VOSK_MODEL_PATH: ${VOSK_MODEL_PATH-/opt/vosk-model/vosk-model-small-ru-0.22}
+      # Пустая переменная на хосте не должна затирать путь: нужен :- а не -
+      VOSK_MODEL_PATH: ${VOSK_MODEL_PATH:-/opt/vosk-model/vosk-model-small-ru-0.22}
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backend:/app
       - em_note_attachments:/app/data/attachments
+      - em_note_vosk:/opt/vosk-model
     ports:
       - "8000:8000"
     command:
@@ -89,3 +90,4 @@ services:
 volumes:
   em_note_pg_data:
   em_note_attachments:
+  em_note_vosk:

@@ -97,6 +97,17 @@ export function tagNavAncestorClosure(flat: Tag[], seedIds: Iterable<string>): S
   return out
 }
 
+/** Id меток, которые реально висят на заметках — без родителей вроде «Проекты». */
+export function directTagIdsFromNotes(
+  notes: ReadonlyArray<{ tag_ids?: string[] }>,
+): Set<string> {
+  const out = new Set<string>()
+  for (const n of notes) {
+    for (const id of n.tag_ids ?? []) out.add(id)
+  }
+  return out
+}
+
 /** Метки на заметках плюс все предки в дереве — чтобы в сайдбаре показать только релевантные ветки. */
 export function tagNavIdsRelevantToNotes(
   flat: Tag[],
