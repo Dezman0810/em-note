@@ -26,23 +26,31 @@ export default defineConfig({
      */
     rollupOptions: {
       output: {
-        manualChunks: {
-          excalidraw: ['@excalidraw/excalidraw', 'react', 'react-dom'],
-          tiptap: [
-            '@tiptap/vue-3',
-            '@tiptap/starter-kit',
-            '@tiptap/pm',
-            '@tiptap/extension-table',
-            '@tiptap/extension-image',
-            '@tiptap/extension-link',
-            '@tiptap/extension-highlight',
-            '@tiptap/extension-color',
-            '@tiptap/extension-text-style',
-            '@tiptap/extension-task-list',
-            '@tiptap/extension-task-item',
-          ],
-          codemirror: ['codemirror', '@codemirror/lang-sql', '@codemirror/lang-python'],
-          highlight: ['highlight.js'],
+        /*
+         * У @tiptap/pm нет экспорта "." — если указать пакет целиком,
+         * production-сборка Vite (образ web в GHCR) падает.
+         */
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, '/')
+          if (
+            normalized.includes('/node_modules/@excalidraw/')
+            || normalized.includes('/node_modules/react/')
+            || normalized.includes('/node_modules/react-dom/')
+          ) {
+            return 'excalidraw'
+          }
+          if (normalized.includes('/node_modules/@tiptap/')) {
+            return 'tiptap'
+          }
+          if (
+            normalized.includes('/node_modules/codemirror/')
+            || normalized.includes('/node_modules/@codemirror/')
+          ) {
+            return 'codemirror'
+          }
+          if (normalized.includes('/node_modules/highlight.js/')) {
+            return 'highlight'
+          }
         },
       },
     },
