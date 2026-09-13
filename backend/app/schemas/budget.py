@@ -94,7 +94,7 @@ class StatsCategory(BaseModel):
 
 
 class StatsTotals(BaseModel):
-    """Суммы по всем операциям в базе (без фильтра по датам)."""
+    """Суммы доходов и расходов; для /stats/totals можно ограничить датами."""
 
     total_income: float
     total_expense: float

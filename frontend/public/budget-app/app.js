@@ -507,7 +507,7 @@ async function refreshCommentRulesCache() {
 
 /** Для быстрого ввода: не блокируем POST, если правила временно недоступны (404 и т.п.). */
 async function prefetchRulesCachesForQuickBulk() {
-  const kind = getSelectedKind("kind");
+  const kind = getSelectedKind("quick-kind");
   const q = encodeURIComponent(kind);
   let cr = [];
   let lr = [];
@@ -988,10 +988,16 @@ function attachCategoryCombo(prefix, getFlat, hooks = {}, emptyOptionLabel = "�
     return getFlat() || [];
   }
 
+  function displayOf(o) {
+    if (!o) return "";
+    const path = String(o.path || "").trim();
+    return path || o.label || "";
+  }
+
   function labOf(cid) {
     if (cid === "" || cid == null || cid === undefined) return "";
     const r = rows().find((o) => String(o.id) === String(cid));
-    return r ? r.label : "";
+    return displayOf(r);
   }
 
   function close() {
@@ -1025,7 +1031,7 @@ function attachCategoryCombo(prefix, getFlat, hooks = {}, emptyOptionLabel = "�
       panel.appendChild(li);
     };
     addLi("", emptyOptionLabel, "");
-    for (const o of filtRows) addLi(o.id, o.label, o.path || o.label);
+    for (const o of filtRows) addLi(o.id, displayOf(o), o.path || o.label);
     if (!filtRows.length && t) {
       const li = document.createElement("li");
       li.className = "cat-combo-option cat-combo-msg muted small";
@@ -1053,14 +1059,14 @@ function attachCategoryCombo(prefix, getFlat, hooks = {}, emptyOptionLabel = "�
     const exact = full.find((o) => normName(o.label) === normName(raw) || normName(o.path || "") === normName(raw));
     if (exact) {
       hidden.value = String(exact.id);
-      qEl.value = exact.label;
+      qEl.value = displayOf(exact);
       hooks.onUserChange?.();
       return;
     }
     const fr = filterCategoryFlat(full, raw);
     if (fr.length === 1) {
       hidden.value = String(fr[0].id);
-      qEl.value = fr[0].label;
+      qEl.value = displayOf(fr[0]);
       hooks.onUserChange?.();
       return;
     }
@@ -1667,7 +1673,7 @@ function renderCategoryTree(nodes, container) {
           await refreshCategoryAdmin();
           await refreshTxnCategorySelect();
           await refreshTplCategorySelect();
-          await reloadTxnTemplateChips();
+          await reloadAllTemplateChips();
         } catch (err) {
           toast(String(err.message || err));
         }
@@ -1724,7 +1730,7 @@ function renderCategoryTree(nodes, container) {
         await refreshCategoryAdmin();
         await refreshTxnCategorySelect();
         await refreshTplCategorySelect();
-        await reloadTxnTemplateChips();
+        await reloadAllTemplateChips();
       } catch (e) {
         toast(String(e.message || e));
       }
@@ -1740,7 +1746,7 @@ function renderCategoryTree(nodes, container) {
         await refreshCategoryAdmin();
         await refreshTxnCategorySelect();
         await refreshTplCategorySelect();
-        await reloadTxnTemplateChips();
+        await reloadAllTemplateChips();
       } catch (e) {
         toast(String(e.message || e));
       }
@@ -1796,7 +1802,7 @@ function wireCategoryDropRoot() {
       await refreshCategoryAdmin();
       await refreshTxnCategorySelect();
       await refreshTplCategorySelect();
-      await reloadTxnTemplateChips();
+      await reloadAllTemplateChips();
     } catch (err) {
       toast(String(err.message || err));
     }
@@ -2044,6 +2050,16 @@ document.querySelectorAll(".tab").forEach((btn) => {
     $(`#pane-${btn.dataset.tab}`)?.classList.add("active");
 
     const tab = btn.dataset.tab;
+    document.body.classList.toggle("is-home-tab", tab === "home");
+    document.body.classList.toggle(
+      "hide-balance-strip",
+      tab === "home" || tab === "cats" || tab === "lbl" || tab === "tmpl"
+    );
+    if (tab === "home") {
+      reloadTxnTemplateChips().catch(() => {});
+      loadTodayHome().catch(() => {});
+      $("#quick-bulk-lines")?.focus();
+    }
     if (tab === "cats") {
       refreshCategoryAdmin()
         .then(() => fillInlineRuleCategories())
@@ -2075,7 +2091,7 @@ document.querySelectorAll(".tab").forEach((btn) => {
       loadTemplates().catch((e) => toast(String(e.message || e)));
     }
     if (tab === "tx") {
-      reloadTxnTemplateChips().catch(() => {});
+      reloadAllTemplateChips().catch(() => {});
     }
   });
 });
@@ -2083,10 +2099,17 @@ document.querySelectorAll(".tab").forEach((btn) => {
 /* Transaction form */
 const form = $("#form-tx");
 
+function setTxnSubmitMode(editing) {
+  const title = $("#form-tx .card-title");
+  const btn = $("#submit-tx");
+  if (title) title.textContent = editing ? "Изменить операцию" : "Операция";
+  if (btn) btn.textContent = editing ? "Изменить операцию" : "Добавить операцию";
+}
+
 function resetForm() {
   form.reset();
   form.querySelector('[name="id"]').value = "";
-  $("#submit-tx").textContent = "Сохранить операцию";
+  setTxnSubmitMode(false);
   const occ = form.querySelector('[name="occurred_on"]');
   if (occ) occ.value = todayISO();
   categorySelectionSource = "none";
@@ -2118,7 +2141,7 @@ $$('input[name="kind"]').forEach((r) =>
         tryApplyCommentRules(txnNoteValue(), false);
         tryApplyCommentLabelRules(txnNoteValue(), false);
       })
-      .then(() => reloadTxnTemplateChips())
+      .then(() => reloadAllTemplateChips())
       .then(() => updateTxnFormChrome())
       .catch((e) => toast(String(e.message || e)));
   })
@@ -2132,6 +2155,13 @@ async function applyTemplate(templateId, occurredOn) {
   });
   toast("Операция добавлена по шаблону");
   await loadLedger();
+}
+
+function showHomeTxnForm() {
+  const tabBtn = document.querySelector('.tab[data-tab="home"]');
+  if (tabBtn && !tabBtn.classList.contains("active")) {
+    tabBtn.click();
+  }
 }
 
 async function reloadTxnTemplateChips() {
@@ -2148,7 +2178,7 @@ async function reloadTxnTemplateChips() {
   }
   host.innerHTML = "";
   if (!tpls.length) {
-    host.innerHTML = `<span class="muted small">Нет шаблонов для «${kind === "income" ? "доход" : "расход"}» — вкладка «Шаблоны» или «В шаблон».</span>`;
+    host.innerHTML = `<span class="muted small">Нет шаблонов для «${kind === "income" ? "доход" : "расход"}» — вкладка «Шаблоны».</span>`;
     return;
   }
   for (const t of tpls.slice(0, 40)) {
@@ -2157,15 +2187,16 @@ async function reloadTxnTemplateChips() {
     b.className = "chip tpl-chip";
     b.textContent = t.title.length > 24 ? `${t.title.slice(0, 23)}…` : t.title;
     b.title = `${t.title} · ${fmtMoney(t.amount)}\n${t.category_path || ""}`;
-    b.addEventListener("click", async () => {
-      try {
-        await applyTemplate(t.id, null);
-      } catch (e) {
-        toast(String(e.message || e));
-      }
+    b.addEventListener("click", () => {
+      fillTxnFormFromTpl(t);
+      host.querySelectorAll(".tpl-chip").forEach((el) => el.classList.toggle("is-selected", el === b));
     });
     host.appendChild(b);
   }
+}
+
+async function reloadAllTemplateChips() {
+  await reloadTxnTemplateChips();
 }
 
 function fillTxnForm(row) {
@@ -2249,7 +2280,7 @@ async function runQuickBulkAdd() {
     toast("Введите текст в блоке быстрого ввода");
     return;
   }
-  const kind = getSelectedKind("kind");
+  const kind = getSelectedKind("quick-kind");
   const segs = splitQuickBulkRaw(raw);
   if (!segs.length) {
     toast("Не удалось разобрать строки");
@@ -2328,7 +2359,7 @@ $("#save-as-template")?.addEventListener("click", async () => {
     });
     toast("Шаблон сохранён");
     await loadTemplates();
-    await reloadTxnTemplateChips();
+    await reloadAllTemplateChips();
   } catch (e) {
     toast(String(e.message || e));
   }
@@ -2400,28 +2431,210 @@ $("#export-xlsx")?.addEventListener("click", () => {
   downloadBlob(url, "transactions.xlsx").catch((e) => toast(String(e.message || e)));
 });
 
+let allTimeBalanceCached = 0;
+let balanceRevealed = false;
+
+function paintBalanceValue() {
+  const balEl = $("#global-balance");
+  const tile = $("#balance-tile-net");
+  if (!balEl) return;
+  balEl.classList.remove("kind-income", "kind-expense", "muted", "is-masked");
+  if (!balanceRevealed) {
+    balEl.textContent = "••••••";
+    balEl.classList.add("is-masked");
+    if (tile) {
+      tile.setAttribute("aria-pressed", "false");
+      tile.title = "Нажмите, чтобы показать баланс";
+    }
+    return;
+  }
+  const bal = Number(allTimeBalanceCached) || 0;
+  balEl.textContent = fmtMoney(bal);
+  if (Math.abs(bal) < 1e-9) balEl.classList.add("muted");
+  else if (bal > 0) balEl.classList.add("kind-income");
+  else balEl.classList.add("kind-expense");
+  if (tile) {
+    tile.setAttribute("aria-pressed", "true");
+    tile.title = "Нажмите, чтобы скрыть баланс";
+  }
+}
+
+function toggleBalanceReveal() {
+  balanceRevealed = !balanceRevealed;
+  paintBalanceValue();
+}
+
 async function refreshGlobalTotals() {
   const incEl = $("#global-total-income");
   const expEl = $("#global-total-expense");
   const balEl = $("#global-balance");
   if (!incEl || !expEl || !balEl) return;
-  try {
-    const d = await api("/api/stats/totals-all-time");
-    if (!d || typeof d !== "object") return;
-    incEl.textContent = fmtMoney(Number(d.total_income) || 0);
-    expEl.textContent = fmtMoney(Number(d.total_expense) || 0);
-    const bal = Number(d.balance);
-    balEl.textContent = fmtMoney(bal);
-    balEl.classList.remove("kind-income", "kind-expense", "muted");
-    if (Math.abs(bal) < 1e-9) balEl.classList.add("muted");
-    else if (bal > 0) balEl.classList.add("kind-income");
-    else balEl.classList.add("kind-expense");
-  } catch {
+  const from = $("#filter-from")?.value;
+  const to = $("#filter-to")?.value;
+  const periodParams = new URLSearchParams();
+  if (from) periodParams.set("from_date", from);
+  if (to) periodParams.set("to_date", to);
+  const periodQs = periodParams.toString();
+  const periodUrl = periodQs ? `/api/stats/totals?${periodQs}` : "/api/stats/totals";
+  const [periodRes, allTimeRes] = await Promise.allSettled([
+    api(periodUrl),
+    api("/api/stats/totals-all-time"),
+  ]);
+  if (periodRes.status === "fulfilled" && periodRes.value && typeof periodRes.value === "object") {
+    incEl.textContent = fmtMoney(Number(periodRes.value.total_income) || 0);
+    expEl.textContent = fmtMoney(Number(periodRes.value.total_expense) || 0);
+  } else {
     incEl.textContent = "—";
     expEl.textContent = "—";
-    balEl.textContent = "—";
-    balEl.classList.remove("kind-income", "kind-expense", "muted");
   }
+  if (allTimeRes.status === "fulfilled" && allTimeRes.value && typeof allTimeRes.value === "object") {
+    allTimeBalanceCached = Number(allTimeRes.value.balance) || 0;
+    paintBalanceValue();
+  } else if (balanceRevealed) {
+    balEl.textContent = "—";
+    balEl.classList.remove("kind-income", "kind-expense", "muted", "is-masked");
+  }
+}
+
+$("#balance-tile-net")?.addEventListener("click", toggleBalanceReveal);
+$("#balance-tile-net")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    toggleBalanceReveal();
+  }
+});
+
+function categoryFlatFromFetch(data) {
+  if (Array.isArray(data)) return data;
+  return Array.isArray(data?.flat) ? data.flat : [];
+}
+
+function categoryPathOptionsHtml(flat, selectedId) {
+  const opts = ['<option value="">— без категории —</option>'];
+  for (const o of flat || []) {
+    const label = escapeHtml(String(o.path || o.label || "").trim() || String(o.id));
+    const sel = String(o.id) === String(selectedId ?? "") ? " selected" : "";
+    opts.push(`<option value="${escapeHtml(String(o.id))}"${sel}>${label}</option>`);
+  }
+  return opts.join("");
+}
+
+function renderTodayHomeRows(el, rows) {
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML = `<p class="muted">За сегодня операций нет.</p>`;
+    return;
+  }
+  let inc = 0;
+  let exp = 0;
+  for (const r of rows) {
+    if (r.kind === "income") inc += r.amount;
+    else exp += r.amount;
+  }
+  el.innerHTML = `
+    <p class="small muted">Итого за сегодня: доход <span class="kind-income">${fmtMoney(inc)}</span> · расход <span class="kind-expense">${fmtMoney(
+      exp
+    )}</span> · баланс <strong>${fmtMoney(inc - exp)}</strong></p>
+    <table>
+      <thead><tr><th>Тип</th><th>Сумма</th><th>Категория</th><th>Комментарий</th></tr></thead>
+      <tbody>
+        ${rows
+          .map(
+            (r) => `
+          <tr>
+            <td class="${r.kind === "income" ? "kind-income" : "kind-expense"}">${r.kind === "income" ? "доход" : "расход"}</td>
+            <td>${fmtMoney(r.amount)}</td>
+            <td>${escapeHtml(txnCategoryLabel(r))}</td>
+            <td>${escapeHtml(r.note || "")}</td>
+          </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+}
+
+async function loadTodayHome() {
+  const el = $("#home-today-ledger");
+  if (!el) return;
+  const day = todayISO();
+  const params = new URLSearchParams({ from_date: day, to_date: day, sort: "date_desc" });
+  try {
+    const raw = await api(`/api/transactions?${params}`);
+    renderTodayHomeRows(el, Array.isArray(raw) ? raw : []);
+  } catch (e) {
+    el.innerHTML = `<p class="muted">${escapeHtml(String(e.message || e))}</p>`;
+  }
+}
+
+async function beginLedgerInlineEdit(tr, row) {
+  if (!tr || !row) return;
+  const host = $("#ledger");
+  const other = host?.querySelector("tr.is-editing");
+  if (other && other !== tr) {
+    await loadLedger();
+    const again = host?.querySelector(`tr[data-row-id="${row.id}"]`);
+    if (again) return beginLedgerInlineEdit(again, row);
+    return;
+  }
+  if (tr.classList.contains("is-editing")) return;
+  let flat = [];
+  try {
+    flat = categoryFlatFromFetch(await fetchCategories(row.kind));
+  } catch (e) {
+    toast(String(e.message || e));
+    return;
+  }
+  const tds = tr.querySelectorAll("td");
+  if (tds.length < 7) return;
+  tr.classList.add("is-editing");
+  tds[2].innerHTML = `<input type="number" class="inline-amt" step="0.01" min="0.01" value="${Number(row.amount).toFixed(2)}" aria-label="Сумма">`;
+  tds[3].innerHTML = `<select class="inline-cat" aria-label="Категория">${categoryPathOptionsHtml(flat, row.category_id)}</select>`;
+  tds[5].innerHTML = `<input type="text" class="inline-note" maxlength="512" value="${escapeHtml(row.note || "")}" aria-label="Комментарий">`;
+  tds[6].innerHTML = `
+    <button type="button" class="linkish inline-save">сохранить</button>
+    <button type="button" class="linkish inline-cancel">отмена</button>`;
+
+  const save = async () => {
+    const rawAmt = tds[2].querySelector(".inline-amt")?.value ?? "";
+    const amount = Number(String(rawAmt).replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast("Сумма должна быть числом больше нуля");
+      return;
+    }
+    const cidRaw = tds[3].querySelector(".inline-cat")?.value ?? "";
+    const category_id = cidRaw ? Number(cidRaw) : null;
+    const note = (tds[5].querySelector(".inline-note")?.value || "").trim() || null;
+    try {
+      await api(`/api/transactions/${encodeURIComponent(row.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ amount, category_id, note }),
+      });
+      toast("Операция обновлена");
+      await loadLedger();
+    } catch (err) {
+      toast(String(err.message || err));
+    }
+  };
+
+  tds[6].querySelector(".inline-save")?.addEventListener("click", () => {
+    save().catch((e) => toast(String(e.message || e)));
+  });
+  tds[6].querySelector(".inline-cancel")?.addEventListener("click", () => {
+    loadLedger().catch((e) => toast(String(e.message || e)));
+  });
+  tr.querySelectorAll(".inline-amt, .inline-note").forEach((inp) => {
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        save().catch((err) => toast(String(err.message || err)));
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        loadLedger().catch((err) => toast(String(err.message || err)));
+      }
+    });
+  });
+  tds[2].querySelector(".inline-amt")?.focus();
 }
 
 async function loadLedger() {
@@ -2457,7 +2670,7 @@ async function loadLedger() {
         ${rows
           .map(
             (r) => `
-          <tr>
+          <tr data-row-id="${r.id}">
             <td>${r.occurred_on}</td>
             <td class="${r.kind === "income" ? "kind-income" : "kind-expense"}">${r.kind === "income" ? "доход" : "расход"}</td>
             <td>${fmtMoney(r.amount)}</td>
@@ -2480,10 +2693,8 @@ async function loadLedger() {
     b.addEventListener("click", () => {
       const row = rows.find((x) => String(x.id) === b.dataset.id);
       if (!row) return;
-      form.querySelector('[name="id"]').value = row.id;
-      fillTxnForm(row);
-      $("#submit-tx").textContent = "Обновить операцию";
-      form.scrollIntoView({ behavior: "smooth", block: "start" });
+      const tr = b.closest("tr");
+      beginLedgerInlineEdit(tr, row).catch((e) => toast(String(e.message || e)));
     })
   );
 
@@ -2492,9 +2703,10 @@ async function loadLedger() {
       const row = rows.find((x) => String(x.id) === b.dataset.id);
       if (!row) return;
       form.querySelector('[name="id"]').value = "";
+      showHomeTxnForm();
       fillTxnForm(row);
       form.querySelector('[name="occurred_on"]').value = todayISO();
-      $("#submit-tx").textContent = "Сохранить операцию";
+      setTxnSubmitMode(false);
       toast("Заполнено копией — дата на сегодня");
       form.scrollIntoView({ behavior: "smooth", block: "start" });
     })
@@ -2514,6 +2726,7 @@ async function loadLedger() {
   );
   } finally {
     void refreshGlobalTotals().catch(() => {});
+    void loadTodayHome().catch(() => {});
   }
 }
 
@@ -2693,7 +2906,7 @@ refreshTxnCategorySelect()
       })
       .catch(() => {});
     loadLedger().catch((e) => toast(String(e.message || e)));
-    reloadTxnTemplateChips().catch(() => {});
+    reloadAllTemplateChips().catch(() => {});
     updateTxnFormChrome();
   });
 
@@ -2933,7 +3146,7 @@ $("#form-move-category")?.addEventListener("submit", async (e) => {
     const adminKind = getSelectedKind("cat-admin-kind");
     if (adminKind === getSelectedKind("kind")) await refreshTxnCategorySelect();
     if (adminKind === getSelectedKind("tpl_kind")) await refreshTplCategorySelect();
-    await reloadTxnTemplateChips();
+    await reloadAllTemplateChips();
   } catch (err) {
     toast(String(err.message || err));
   }
@@ -3017,7 +3230,7 @@ $("#form-new-category")?.addEventListener("submit", async (e) => {
     await fillInlineRuleCategories().catch(() => {});
     if (adminKind === getSelectedKind("kind")) await refreshTxnCategorySelect();
     if (adminKind === getSelectedKind("tpl_kind")) await refreshTplCategorySelect();
-    await reloadTxnTemplateChips();
+    await reloadAllTemplateChips();
     $("#category-tree")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
     toast(String(err.message || err));
@@ -3166,7 +3379,7 @@ tplForm.addEventListener("submit", async (e) => {
     }
     resetTemplateForm();
     await loadTemplates();
-    await reloadTxnTemplateChips();
+    await reloadAllTemplateChips();
   } catch (err) {
     toast(String(err.message || err));
   }
@@ -3184,7 +3397,7 @@ function fillTxnFormFromTpl(tpl) {
       form.querySelector('[name="amount"]').value = tpl.amount;
       form.querySelector('[name="note"]').value = tpl.note || "";
       form.querySelector('[name="occurred_on"]').value = todayISO();
-      $("#submit-tx").textContent = "Сохранить операцию";
+      setTxnSubmitMode(false);
       categorySelectionSource = "manual";
       labelSelectionSource = "none";
       tryApplyCommentLabelRules(txnNoteValue(), true);
@@ -3258,7 +3471,7 @@ async function loadTemplates() {
     });
 
     card.querySelector(".tpl-to-txn").addEventListener("click", () => {
-      document.querySelector('.tab[data-tab="tx"]').click();
+      showHomeTxnForm();
       fillTxnFormFromTpl(tpl);
       toast("Заполнена форма операции");
     });
@@ -3273,7 +3486,7 @@ async function loadTemplates() {
         await api(`/api/templates/${tid}`, { method: "DELETE" });
         toast("Удалён");
         await loadTemplates();
-        await reloadTxnTemplateChips();
+        await reloadAllTemplateChips();
       } catch (e) {
         toast(String(e.message || e));
       }

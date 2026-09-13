@@ -1043,18 +1043,36 @@ async def export_transactions_xlsx(
     )
 
 
+async def _sum_amount_by_kind(db: AsyncSession, kind: str, from_date=None, to_date=None) -> float:
+    stmt = select(func.coalesce(func.sum(BudgetTransaction.amount), 0.0)).where(BudgetTransaction.kind == kind)
+    if from_date is not None:
+        stmt = stmt.where(BudgetTransaction.occurred_on >= from_date)
+    if to_date is not None:
+        stmt = stmt.where(BudgetTransaction.occurred_on <= to_date)
+    return float((await db.execute(stmt)).scalar_one() or 0.0)
+
+
 @router.get("/stats/totals-all-time", response_model=StatsTotals)
 async def stats_totals_all_time(db: Annotated[AsyncSession, Depends(get_db)],
     _user: Annotated[User, Depends(require_budget_access)]):
     """Сумма всех доходов и всех расходов за всё время; баланс = доходы − расходы."""
-    ti = (await db.execute(
-        select(func.coalesce(func.sum(BudgetTransaction.amount), 0.0)).where(BudgetTransaction.kind == "income")
-    )).scalar_one()
-    te = (await db.execute(
-        select(func.coalesce(func.sum(BudgetTransaction.amount), 0.0)).where(BudgetTransaction.kind == "expense")
-    )).scalar_one()
-    a = float(ti or 0.0)
-    b = float(te or 0.0)
+    a = await _sum_amount_by_kind(db, "income")
+    b = await _sum_amount_by_kind(db, "expense")
+    return StatsTotals(total_income=a, total_expense=b, balance=a - b)
+
+
+@router.get("/stats/totals", response_model=StatsTotals)
+async def stats_totals(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _user: Annotated[User, Depends(require_budget_access)],
+    from_date: date | None = Query(None, description="Start date inclusive"),
+    to_date: date | None = Query(None, description="End date inclusive"),
+):
+    """Доходы и расходы за выбранные даты; balance — за этот же интервал."""
+    if from_date and to_date and to_date < from_date:
+        raise HTTPException(400, "to_date must be >= from_date")
+    a = await _sum_amount_by_kind(db, "income", from_date, to_date)
+    b = await _sum_amount_by_kind(db, "expense", from_date, to_date)
     return StatsTotals(total_income=a, total_expense=b, balance=a - b)
 
 

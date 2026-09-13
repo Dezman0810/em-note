@@ -6,15 +6,16 @@
   <!-- Непустое значение, если UI открыт под префиксом (например /budget), а не с корня домена -->
   <meta name="budjet-mount" content="" />
   <title>Семейный бюджет</title>
-  <link rel="stylesheet" href="/budget-app/style.css?v=20260912" />
+  <link rel="stylesheet" href="/budget-app/style.css?v=20260913g" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
-  <script id="budjet-app-script" src="/budget-app/app.js?v=20260912" defer></script>
+  <script id="budjet-app-script" src="/budget-app/app.js?v=20260913g" defer></script>
 </head>
-<body>
+<body class="is-home-tab">
   <header class="top">
     <h1>Семейный бюджет</h1>
     <nav class="tabs">
-      <button type="button" data-tab="tx" class="tab active">Операции</button>
+      <button type="button" data-tab="home" class="tab active">Главная</button>
+      <button type="button" data-tab="tx" class="tab">Операции</button>
       <button type="button" data-tab="cats" class="tab">Категории</button>
       <button type="button" data-tab="lbl" class="tab">Метки</button>
       <button type="button" data-tab="tmpl" class="tab">Шаблоны</button>
@@ -22,7 +23,7 @@
     </nav>
   </header>
 
-  <section class="balance-strip-wrap" aria-label="Сводка за всё время">
+  <section class="balance-strip-wrap" aria-label="Сводка">
     <div class="balance-strip" id="balance-strip">
       <div class="balance-tile">
         <span class="balance-tile-label">Доходы</span>
@@ -32,37 +33,47 @@
         <span class="balance-tile-label">Расходы</span>
         <span class="balance-tile-value kind-expense" id="global-total-expense">—</span>
       </div>
-      <div class="balance-tile balance-tile--net">
+      <div
+        class="balance-tile balance-tile--net"
+        id="balance-tile-net"
+        role="button"
+        tabindex="0"
+        aria-pressed="false"
+        title="Нажмите, чтобы показать баланс"
+      >
         <span class="balance-tile-label">Баланс</span>
-        <span class="balance-tile-value" id="global-balance">—</span>
+        <span class="balance-tile-value is-masked" id="global-balance">••••••</span>
       </div>
     </div>
-    <p class="balance-strip-note muted small">За всё время · не зависит от дат и фильтров в списке</p>
+    <p class="balance-strip-note muted small">Доходы и расходы — по датам «с / по» · баланс за всё время, по клику</p>
   </section>
 
   <main>
-    <section id="pane-tx" class="pane active">
-      <div class="grid pane-tx-grid">
-        <div class="pane-tx-left-stack">
-          <section class="card quick-entry-card" aria-labelledby="quick-entry-heading">
-            <h2 id="quick-entry-heading" class="card-title">Быстрый ввод</h2>
-            <p class="lead muted small">
-              В каждой строке — <strong>сумма</strong>, пробел и комментарий. Несколько операций — <strong>каждая с новой строки</strong>. Дата —
-              сегодня; расход/доход как в «Операции» ниже. Сохранение — кнопка «Добавить».
-            </p>
-            <label class="sr-only" for="quick-bulk-lines">Текст быстрого ввода</label>
-            <textarea
-              id="quick-bulk-lines"
-              class="note-area quick-entry-area"
-              maxlength="4096"
-              rows="4"
-              placeholder="250 Хлеб бородинский&#10;300 Молоко 3.2&#10;150 Сыр"
-            ></textarea>
-            <div class="quick-entry-actions">
-              <button type="button" id="btn-quick-bulk" class="accent-btn btn-wide">Добавить</button>
-            </div>
-          </section>
-          <form id="form-tx" class="card form-card">
+    <section id="pane-home" class="pane active pane-home">
+      <section class="card quick-entry-card" aria-labelledby="quick-entry-heading">
+        <h2 id="quick-entry-heading" class="card-title">Быстрый ввод</h2>
+        <p class="lead muted small">
+          В каждой строке — <strong>сумма</strong>, пробел и комментарий. Несколько операций — <strong>каждая с новой строки</strong>.
+          Дата — сегодня. Сохранение — кнопка «Добавить».
+        </p>
+        <div class="segmented kind-seg quick-entry-kind">
+          <label><input type="radio" name="quick-kind" value="expense" checked /><span>Расход</span></label>
+          <label><input type="radio" name="quick-kind" value="income" /><span>Доход</span></label>
+        </div>
+        <label class="sr-only" for="quick-bulk-lines">Текст быстрого ввода</label>
+        <textarea
+          id="quick-bulk-lines"
+          class="note-area quick-entry-area"
+          maxlength="4096"
+          rows="8"
+          placeholder="250 Хлеб бородинский&#10;300 Молоко 3.2&#10;150 Сыр"
+        ></textarea>
+        <div class="quick-entry-actions">
+          <button type="button" id="btn-quick-bulk" class="accent-btn btn-wide">Добавить</button>
+        </div>
+      </section>
+
+      <form id="form-tx" class="card form-card home-op-card">
           <h2 class="card-title">Операция</h2>
           <div class="segmented kind-seg">
             <label><input type="radio" name="kind" value="expense" checked /><span>Расход</span></label>
@@ -109,14 +120,14 @@
           <p id="txn-label-hint" class="hint-line muted small" aria-live="polite"></p>
 
           <div class="template-chips">
-            <div class="template-chips-title">Шаблоны <span class="muted small">· один клик</span></div>
+            <div class="template-chips-title">Шаблоны <span class="muted small">· подставить в форму</span></div>
             <div id="txn-template-chips" class="chip-row"></div>
           </div>
 
           <div class="field-divider"></div>
 
           <div class="txn-form-primary">
-            <button type="submit" id="submit-tx" class="accent-btn btn-wide">Сохранить операцию</button>
+            <button type="submit" id="submit-tx" class="accent-btn btn-wide">Добавить операцию</button>
           </div>
 
           <input type="hidden" name="id" />
@@ -126,9 +137,18 @@
             <button type="button" id="save-as-template" class="ghost txn-act">В шаблон</button>
             <button type="button" id="open-rules-modal" class="ghost accent-outline txn-act">Правила…</button>
           </div>
-          </form>
-        </div>
+      </form>
 
+      <section class="card home-today-card" aria-labelledby="home-today-heading">
+        <h2 id="home-today-heading" class="card-title">Сегодня</h2>
+        <p class="muted small">Все операции за сегодня</p>
+        <div class="ledger home-today-ledger" id="home-today-ledger">
+          <p class="muted small ledger-loading">Загрузка…</p>
+        </div>
+      </section>
+    </section>
+
+    <section id="pane-tx" class="pane">
         <div class="card ledger-card">
           <h2 class="ledger-card-title">Список</h2>
           <p
@@ -243,7 +263,6 @@
           </div>
           <div class="ledger" id="ledger"><p class="muted small ledger-loading">Загрузка журнала…</p></div>
         </div>
-      </div>
     </section>
 
     <section id="pane-cats" class="pane">
