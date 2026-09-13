@@ -4,6 +4,7 @@ import { isAxiosError } from 'axios'
 import { useRoute, useRouter } from 'vue-router'
 import { errMessage, habitsApi, publicHabitsApi } from '../api/client'
 import type { Habit } from '../api/types'
+import AppSectionNav from '../components/AppSectionNav.vue'
 import { useAuthStore } from '../stores/auth'
 import { useTheme } from '../composables/useTheme'
 
@@ -478,27 +479,24 @@ onMounted(() => {
             ><span class="logo-brand-accent">Em</span><span class="logo-brand-dash">-</span><span>Note</span></span
           >
         </button>
-        <span class="header-sub">{{ isPublic ? 'Только просмотр' : 'Привычки' }}</span>
+        <span v-if="isPublic" class="header-sub">Только просмотр</span>
       </div>
-      <div class="actions">
-        <template v-if="!isPublic">
-          <button type="button" class="btn secondary" @click="router.push({ name: 'notes' })">Заметки</button>
-          <button type="button" class="btn secondary" @click="router.push('/tags')">Метки</button>
-          <div class="header-user">
-            <span v-if="auth.user" class="user">{{ auth.user.email }}</span>
-            <button type="button" class="btn ghost" @click="logout">Выйти</button>
-          </div>
-        </template>
-        <span v-else class="user">{{ ownerName }}</span>
-        <button
-          type="button"
-          class="theme-toggle"
-          :aria-label="themeLabel"
-          :title="themeLabel"
-          @click="cycleTheme"
-        >
-          <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
-        </button>
+      <div class="header-end">
+        <AppSectionNav v-if="!isPublic" active="habits" />
+        <div class="header-user">
+          <span v-if="!isPublic && auth.user" class="user">{{ auth.user.email }}</span>
+          <span v-else-if="isPublic" class="user">{{ ownerName }}</span>
+          <button
+            type="button"
+            class="theme-toggle"
+            :aria-label="themeLabel"
+            :title="themeLabel"
+            @click="cycleTheme"
+          >
+            <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+          </button>
+          <button v-if="!isPublic" type="button" class="btn ghost" @click="logout">Выйти</button>
+        </div>
       </div>
     </header>
 
@@ -715,9 +713,7 @@ onMounted(() => {
   flex-direction: column;
   min-width: 0;
   overflow-x: auto;
-  background:
-    radial-gradient(1200px 420px at 10% -10%, var(--positive-subtle), transparent 55%),
-    var(--bg);
+  background: var(--bg);
 }
 .workspace-header {
   display: flex;
@@ -762,26 +758,30 @@ onMounted(() => {
 .header-sub {
   font-size: var(--fs-xs);
   font-weight: 650;
-  color: var(--positive-text);
-  background: var(--positive-subtle-strong);
+  color: var(--accent-text);
+  background: var(--accent-subtle);
   padding: 0.18rem 0.5rem;
   border-radius: 999px;
 }
-.actions {
+.header-user {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
-  margin-left: auto;
-}
-.header-user {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
+  gap: 0.4rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .user {
-  font-size: var(--fs-xs);
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
+  line-height: var(--lh-tight);
   color: var(--text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .page {
   width: 100%;
@@ -1337,10 +1337,6 @@ onMounted(() => {
   .workspace-header {
     padding: var(--space-3) var(--space-5) var(--space-4);
     gap: var(--space-3) var(--space-4);
-  }
-  .actions {
-    width: 100%;
-    margin-left: 0;
   }
   .header-user {
     margin-left: auto;

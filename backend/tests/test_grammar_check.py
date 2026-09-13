@@ -14,6 +14,7 @@ from app.services.grammar_check import (
 )
 from app.services.grammar_text import (
     close_lines,
+    drop_duplicate_sentence_ends,
     is_cross_line_repeat,
     line_end_matches,
     remap_match,
@@ -83,12 +84,12 @@ def test_diff_parts_mark_added_words() -> None:
 
 def test_line_break_ends_sentence_and_is_not_tautology() -> None:
     text = "надо проверить отчёт\nнадо проверить релиз"
-    assert close_lines(text) == "надо проверить отчёт.\nнадо проверить релиз"
+    assert close_lines(text) == "надо проверить отчёт.\nнадо проверить релиз."
     ended = apply_matches(text, line_end_matches(text))
-    assert ended == "надо проверить отчёт.\nнадо проверить релиз"
+    assert ended == "надо проверить отчёт.\nнадо проверить релиз."
     check, inserts = text_for_languagetool(text)
-    assert check == "надо проверить отчёт.\nнадо проверить релиз"
-    assert inserts == [20]
+    assert check == "надо проверить отчёт.\nнадо проверить релиз."
+    assert inserts == [20, 42]
     mapped = remap_match(GrammarMatch(22, 4, "", "", ["надо"], "misspelling"), inserts)
     assert mapped is not None
     assert mapped.offset == 21
@@ -96,9 +97,25 @@ def test_line_break_ends_sentence_and_is_not_tautology() -> None:
     assert is_cross_line_repeat(text, repeat)
 
 
-def test_single_line_does_not_force_period() -> None:
-    assert close_lines("надо проверить отчёт") == "надо проверить отчёт"
-    assert line_end_matches("надо проверить отчёт") == []
+def test_sentence_without_period_gets_one() -> None:
+    assert close_lines("надо проверить отчёт") == "надо проверить отчёт."
+    assert apply_matches("надо проверить отчёт", line_end_matches("надо проверить отчёт")) == (
+        "надо проверить отчёт."
+    )
+    assert close_lines("надо проверить отчёт.") == "надо проверить отчёт."
+    assert line_end_matches("надо проверить отчёт.") == []
+
+
+def test_suggestion_adds_missing_period() -> None:
+    text = "надо проверить отчёт"
+    result = response_from_matches(text, line_end_matches(text))
+    assert result.suggestions[0].text == "надо проверить отчёт."
+
+
+def test_no_double_period_if_languagetool_already_closes() -> None:
+    text = "надо проверить"
+    already = [GrammarMatch(0, 14, "", "", ["надо проверить."], "typographical")]
+    assert drop_duplicate_sentence_ends(already, line_end_matches(text)) == []
 
 
 def test_punctuation_edit_keeps_same_letters() -> None:

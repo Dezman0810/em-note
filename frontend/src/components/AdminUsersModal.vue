@@ -76,6 +76,44 @@ async function toggleHabits(row: AdminUserRow, ev: Event) {
   }
 }
 
+async function toggleBudget(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':budget'
+  err.value = ''
+  try {
+    await adminApi.setCanUseBudget(row.id, next)
+    row.can_use_budget = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
+async function toggleSchemas(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':schemas'
+  err.value = ''
+  try {
+    await adminApi.setCanUseSchemas(row.id, next)
+    row.can_use_schemas = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
 async function toggleGrammar(row: AdminUserRow, ev: Event) {
   const input = ev.target as HTMLInputElement
   const next = input.checked
@@ -140,8 +178,9 @@ async function copyRevealed() {
         </div>
         <p class="muted small admin-lead">
           Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт;
-          без «грамматики» в заметке нет проверки орфографии. Старый пароль узнать нельзя — он не
-          хранится. Можно только сбросить и выдать новый.
+          без «грамматики» в заметке нет проверки орфографии; без «бюджета» скрыт общий семейный
+          бюджет; без «схем» скрыты разделы со схемами и картами из доступных заметок. Старый пароль узнать
+          нельзя — он не хранится. Можно только сбросить и выдать новый.
         </p>
         <div v-if="revealed" class="admin-revealed">
           <p>
@@ -162,6 +201,8 @@ async function copyRevealed() {
                 <th>Новые заметки</th>
                 <th>Привычки</th>
                 <th>Грамматика</th>
+                <th>Бюджет</th>
+                <th>Схемы / карты</th>
                 <th>Сбросить пароль</th>
               </tr>
             </thead>
@@ -195,6 +236,24 @@ async function copyRevealed() {
                     :disabled="pending === u.id + ':grammar'"
                     :aria-label="`Грамматика для ${u.email}`"
                     @change="toggleGrammar(u, $event)"
+                  />
+                </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_use_budget"
+                    :disabled="pending === u.id + ':budget'"
+                    :aria-label="`Бюджет для ${u.email}`"
+                    @change="toggleBudget(u, $event)"
+                  />
+                </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_use_schemas"
+                    :disabled="pending === u.id + ':schemas'"
+                    :aria-label="`Схемы и карты для ${u.email}`"
+                    @change="toggleSchemas(u, $event)"
                   />
                 </td>
                 <td class="admin-acts">

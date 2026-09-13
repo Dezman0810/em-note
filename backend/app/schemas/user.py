@@ -20,6 +20,8 @@ class UserRead(BaseModel):
     can_create_notes: bool = True
     can_use_habits: bool = False
     can_use_grammar: bool = False
+    can_use_budget: bool = False
+    can_use_schemas: bool = False
     must_change_password: bool = False
 
     model_config = {"from_attributes": True}
@@ -39,6 +41,8 @@ class UserAdminListItem(BaseModel):
     can_create_notes: bool
     can_use_habits: bool
     can_use_grammar: bool = False
+    can_use_budget: bool = False
+    can_use_schemas: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -47,6 +51,8 @@ class UserAdminUpdate(BaseModel):
     can_create_notes: bool | None = None
     can_use_habits: bool | None = None
     can_use_grammar: bool | None = None
+    can_use_budget: bool | None = None
+    can_use_schemas: bool | None = None
 
 
 class UserAdminPasswordReset(BaseModel):

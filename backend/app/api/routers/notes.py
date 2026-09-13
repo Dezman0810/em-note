@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user, get_db
+from app.api.deps import get_current_user, get_db, require_admin
 from app.models.note import Note
 from app.models.share import NoteShare, ShareRole
 from app.models.tag import Tag
@@ -22,6 +22,7 @@ from app.services.note_access import (
     require_note_owner,
     require_trashed_note_owner,
 )
+from app.services.note_ownership import take_note_ownership
 from app.services.note_personal_view import (
     add_personal_tag_link,
     has_personal_tag,
@@ -302,6 +303,23 @@ async def get_note(
     return await note_read_for_requester(db, user.id, note, access)
 
 
+@router.post("/{note_id}/take-ownership", response_model=NoteRead)
+async def take_ownership(
+    note_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(require_admin)],
+) -> NoteRead:
+    """Админ становится создателем заметки, которой с ним поделились."""
+    note, access = await get_note_access(db, note_id, user.id)
+    if access == Access.owner:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Вы уже создатель этой заметки",
+        )
+    note = await take_note_ownership(db, note, user)
+    return await note_read_for_requester(db, user.id, note, Access.owner)
+
+
 @router.patch("/{note_id}", response_model=NoteRead)
 async def update_note(
     note_id: uuid.UUID,
@@ -415,7 +433,10 @@ async def restore_note(
     note = await require_trashed_note_owner(db, note_id, user.id)
     note.deleted_at = None
     await db.flush()
-    return _note_read_with_access(note, Access.owner)
+    # server_onupdate на updated_at сбрасывает колонку после UPDATE;
+    # без повторной загрузки from_note ловит MissingGreenlet (500).
+    loaded = await _note_with_tags(db, note.id)
+    return _note_read_with_access(loaded, Access.owner)
 
 
 @router.delete("/{note_id}/permanent", status_code=status.HTTP_204_NO_CONTENT)

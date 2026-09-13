@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Непустое значение, если UI открыт под префиксом (например /budget), а не с корня домена -->
+  <meta name="budjet-mount" content="" />
+  <title>Семейный бюджет</title>
+  <link rel="stylesheet" href="/budget-app/style.css?v=20260912" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+  <script id="budjet-app-script" src="/budget-app/app.js?v=20260912" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Семейный бюджет</h1>
+    <nav class="tabs">
+      <button type="button" data-tab="tx" class="tab active">Операции</button>
+      <button type="button" data-tab="cats" class="tab">Категории</button>
+      <button type="button" data-tab="lbl" class="tab">Метки</button>
+      <button type="button" data-tab="tmpl" class="tab">Шаблоны</button>
+      <button type="button" data-tab="charts" class="tab">Графики</button>
+    </nav>
+  </header>
+
+  <section class="balance-strip-wrap" aria-label="Сводка за всё время">
+    <div class="balance-strip" id="balance-strip">
+      <div class="balance-tile">
+        <span class="balance-tile-label">Доходы</span>
+        <span class="balance-tile-value kind-income" id="global-total-income">—</span>
+      </div>
+      <div class="balance-tile">
+        <span class="balance-tile-label">Расходы</span>
+        <span class="balance-tile-value kind-expense" id="global-total-expense">—</span>
+      </div>
+      <div class="balance-tile balance-tile--net">
+        <span class="balance-tile-label">Баланс</span>
+        <span class="balance-tile-value" id="global-balance">—</span>
+      </div>
+    </div>
+    <p class="balance-strip-note muted small">За всё время · не зависит от дат и фильтров в списке</p>
+  </section>
+
+  <main>
+    <section id="pane-tx" class="pane active">
+      <div class="grid pane-tx-grid">
+        <div class="pane-tx-left-stack">
+          <section class="card quick-entry-card" aria-labelledby="quick-entry-heading">
+            <h2 id="quick-entry-heading" class="card-title">Быстрый ввод</h2>
+            <p class="lead muted small">
+              В каждой строке — <strong>сумма</strong>, пробел и комментарий. Несколько операций — <strong>каждая с новой строки</strong>. Дата —
+              сегодня; расход/доход как в «Операции» ниже. Сохранение — кнопка «Добавить».
+            </p>
+            <label class="sr-only" for="quick-bulk-lines">Текст быстрого ввода</label>
+            <textarea
+              id="quick-bulk-lines"
+              class="note-area quick-entry-area"
+              maxlength="4096"
+              rows="4"
+              placeholder="250 Хлеб бородинский&#10;300 Молоко 3.2&#10;150 Сыр"
+            ></textarea>
+            <div class="quick-entry-actions">
+              <button type="button" id="btn-quick-bulk" class="accent-btn btn-wide">Добавить</button>
+            </div>
+          </section>
+          <form id="form-tx" class="card form-card">
+          <h2 class="card-title">Операция</h2>
+          <div class="segmented kind-seg">
+            <label><input type="radio" name="kind" value="expense" checked /><span>Расход</span></label>
+            <label><input type="radio" name="kind" value="income" /><span>Доход</span></label>
+          </div>
+          <label>
+            Сумма
+            <input name="amount" type="number" step="0.01" min="0.01" required placeholder="0.00" />
+          </label>
+          <label>
+            Дата
+            <input name="occurred_on" type="date" />
+          </label>
+          <label>
+            Комментарий
+            <textarea name="note" class="note-area" maxlength="512" rows="3" placeholder="Например: хлеб бородинский, молоко 3.2…"></textarea>
+          </label>
+
+          <div class="field-divider"></div>
+
+          <label class="form-label-strong" for="txn-category-q">Категория</label>
+          <div class="cat-combo" id="txn-category-combo">
+            <input type="hidden" name="category_id" id="txn-category-id" value="" />
+            <div class="cat-combo-field">
+              <input
+                type="text"
+                id="txn-category-q"
+                autocomplete="off"
+                aria-autocomplete="list"
+                aria-expanded="false"
+                aria-controls="txn-category-panel"
+                role="combobox"
+                placeholder="Найти или выбрать категорию…"
+              />
+              <button type="button" class="cat-combo-arrow ghost" tabindex="-1" aria-label="Показать список">▾</button>
+            </div>
+            <ul class="cat-combo-panel" id="txn-category-panel" role="listbox" hidden></ul>
+          </div>
+
+          <p id="txn-category-hint" class="hint-line muted small" aria-live="polite"></p>
+
+          <label class="form-label-strong">Метки</label>
+          <div id="txn-labels" class="txn-labels-panel" role="group" aria-label="Метки операции"></div>
+          <p id="txn-label-hint" class="hint-line muted small" aria-live="polite"></p>
+
+          <div class="template-chips">
+            <div class="template-chips-title">Шаблоны <span class="muted small">· один клик</span></div>
+            <div id="txn-template-chips" class="chip-row"></div>
+          </div>
+
+          <div class="field-divider"></div>
+
+          <div class="txn-form-primary">
+            <button type="submit" id="submit-tx" class="accent-btn btn-wide">Сохранить операцию</button>
+          </div>
+
+          <input type="hidden" name="id" />
+          <div id="txn-form-more" class="txn-form-more-toolbar" hidden>
+            <button type="button" id="btn-apply-rules-once" class="muted-btn ghost txn-act">Подставить категорию</button>
+            <button type="button" id="reset-tx" class="ghost txn-act">Очистить форму</button>
+            <button type="button" id="save-as-template" class="ghost txn-act">В шаблон</button>
+            <button type="button" id="open-rules-modal" class="ghost accent-outline txn-act">Правила…</button>
+          </div>
+          </form>
+        </div>
+
+        <div class="card ledger-card">
+          <h2 class="ledger-card-title">Список</h2>
+          <p
+            class="ledger-filters-tip muted small"
+            title="Категории, подкатегории и метки: при «Применить» запрашиваются только подходящие операции. По родителю отмечаются все вложенные. Метки применяются сразу при отметке в списке."
+          >
+            С 1‑го числа месяца по сегодня · категории ▾ → «Применить» · метки — фильтруют сразу при отметке
+          </p>
+          <div class="ledger-filters-strip filters">
+            <label class="ledger-lf-compact">
+              С
+              <input type="date" id="filter-from" />
+            </label>
+            <label class="ledger-lf-compact">
+              По
+              <input type="date" id="filter-to" />
+            </label>
+            <label class="ledger-lf-compact ledger-lf-select">
+              Тип
+              <select id="filter-kind">
+                <option value="">Все</option>
+                <option value="income">Доход</option>
+                <option value="expense">Расход</option>
+              </select>
+            </label>
+            <label class="ledger-lf-compact ledger-lf-sort">
+              Сортировка
+              <select id="filter-sort">
+                <option value="date_desc">Дата ↓</option>
+                <option value="date_asc">Дата ↑</option>
+                <option value="amount_desc">Сумма ↓</option>
+                <option value="amount_asc">Сумма ↑</option>
+                <option value="kind">Тип</option>
+                <option value="category">Категория</option>
+                <option value="note">Комментарий А–Я</option>
+              </select>
+            </label>
+            <div class="ledger-cat-filter-wrap" id="ledger-cat-filter-wrap">
+              <div class="ledger-cat-trigger-row">
+                <button type="button" id="ledger-cat-toggle" class="small ghost ledger-cat-toggle">Категории ▾</button>
+                <span id="ledger-cat-summary" class="muted small ledger-cat-sum">Любая</span>
+                <button
+                  type="button"
+                  id="ledger-cat-clear-inline"
+                  class="small ghost ledger-filter-inline-clear"
+                  hidden
+                  title="Снять фильтр по категориям"
+                  aria-label="Снять фильтр по категориям"
+                >
+                  ×
+                </button>
+              </div>
+              <div id="ledger-cat-popover" class="ledger-cat-popover" hidden>
+                <div class="ledger-cat-popover-toolbar">
+                  <button type="button" id="ledger-cat-clear" class="small ghost">Снять фильтр</button>
+                  <button type="button" id="ledger-cat-roots" class="small ghost">Все корни</button>
+                  <button type="button" id="ledger-cat-subonly" class="small ghost">Только подкатегории</button>
+                </div>
+                <input
+                  type="search"
+                  id="ledger-cat-tree-q"
+                  class="ledger-cat-tree-q"
+                  placeholder="Поиск в дереве…"
+                  autocomplete="off"
+                />
+                <div id="ledger-cat-tree-body" class="ledger-cat-tree-body" role="tree"></div>
+              </div>
+            </div>
+            <div class="ledger-cat-filter-wrap" id="ledger-label-filter-wrap">
+              <div class="ledger-cat-trigger-row">
+                <button type="button" id="ledger-label-toggle" class="small ghost ledger-cat-toggle">Метки ▾</button>
+                <span id="ledger-label-summary" class="muted small ledger-cat-sum">Любые</span>
+                <button
+                  type="button"
+                  id="ledger-label-clear-inline"
+                  class="small ghost ledger-filter-inline-clear"
+                  hidden
+                  title="Снять фильтр по меткам"
+                  aria-label="Снять фильтр по меткам"
+                >
+                  ×
+                </button>
+              </div>
+              <div id="ledger-label-popover" class="ledger-cat-popover" hidden>
+                <div class="ledger-cat-popover-toolbar">
+                  <button type="button" id="ledger-label-clear" class="small ghost">Снять фильтр меток</button>
+                </div>
+                <input
+                  type="search"
+                  id="ledger-label-tree-q"
+                  class="ledger-cat-tree-q"
+                  placeholder="Поиск по меткам…"
+                  autocomplete="off"
+                />
+                <div id="ledger-label-tree-body" class="ledger-cat-tree-body" role="tree"></div>
+              </div>
+            </div>
+            <label class="ledger-lf-compact ledger-lf-note">
+              Комментарий
+              <input
+                type="search"
+                id="filter-note-q"
+                class="ledger-note-filter"
+                maxlength="260"
+                placeholder="содержит…"
+                title="Подстрока без учёта регистра. Обновление таблицы — кнопка «Применить» или Enter."
+                autocomplete="off"
+              />
+            </label>
+            <button type="button" id="apply-filters" class="small accent-btn ledger-lf-apply">Применить</button>
+            <button type="button" id="export-xlsx" class="small ghost ledger-lf-export">Excel</button>
+          </div>
+          <div class="ledger" id="ledger"><p class="muted small ledger-loading">Загрузка журнала…</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="pane-cats" class="pane">
+      <div class="card">
+        <h2>Категории</h2>
+        <p class="muted small">
+          Справочники расходов и доходов раздельные. Удаление категории удаляет и все вложенные.
+        </p>
+        <div class="row cat-admin-kind">
+          <label class="inline">
+            <input type="radio" name="cat-admin-kind" value="expense" checked />
+            Расходы
+          </label>
+          <label class="inline">
+            <input type="radio" name="cat-admin-kind" value="income" />
+            Доходы
+          </label>
+        </div>
+
+        <h3 class="cat-block-first">Добавить категорию</h3>
+        <form id="form-new-category" class="inline-form">
+          <label>
+            Название
+            <input name="name" type="text" maxlength="128" required placeholder="Напр. Продукты" />
+          </label>
+          <label>
+            Внутри (родитель)
+            <select id="new-cat-parent" name="parent_id">
+              <option value="">— корень верхнего уровня —</option>
+            </select>
+          </label>
+          <button type="submit">Добавить</button>
+        </form>
+
+        <hr class="hr" />
+
+        <p class="muted small drag-hint">
+          <strong>Перетаскивание:</strong> ухватите <strong>⠿</strong> и отпустите на <strong>другую строку</strong> — станет подкатегорией этой строки.
+          Серую зону под деревом — в корень. Или «куда вложить…».
+        </p>
+        <div id="category-drop-root" class="drop-root" hidden>Перетащите сюда, чтобы вынести в корень</div>
+        <div id="category-tree" class="category-tree-root"></div>
+
+        <div id="cat-rules-section" class="cat-rules-block cat-rules-block-compact">
+          <hr class="hr" />
+          <h3>Правила по тексту комментария</h3>
+          <p class="muted small cat-rules-lead-one">
+            Если в комментарии есть <strong>слово или фраза</strong> (регистр не важен), при сохранении подставится категория; приоритет: меньше число → раньше.
+          </p>
+          <div id="rules-list-inline" class="rules-list rules-list-tall rules-list-compact"></div>
+          <form id="form-new-rule-inline" class="rule-form rule-toolbar-form">
+            <div class="rule-toolbar-row">
+              <input id="rule-inline-phrase" class="rule-inp-text" type="text" maxlength="200" placeholder="Слово / фраза" autocomplete="off" aria-label="Текст в комментарии" />
+              <label class="regex-chk-inline"><input type="checkbox" id="rule-inline-advanced" /><span>regex</span></label>
+              <input id="rule-inline-order" class="rule-inp-prio" type="number" min="0" max="999999" value="100" title="Меньше — раньше" aria-label="Приоритет" />
+              <select id="rule-inline-category" class="rule-select-cat"><option value="">Категория…</option></select>
+              <button type="submit" class="accent-btn rule-add-submit">Добавить</button>
+            </div>
+            <div id="rule-inline-pattern-wrap" class="rule-regex-bar" hidden>
+              <label class="regex-bar-inline muted small">Шаблон <input id="rule-inline-pattern" class="regex-bar-input" type="text" maxlength="512" placeholder="аренда|ипотека" autocomplete="off" /></label>
+            </div>
+          </form>
+
+          <details class="regex-help">
+            <summary>Необязательно: что такое regex</summary>
+            <p class="muted small">
+              Если отметите «Свой regex», вместо простого текста можно задать шаблон, например
+              <code>хлеб(а|у|ом)?</code> или <code>метро|такси</code>.
+              Спецсимволы (<code>.</code>, <code>?</code> и др.) здесь уже работают как в regex — в обычном режиме они просто ищутся как текст.
+            </p>
+          </details>
+        </div>
+
+    </section>
+
+    <section id="pane-lbl" class="pane">
+      <div class="card">
+        <h2>Метки</h2>
+        <div class="label-help-block muted small">
+          <p>
+            Это два независимых блока — как у категорий:
+            сначала <strong>список меток</strong>, потом <strong>правила по тексту комментария</strong>.
+            В БД таблицы вручную не трогаем — всё через эту вкладку.
+          </p>
+          <ul>
+            <li>
+              <strong>Несколько меток на операцию</strong>: отметьте галочки в форме операции и/или настройте несколько правил — сработавшие правила суммируются (к категории по-прежнему одна строка категории).
+            </li>
+            <li>
+              <strong>Расходы / доходы</strong>: у каждого вида свой набор меток и своё дерево — переключатель сверху.
+            </li>
+          </ul>
+        </div>
+        <div class="row cat-admin-kind">
+          <label class="inline">
+            <input type="radio" name="label-admin-kind" value="expense" checked />
+            Расходы
+          </label>
+          <label class="inline">
+            <input type="radio" name="label-admin-kind" value="income" />
+            Доходы
+          </label>
+        </div>
+
+        <h3 class="label-section-title cat-block-first">1. Справочник меток</h3>
+        <p class="muted small">Новая метка может быть в <strong>корне</strong> или <strong>внутри другой метки</strong> — выберите родителя в списке. Дерево ниже можно таскать («⠿»).</p>
+
+        <h4 class="label-subsection-h">Добавить метку</h4>
+        <p class="muted small">
+          Введите название, при необходимости выберите родителя (или оставьте «корень») и нажмите <strong>Добавить</strong>.
+          Несколько меток подряд — просто снова введите имя и нажмите кнопку.
+        </p>
+        <p id="new-label-feedback" class="form-field-error" aria-live="polite"></p>
+        <form id="form-new-label-tree" class="inline-form">
+          <label>
+            Название
+            <input name="name" type="text" maxlength="128" required placeholder="Напр. Семья" autocomplete="off" />
+          </label>
+          <label>
+            Внутри (родитель)
+            <select id="new-label-parent" name="parent_id">
+              <option value="">— корень верхнего уровня —</option>
+            </select>
+          </label>
+          <button type="submit">Добавить</button>
+        </form>
+
+        <hr class="hr" />
+
+        <p class="muted small drag-hint">
+          <strong>Перетаскивание:</strong> ухватите <strong>⠿</strong> и отпустите на другую метку — станет вложенной. Серую зону — вытащить в корень или «куда вложить…».
+        </p>
+        <div id="label-drop-root" class="drop-root" hidden>Перетащите сюда, чтобы вынести в корень</div>
+        <div id="label-tree" class="category-tree-root"></div>
+
+        <div id="label-rules-section" class="cat-rules-block cat-rules-block-compact">
+          <hr class="hr" />
+          <h3 class="label-section-title">2. Автоматические правила по комментарию</h3>
+          <p class="muted small">
+            Как вкладка «Категории»: если текст комментария <strong>содержит</strong> фразу или совпадает с regex —
+            при сохранении операции к ней добавится указанная метка. Несколько подходящих правил добавят несколько меток (плюс к тем, что отметите вручную).
+          </p>
+
+          <h4 class="label-subsection-h">Текущие метки</h4>
+          <div id="labels-list-inline" class="rules-list rules-list-tall rules-list-compact"></div>
+
+          <h4 class="label-subsection-h cat-block-first">Уже добавленные правила</h4>
+          <div id="label-rules-list-inline" class="rules-list rules-list-tall rules-list-compact"></div>
+
+          <h4 class="label-subsection-h">Новое правило: текст или regex → метка</h4>
+          <p class="muted small">
+            Без «regex» — поиск как подстрока (например <strong>Молоко</strong> найдёт «купил Молоко 3.2»). С «regex» — полноценное выражение. Сначала создайте метку в блоке 1 и выберите её в списке.
+          </p>
+          <form id="form-new-label-rule-inline" class="rule-form rule-toolbar-form">
+            <div class="rule-toolbar-row">
+              <input
+                id="label-rule-inline-phrase"
+                class="rule-inp-text"
+                type="text"
+                maxlength="200"
+                placeholder="Молоко, хлеб, пятерочка…"
+                autocomplete="off"
+                aria-label="Текст в комментарии для метки"
+              />
+              <label class="regex-chk-inline"><input type="checkbox" id="label-rule-inline-advanced" /><span>regex</span></label>
+              <input
+                id="label-rule-inline-order"
+                class="rule-inp-prio"
+                type="number"
+                min="0"
+                max="999999"
+                value="100"
+                title="Меньше — раньше"
+                aria-label="Приоритет метки"
+              />
+              <select id="label-rule-inline-label" class="rule-select-cat"><option value="">Метка…</option></select>
+              <button type="submit" class="accent-btn rule-add-submit">Добавить</button>
+            </div>
+            <div id="label-rule-inline-pattern-wrap" class="rule-regex-bar" hidden>
+              <label class="regex-bar-inline muted small"
+                >Шаблон
+                <input id="label-rule-inline-pattern" class="regex-bar-input" type="text" maxlength="512" placeholder="пятерочка|перекрёсток" autocomplete="off"
+              /></label>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="pane-tmpl" class="pane">
+      <div class="grid tmpl-grid">
+        <div class="card">
+          <h2>Шаблоны <span class="muted small">(частые операции)</span></h2>
+          <div id="template-list" class="template-list"></div>
+        </div>
+        <div class="card">
+          <h2 id="template-editor-title">Новый шаблон</h2>
+          <form id="form-template">
+            <input type="hidden" name="id" />
+            <label>
+              Название
+              <input name="title" type="text" maxlength="160" required placeholder="Обед дома" />
+            </label>
+            <div class="row">
+              <label class="inline">
+                <input type="radio" name="tpl_kind" value="expense" checked />
+                Расход
+              </label>
+              <label class="inline">
+                <input type="radio" name="tpl_kind" value="income" />
+                Доход
+              </label>
+            </div>
+            <label>
+              Сумма
+              <input name="amount" type="number" step="0.01" min="0.01" required />
+            </label>
+            <label class="form-label-strong" for="tpl-category-q">Категория</label>
+            <div class="cat-combo" id="tpl-category-combo">
+              <input type="hidden" name="category_id" id="tpl-category-id" value="" />
+              <div class="cat-combo-field">
+                <input
+                  type="text"
+                  id="tpl-category-q"
+                  autocomplete="off"
+                  aria-autocomplete="list"
+                  aria-expanded="false"
+                  aria-controls="tpl-category-panel"
+                  role="combobox"
+                  placeholder="Найти или выбрать категорию…"
+                />
+                <button type="button" class="cat-combo-arrow ghost" tabindex="-1" aria-label="Показать список">▾</button>
+              </div>
+              <ul class="cat-combo-panel" id="tpl-category-panel" role="listbox" hidden></ul>
+            </div>
+            <label>
+              Комментарий
+              <input name="note" type="text" maxlength="512" />
+            </label>
+            <div class="form-actions">
+              <button type="submit">Сохранить шаблон</button>
+              <button type="button" id="reset-template-form" class="ghost">Очистить</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="pane-charts" class="pane">
+      <div class="card chart-controls">
+        <h2>Период и фильтры</h2>
+        <div class="filters inline-wrap">
+          <label>
+            С
+            <input type="date" id="chart-from" />
+          </label>
+          <label>
+            По
+            <input type="date" id="chart-to" />
+          </label>
+          <label>
+            Доли по категориям
+            <select id="chart-cat-level" aria-label="Уровень группировки категорий на круговых графиках">
+              <option value="leaf">Полный путь (конечные категории)</option>
+              <option value="root">Только верхний уровень</option>
+            </select>
+          </label>
+          <button type="button" id="chart-refresh">Построить</button>
+        </div>
+        <p class="muted small">
+          Графики подгружаются по кнопке — в простое браузер ничего не опрашивает.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Доходы и расходы по дням</h3>
+        <div class="chart-wrap">
+          <canvas id="chart-daily"></canvas>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="card">
+          <h3>Расходы по категориям</h3>
+          <div class="chart-wrap doughnut">
+            <canvas id="chart-cat-expense"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Доходы по категориям</h3>
+          <div class="chart-wrap doughnut">
+            <canvas id="chart-cat-income"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Сводка по месяцам</h3>
+        <div class="chart-wrap tall">
+          <canvas id="chart-monthly"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="dlg-move-category" class="move-cat-dialog">
+    <div class="dialog-inner">
+      <form id="form-move-category">
+        <h3>Куда поместить категорию</h3>
+        <p id="move-cat-caption" class="muted small"></p>
+        <label>
+          Родитель
+          <select id="move-cat-parent"></select>
+        </label>
+        <div class="form-actions move-cat-actions">
+          <button type="button" id="btn-move-cat-cancel" class="ghost">Отмена</button>
+          <button type="submit">Переместить</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-move-label" class="move-cat-dialog">
+    <div class="dialog-inner">
+      <form id="form-move-label">
+        <h3>Куда поместить метку</h3>
+        <p id="move-label-caption" class="muted small"></p>
+        <label>
+          Родитель
+          <select id="move-label-parent"></select>
+        </label>
+        <div class="form-actions move-cat-actions">
+          <button type="button" id="btn-move-label-cancel" class="ghost">Отмена</button>
+          <button type="submit">Переместить</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <div id="modal-rules" class="modal" hidden>
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-panel card" role="dialog" aria-labelledby="modal-rules-title">
+      <header class="modal-head">
+        <h2 id="modal-rules-title">Правила автокатегорий</h2>
+        <button type="button" class="modal-close" data-close-modal aria-label="Закрыть">×</button>
+      </header>
+      <p class="muted small">То же, что внизу вкладки «Категории» — слово/фраза или regex.</p>
+      <div class="segmented modal-kind-seg">
+        <label><input type="radio" name="modal-rule-kind" value="expense" checked /><span>Расходы</span></label>
+        <label><input type="radio" name="modal-rule-kind" value="income" /><span>Доходы</span></label>
+      </div>
+      <div id="rules-list-modal" class="rules-list rules-list-compact"></div>
+      <h3 class="modal-sub modal-sub-inline">Добавить правило</h3>
+      <form id="form-new-rule" class="rule-form rule-toolbar-form">
+        <div class="rule-toolbar-row">
+          <input id="rule-new-phrase" class="rule-inp-text" type="text" maxlength="200" placeholder="Слово / фраза" autocomplete="off" aria-label="Текст в комментарии" />
+          <label class="regex-chk-inline"><input type="checkbox" id="rule-new-advanced" /><span>regex</span></label>
+          <input id="rule-new-order" class="rule-inp-prio" type="number" min="0" max="999999" value="100" title="Меньше — раньше" aria-label="Приоритет" />
+          <select id="rule-new-category" class="rule-select-cat"><option value="">Категория…</option></select>
+          <button type="submit" class="accent-btn rule-add-submit">Добавить</button>
+        </div>
+        <div id="rule-new-pattern-wrap" class="rule-regex-bar" hidden>
+          <label class="regex-bar-inline muted small">Шаблон <input id="rule-new-pattern" class="regex-bar-input" type="text" maxlength="512" placeholder="аренда|ипотека" autocomplete="off" /></label>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>

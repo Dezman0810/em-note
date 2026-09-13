@@ -41,7 +41,9 @@ function interactiveInHeadOrEditor(target: Element): boolean {
     tag === 'TEXTAREA' ||
     target.closest('button') ||
     target.closest('.excal-import') ||
-    target.closest('label.excal-import')
+    target.closest('label.excal-import') ||
+    target.closest('.block-title-field') ||
+    target.closest('.block-title-wrap')
   ) {
     return true
   }
@@ -79,6 +81,23 @@ export const ExcalidrawBlock = Node.create({
         default: false,
         parseHTML: (el) => (el as HTMLElement).getAttribute('data-collapsed') === 'true',
         renderHTML: (attrs) => (attrs.collapsed ? { 'data-collapsed': 'true' } : {}),
+      },
+      blockId: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-block-id'),
+        renderHTML: (attrs) => {
+          if (!attrs.blockId) return {}
+          return { 'data-block-id': attrs.blockId as string }
+        },
+      },
+      title: {
+        default: null,
+        parseHTML: (el) => (el as HTMLElement).getAttribute('data-title'),
+        renderHTML: (attrs) => {
+          const title = typeof attrs.title === 'string' ? attrs.title.trim() : ''
+          if (!title) return {}
+          return { 'data-title': title }
+        },
       },
     }
   },
@@ -120,7 +139,12 @@ export const ExcalidrawBlock = Node.create({
         ({ commands }) =>
           commands.insertContent({
             type: this.name,
-            attrs: { scene: DEFAULT_EXCALIDRAW_SCENE, collapsed: false },
+            attrs: {
+              scene: DEFAULT_EXCALIDRAW_SCENE,
+              collapsed: false,
+              blockId: crypto.randomUUID(),
+              title: 'Схема',
+            },
           }),
     }
   },

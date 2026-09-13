@@ -50,12 +50,26 @@ async def patch_user_access(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить грамматику у аккаунта администратора",
         )
+    if is_admin_user and body.can_use_budget is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя отключить бюджет у аккаунта администратора",
+        )
+    if is_admin_user and body.can_use_schemas is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Нельзя отключить схемы у аккаунта администратора",
+        )
     if body.can_create_notes is not None:
         user.can_create_notes = body.can_create_notes
     if body.can_use_habits is not None:
         user.can_use_habits = body.can_use_habits
     if body.can_use_grammar is not None:
         user.can_use_grammar = body.can_use_grammar
+    if body.can_use_budget is not None:
+        user.can_use_budget = body.can_use_budget
+    if body.can_use_schemas is not None:
+        user.can_use_schemas = body.can_use_schemas
     await db.flush()
     await db.refresh(user)
     return user

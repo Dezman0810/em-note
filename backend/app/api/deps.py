@@ -61,6 +61,24 @@ async def require_grammar_access(user: Annotated[User, Depends(get_current_user)
     )
 
 
+async def require_budget_access(user: Annotated[User, Depends(get_current_user)]) -> User:
+    if user.can_use_budget:
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Бюджет отключён. Доступ выдаёт администратор.",
+    )
+
+
+async def require_schemas_access(user: Annotated[User, Depends(get_current_user)]) -> User:
+    if user.can_use_schemas:
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Разделы «Схемы» и «Карты» отключены. Доступ выдаёт администратор.",
+    )
+
+
 async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> User:
     a = (settings.admin_email or "").strip().lower()
     if not a or user.email.strip().lower() != a:

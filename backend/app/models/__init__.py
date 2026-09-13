@@ -15,6 +15,14 @@ from app.models.habit import Habit, HabitCheck
 from app.models.habit_public_link import HabitPublicLink
 from app.models.user_contact import UserContact
 from app.models.user_note_filter_preset import UserNoteFilterPreset
+from app.models.budget import (
+    BudgetCategory,
+    BudgetCommentCategoryRule,
+    BudgetCommentLabelRule,
+    BudgetLabel,
+    BudgetTemplate,
+    BudgetTransaction,
+)
 
 __all__ = [
     "Base",
@@ -36,4 +44,10 @@ __all__ = [
     "Habit",
     "HabitCheck",
     "HabitPublicLink",
+    "BudgetCategory",
+    "BudgetLabel",
+    "BudgetTransaction",
+    "BudgetTemplate",
+    "BudgetCommentCategoryRule",
+    "BudgetCommentLabelRule",
 ]

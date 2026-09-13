@@ -33,6 +33,8 @@ class User(Base):
     can_create_notes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_use_habits: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_grammar: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_use_schemas: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     notes: Mapped[list["Note"]] = relationship(

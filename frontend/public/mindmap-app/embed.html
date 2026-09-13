@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1,maximum-scale=1,minimum-scale=1">
+  <link rel="icon" href="assets/logo.ico">
+  <title>Карта в заметке</title>
+  <script>
+    window.externalPublicPath = './assets/'
+    window.takeOverApp = true
+    if (!location.hash || location.hash === '#' || (location.hash !== '#/' && location.hash !== '#/index')) {
+      location.hash = '#/'
+    }
+    try {
+      localStorage.setItem('SIMPLE_MIND_MAP_LANG', 'en')
+      localStorage.setItem('webUseTip', '1')
+      sessionStorage.setItem('smm_ru_nodes', '1')
+    } catch (e) {}
+
+    var DEFAULT_THEME = 'classic4'
+
+    function defaultMap() {
+      return {
+        root: { data: { text: 'Главная' }, children: [] },
+        theme: { template: DEFAULT_THEME, config: { root: { fillColor: '#0062b1', color: '#ffffff' }, second: { marginX: 50, marginY: 15, fillColor: '#73d8ff', color: '#000000' }, node: { marginX: 30, marginY: 5 } } },
+        layout: 'logicalStructure',
+        config: {},
+        view: null
+      }
+    }
+
+    function defaultLocalConfig() {
+      return {
+        isZenMode: false,
+        openNodeRichText: true,
+        useLeftKeySelectionRightKeyDrag: true,
+        isShowScrollbar: false,
+        isDark: false,
+        enableAi: false
+      }
+    }
+
+    function isObj(v) {
+      return !!v && typeof v === 'object' && !Array.isArray(v)
+    }
+
+    function clonePlain(v, fallback) {
+      try {
+        return JSON.parse(JSON.stringify(v))
+      } catch (e) {
+        return fallback
+      }
+    }
+
+    function cloneNode(raw, seen, depth) {
+      if (!isObj(raw) || depth > 48) return null
+      if (seen.has(raw)) return null
+      seen.add(raw)
+      if (isObj(raw.root) && isObj(raw.root.data)) return cloneNode(raw.root, seen, depth + 1)
+      if (!isObj(raw.data)) return null
+      var data = {}
+      Object.keys(raw.data).forEach(function (key) {
+        if (key === 'parent' || key === 'mindMap' || key === 'node' || key === 'el') return
+        var val = raw.data[key]
+        if (val !== null && typeof val === 'object') {
+          var copied = clonePlain(val, null)
+          if (copied !== null) data[key] = copied
+        } else {
+          data[key] = val
+        }
+      })
+      if (typeof data.text !== 'string') data.text = data.text == null ? '' : String(data.text)
+      var children = []
+      if (Array.isArray(raw.children)) {
+        raw.children.forEach(function (ch) {
+          var node = cloneNode(ch, seen, depth + 1)
+          if (node) children.push(node)
+        })
+      }
+      return { data: data, children: children }
+    }
+
+    function unwrapNestedDocument(raw) {
+      var cur = raw
+      for (var i = 0; i < 8; i++) {
+        if (!isObj(cur)) return null
+        if (isObj(cur.root) && isObj(cur.root.root)) {
+          cur = {
+            root: cur.root.root,
+            theme: cur.root.theme || cur.theme,
+            layout: cur.root.layout || cur.layout,
+            config: cur.root.config || cur.config,
+            view: cur.root.view || cur.view
+          }
+          continue
+        }
+        break
+      }
+      return isObj(cur) ? cur : null
+    }
+
+    var PLACEHOLDER_ROOT = {
+      'главная': 1,
+      'центр': 1,
+      root: 1,
+      'central topic': 1
+    }
+
+    function nodeTitle(text) {
+      return String(text == null ? '' : text)
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase()
+    }
+
+    function unwrapDuplicatePlaceholder(node) {
+      var cur = node
+      for (var i = 0; i < 48; i++) {
+        var text = nodeTitle(cur.data && cur.data.text)
+        var only = cur.children && cur.children.length === 1 ? cur.children[0] : null
+        if (!only || !PLACEHOLDER_ROOT[text]) break
+        var childText = nodeTitle(only.data && only.data.text)
+        if (childText === text || PLACEHOLDER_ROOT[childText]) {
+          cur = only
+          continue
+        }
+        break
+      }
+      return cur
+    }
+
+    function sanitizeScene(raw) {
+      var doc = unwrapNestedDocument(raw) || (isObj(raw) ? raw : {})
+      var rootSrc = doc.root || (isObj(doc.data) ? doc : null)
+      var cloned = cloneNode(rootSrc, typeof WeakSet === 'function' ? new WeakSet() : { has: function () { return false }, add: function () {} }, 0)
+      if (!cloned) return defaultMap()
+      var themeRaw = isObj(doc.theme) ? doc.theme : null
+      return {
+        root: unwrapDuplicatePlaceholder(cloned),
+        theme: {
+          template: themeRaw && typeof themeRaw.template === 'string' ? themeRaw.template : DEFAULT_THEME,
+          config: themeRaw && isObj(themeRaw.config) ? clonePlain(themeRaw.config, {}) : {}
+        },
+        layout: typeof doc.layout === 'string' ? doc.layout : 'logicalStructure',
+        config: isObj(doc.config) ? clonePlain(doc.config, {}) : {},
+        view: isObj(doc.view) && isObj(doc.view.state) ? clonePlain(doc.view, null) : null
+      }
+    }
+
+    window.__emNoteMindmap = {
+      data: null,
+      readonly: false,
+      booted: false,
+      gotParent: false,
+      parentApplied: false,
+      allowSave: window.parent === window
+    }
+
+    function sameSite(origin) {
+      try {
+        return new URL(origin).hostname === window.location.hostname
+      } catch (e) {
+        return origin === window.location.origin
+      }
+    }
+
+    function notifyParent(payload) {
+      if (window.parent === window) return
+      window.parent.postMessage(payload, '*')
+    }
+
+    function applySceneToApp(clean) {
+      window.__emNoteMindmap.data = clean
+      if (window.$bus && typeof window.$bus.$emit === 'function') {
+        try {
+          window.$bus.$emit('setData', clonePlain(clean, defaultMap()))
+          return
+        } catch (e) {}
+      }
+      var api = window.__emNoteMindmap.api
+      if (api && typeof api.setFullData === 'function') {
+        try {
+          api.setFullData(clonePlain(clean, defaultMap()))
+        } catch (e) {}
+      }
+    }
+
+    window.takeOverAppMethods = {
+      getMindMapData: function () {
+        return clonePlain(sanitizeScene(window.__emNoteMindmap.data), defaultMap())
+      },
+      saveMindMapData: function (data) {
+        if (!window.__emNoteMindmap.allowSave || window.__emNoteMindmap.readonly) return
+        var clean = sanitizeScene(data)
+        if (!clean) return
+        window.__emNoteMindmap.data = clean
+        notifyParent({ type: 'em-note-mindmap-save', data: clonePlain(clean, clean) })
+      },
+      getLanguage: function () {
+        return 'en'
+      },
+      saveLanguage: function () {},
+      getLocalConfig: function () {
+        return defaultLocalConfig()
+      },
+      saveLocalConfig: function () {},
+      getMindMapConfig: function () {
+        return {
+          readonly: !!window.__emNoteMindmap.readonly,
+          useLeftKeySelectionRightKeyDrag: true
+        }
+      },
+      saveMindMapConfig: function () {}
+    }
+
+    function setEmbedReadonlyClass(on) {
+      document.documentElement.classList.toggle('smm-embed-readonly', !!on)
+      if (document.body) document.body.classList.toggle('smm-embed-readonly', !!on)
+    }
+
+    function commitVueReadonly(on) {
+      try {
+        var root = document.querySelector('#app')
+        var vm = root && root.__vue__
+        if (vm && vm.$store && typeof vm.$store.commit === 'function') {
+          vm.$store.commit('setIsReadonly', !!on)
+        }
+      } catch (e) {}
+    }
+
+    function lockMindMapReadonly(mindMap) {
+      if (!mindMap) return
+      try {
+        mindMap.updateConfig({
+          readonly: true,
+          useLeftKeySelectionRightKeyDrag: true,
+          enableAutoEnterTextEditWhenKeydown: false
+        })
+      } catch (e) {}
+      try {
+        if (typeof mindMap.setMode === 'function') mindMap.setMode('readonly')
+      } catch (e) {}
+      if (!mindMap.__emNoteReadonlyLocked && typeof mindMap.setMode === 'function') {
+        mindMap.__emNoteReadonlyLocked = true
+        var origSetMode = mindMap.setMode.bind(mindMap)
+        mindMap.setMode = function (mode) {
+          if (window.__emNoteMindmap.readonly && mode !== 'readonly') return
+          return origSetMode(mode)
+        }
+      }
+      commitVueReadonly(true)
+      setEmbedReadonlyClass(true)
+    }
+
+    function applyReadonlyState(mindMap) {
+      var api = mindMap || window.__emNoteMindmap.api
+      if (!window.__emNoteMindmap.readonly) {
+        window.__emNoteMindmap.allowSave = window.__emNoteMindmap.gotParent || window.parent === window
+        setEmbedReadonlyClass(false)
+        try {
+          if (api) {
+            api.updateConfig({
+              readonly: false,
+              useLeftKeySelectionRightKeyDrag: true
+            })
+          }
+        } catch (e) {}
+        return
+      }
+      window.__emNoteMindmap.allowSave = false
+      setEmbedReadonlyClass(true)
+      if (api) lockMindMapReadonly(api)
+      else commitVueReadonly(true)
+    }
+
+    window.__emNoteApplyReadonlyState = applyReadonlyState
+
+    function bootApp() {
+      if (window.__emNoteMindmap.booted) return
+      if (typeof window.initApp !== 'function') return
+      if (!window.__emNoteMindmap.data) {
+        window.__emNoteMindmap.data = defaultMap()
+      } else {
+        window.__emNoteMindmap.data = sanitizeScene(window.__emNoteMindmap.data)
+      }
+      window.__emNoteMindmap.booted = true
+      if (window.$bus && window.$bus.$on) {
+        window.$bus.$on('app_inited', function (mindMap) {
+          window.__emNoteMindmap.api = mindMap
+          try {
+            mindMap.updateConfig({
+              readonly: !!window.__emNoteMindmap.readonly,
+              useLeftKeySelectionRightKeyDrag: true,
+              enableAutoEnterTextEditWhenKeydown: !window.__emNoteMindmap.readonly
+            })
+          } catch (e) {}
+          applyReadonlyState(mindMap)
+          try {
+            var theme = window.__emNoteMindmap.data && window.__emNoteMindmap.data.theme
+            if (theme && theme.template && typeof mindMap.setTheme === 'function') {
+              if (typeof mindMap.getTheme !== 'function' || mindMap.getTheme() !== theme.template) {
+                mindMap.setTheme(theme.template, true)
+              }
+            }
+            if (theme && theme.config && typeof mindMap.setThemeConfig === 'function') {
+              mindMap.setThemeConfig(theme.config, true)
+            }
+          } catch (e) {}
+        })
+      }
+      window.initApp()
+    }
+
+    window.addEventListener('message', function (ev) {
+      if (ev.source !== window.parent) return
+      if (ev.origin && ev.origin !== 'null' && !sameSite(ev.origin)) return
+      var msg = ev.data
+      if (!msg || typeof msg !== 'object') return
+      if (msg.type !== 'em-note-mindmap-init') return
+      window.__emNoteMindmap.gotParent = true
+      window.__emNoteMindmap.readonly = !!msg.readonly
+      window.__emNoteMindmap.allowSave = !window.__emNoteMindmap.readonly
+      applyReadonlyState()
+      var clean = msg.data && typeof msg.data === 'object' ? sanitizeScene(msg.data) : null
+      if (!window.__emNoteMindmap.booted) {
+        if (clean) window.__emNoteMindmap.data = clean
+        window.__emNoteMindmap.parentApplied = true
+        bootApp()
+        return
+      }
+      if (!window.__emNoteMindmap.parentApplied && clean) {
+        window.__emNoteMindmap.parentApplied = true
+        applySceneToApp(clean)
+      }
+      applyReadonlyState(window.__emNoteMindmap.api)
+    })
+  </script>
+  <link href="assets/css/chunk-vendors.css?c38ada11529d60265d8b" rel="stylesheet">
+  <link href="assets/css/app.css?c38ada11529d60265d8b" rel="stylesheet">
+  <link href="ru-ui.css?v=13" rel="stylesheet">
+  <style>
+    html, body, #app { height: 100%; margin: 0; }
+
+    /* Файл / каталог / импорт / экспорт не нужны: карта пишется в заметку. */
+    .toolbar .toolbarBlock:nth-child(2),
+    .toolbar .toolbarBlock:has(.iconxinjian),
+    .toolbar .toolbarBlock:has(.icondaoru),
+    .toolbar .toolbarBlock:has(.iconexport),
+    .toolbar .toolbarBlock:has(.fileTreeBox) {
+      display: none !important;
+    }
+
+    /* Формулу не показываем; «Ещё» тоже с icongongshi — её не трогаем. */
+    .toolbar .toolbarBtn.smm-hide-formula {
+      display: none !important;
+    }
+
+    html.smm-embed-readonly .contextmenuContainer,
+    html.smm-embed-readonly .richTextToolbar,
+    html.smm-embed-readonly .nodeIconToolbar,
+    html.smm-embed-readonly .nodeImgPlacementToolbar,
+    html.smm-embed-readonly .formulaInputBox,
+    html.smm-embed-readonly .navigatorContainer,
+    html.smm-embed-readonly .smm-shortcut-item,
+    html.smm-embed-readonly .searchContainer,
+    html.smm-embed-readonly .outlineEditContainer,
+    html.smm-embed-readonly .toolbar,
+    html.smm-embed-readonly .smm-toolbar-toggle,
+    html.smm-embed-readonly .sidebarTriggerContainer {
+      display: none !important;
+    }
+
+  </style>
+</head>
+<body>
+  <noscript><strong>Включите JavaScript, чтобы пользоваться интеллект-картами.</strong></noscript>
+  <div id="app"></div>
+  <script src="assets/js/chunk-vendors.js?c38ada11529d60265d8b"></script>
+  <script src="assets/js/app.js?c38ada11529d60265d8b&v=ro1"></script>
+  <script src="ru-i18n.js?v=20"></script>
+  <script>
+    (function () {
+      notifyParent({ type: 'em-note-mindmap-ready' })
+      var tries = 0
+      var timer = setInterval(function () {
+        tries += 1
+        var standalone = window.parent === window
+        if (typeof window.initApp === 'function' && (window.__emNoteMindmap.gotParent || standalone)) {
+          clearInterval(timer)
+          if (standalone) window.__emNoteMindmap.allowSave = true
+          bootApp()
+        }
+        if (tries >= 100) clearInterval(timer)
+      }, 40)
+    })()
+  </script>
+</body>
+</html>

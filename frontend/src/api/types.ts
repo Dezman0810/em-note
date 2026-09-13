@@ -9,6 +9,10 @@ export interface User {
   can_use_habits: boolean
   /** Если false — нет проверки орфографии и грамматики в заметке. */
   can_use_grammar: boolean
+  /** Если false — раздел «Бюджет» скрыт (выдаёт админ). Общий для всех с доступом. */
+  can_use_budget: boolean
+  /** Если false — раздел «Схемы» скрыт (выдаёт админ). Список из доступных заметок. */
+  can_use_schemas: boolean
   /** Единственный email из настроек API; видит админку. */
   is_admin: boolean
   /** После сброса админом: нужно задать свой пароль. */
@@ -23,6 +27,8 @@ export interface AdminUserRow {
   can_create_notes: boolean
   can_use_habits: boolean
   can_use_grammar: boolean
+  can_use_budget: boolean
+  can_use_schemas: boolean
 }
 
 export interface GrammarIssue {
@@ -235,3 +241,23 @@ export interface Habit {
   window_cells: HabitDayCell[]
   slots: HabitDayCell[]
 }
+
+export interface NoteSchemaListItem {
+  note_id: string
+  note_title: string
+  schema_index: number
+  block_id: string | null
+  caption: string
+  element_count: number
+  can_edit: boolean
+  my_access: 'owner' | 'edit' | 'read' | string
+  updated_at: string
+  tag_names: string[]
+}
+
+export interface NoteSchemaDetail extends NoteSchemaListItem {
+  scene: string
+}
+
+export type NoteMindmapListItem = NoteSchemaListItem
+export type NoteMindmapDetail = NoteSchemaDetail

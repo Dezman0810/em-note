@@ -9,6 +9,7 @@ import {
 import { createCodeMirrorHost, type CodeMirrorHost } from '../../utils/codeMirrorHost'
 import { formatSqlCode } from '../../utils/formatSql'
 import { formatPythonCode } from '../../utils/formatPython'
+import BlockTitleField from '../BlockTitleField.vue'
 
 const props = defineProps(nodeViewProps)
 
@@ -35,10 +36,12 @@ const language = computed({
   },
 })
 
-const title = computed({
-  get: () => String(props.node.attrs.title ?? ''),
-  set: (v: string) => props.updateAttributes({ title: v }),
-})
+const title = computed(() => String(props.node.attrs.title ?? ''))
+
+function saveTitle(next: string) {
+  if (!props.editor.isEditable) return
+  props.updateAttributes({ title: next })
+}
 
 const collapseLabel = computed(() => {
   const lang = codeSnippetLanguageLabel(language.value)
@@ -218,17 +221,13 @@ async function formatPython() {
       <button type="button" class="code-snippet-btn code-snippet-btn-main" @click="toggle">
         {{ collapseLabel }}
       </button>
-      <input
-        v-if="editor.isEditable"
-        v-model="title"
-        type="text"
-        class="code-snippet-title"
+      <BlockTitleField
+        :model-value="title.trim() || codeSnippetLanguageLabel(language)"
+        :disabled="!editor.isEditable"
         placeholder="Название блока"
-        @mousedown="stopBubble"
-        @click="stopBubble"
-        @keydown="stopBubble"
+        aria-label="Название блока"
+        @save="saveTitle"
       />
-      <span v-else class="code-snippet-title-read">{{ title.trim() || codeSnippetLanguageLabel(language) }}</span>
       <div class="code-snippet-head-spacer" />
       <label v-if="editor.isEditable" class="code-snippet-lang-wrap" @mousedown="stopBubble">
         <span class="code-snippet-lang-lab">Язык</span>
@@ -321,26 +320,6 @@ async function formatPython() {
 }
 .code-snippet-btn-main {
   font-weight: 600;
-}
-.code-snippet-title {
-  min-width: 6rem;
-  max-width: 14rem;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-1);
-  font: inherit;
-  transition: var(--transition-colors);
-}
-.code-snippet-title:focus {
-  border-color: var(--accent-border);
-  outline: none;
-  box-shadow: var(--shadow-focus);
-}
-.code-snippet-title-read {
-  font-weight: 600;
-  color: var(--text-1);
 }
 .code-snippet-lang-wrap {
   display: inline-flex;

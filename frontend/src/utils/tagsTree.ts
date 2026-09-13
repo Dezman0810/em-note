@@ -59,6 +59,28 @@ export function isDescendantTag(flat: Tag[], ancestorId: string, tagId: string):
   return false
 }
 
+/**
+ * Id меток, которые входят в любое из поддеревьев roots (корень включительно).
+ * Один проход по дереву — для подсветки строк сайдбара, без O(n²) на каждый ряд.
+ */
+export function tagIdsInSubtrees(flat: Tag[], rootIds: readonly string[]): Set<string> {
+  const roots = new Set(rootIds)
+  const out = new Set<string>()
+  if (!roots.size || !flat.length) return out
+  const byId = new Map(flat.map((t) => [t.id, t]))
+  for (const t of flat) {
+    let cur: string | null = t.id
+    while (cur) {
+      if (roots.has(cur)) {
+        out.add(t.id)
+        break
+      }
+      cur = byId.get(cur)?.parent_id ?? null
+    }
+  }
+  return out
+}
+
 export function visibleTagsForNav(flat: Tag[], collapsedTagIds: Record<string, boolean>): Tag[] {
   const children = new Map<string | null, Tag[]>()
   for (const t of flat) {

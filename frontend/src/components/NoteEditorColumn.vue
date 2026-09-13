@@ -10,7 +10,7 @@ import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
-import { contentHasAudio, contentHasExcalidraw } from '../utils/tiptapContent'
+import { contentHasAudio, contentHasExcalidraw, contentHasMindmap } from '../utils/tiptapContent'
 import { useNoteLayout } from '../composables/useNoteLayout'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { isTagAttachDragTypes, readDroppedTagIds } from '../utils/dndTags'
@@ -20,8 +20,11 @@ const props = defineProps<{
   /** Порядок как в средней колонке: фильтры папок/меток/поиска и сортировка */
   sortedNoteIds?: string[]
   editorSyncSignal?: number
+  /** Раздел «Схемы» / «Карты»: не уходить на /notes, закрытие остаётся на том же экране. */
+  embedded?: boolean
+  embeddedBackLabel?: string
 }>()
-const emit = defineEmits<{ refresh: [] }>()
+const emit = defineEmits<{ refresh: []; close: [] }>()
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -107,6 +110,7 @@ const folders = ref<Folder[]>([])
 const folderSelect = ref('')
 
 const SCHEMA_TAG_NAME = 'Схема'
+const MAP_TAG_NAME = 'Карта'
 const REMINDER_TAG_NAME = 'Напоминание с датой'
 const AUDIO_TAG_NAME = 'Аудиозапись'
 const PUBLIC_LINK_TAG_NAME = 'Публичная ссылка'
@@ -135,6 +139,7 @@ const mailHistoryFetchError = ref('')
 const mailSendHistory = ref<NoteMailSendHistoryRow[]>([])
 
 const isOwner = computed(() => !!(note.value && auth.user && note.value.owner_id === auth.user.id))
+const takeOwnershipBusy = ref(false)
 
 const noteNavIds = computed(() => props.sortedNoteIds ?? [])
 const noteNavIndex = computed(() => {
@@ -166,6 +171,9 @@ const publicUrl = computed(() => {
   return `${window.location.origin}${path}`
 })
 const isTrashed = computed(() => !!note.value?.deleted_at)
+const canTakeOwnership = computed(
+  () => !!auth.user?.is_admin && !!note.value && !isOwner.value && !isTrashed.value
+)
 
 function formatMailHistoryEntry(r: NoteMailSendHistoryRow): string {
   const dest = r.to_emails.join(', ')
@@ -288,9 +296,17 @@ async function loadFoldersOnly() {
   }
 }
 
+async function leaveEmbeddedOr(to: { name: string; params?: Record<string, string> }) {
+  if (props.embedded) {
+    emit('close')
+    return
+  }
+  await router.push(to)
+}
+
 async function closePanel() {
   await flushSave()
-  await router.push({ name: 'notes' })
+  await leaveEmbeddedOr({ name: 'notes' })
 }
 
 function pad2(n: number): string {
@@ -529,6 +545,10 @@ async function syncSchemaTag() {
   return syncSystemTag(SCHEMA_TAG_NAME, contentHasExcalidraw(contentJson.value))
 }
 
+async function syncMapTag() {
+  return syncSystemTag(MAP_TAG_NAME, contentHasMindmap(contentJson.value))
+}
+
 async function syncReminderTag() {
   return syncSystemTag(REMINDER_TAG_NAME, !!note.value?.reminder_at)
 }
@@ -548,6 +568,7 @@ async function syncEmailShareTag() {
 async function syncAutoTags() {
   const changed = [
     await syncSchemaTag(),
+    await syncMapTag(),
     await syncReminderTag(),
     await syncAudioTag(),
     await syncPublicLinkTag(),
@@ -1012,6 +1033,26 @@ function onTagSuggestionTab(e: KeyboardEvent) {
   pickActiveTagSuggestion()
 }
 
+async function takeOwnership() {
+  if (!note.value || !canTakeOwnership.value || takeOwnershipBusy.value) return
+  const ok = window.confirm(
+    'Стать создателем этой заметки? Автор больше не сможет её удалить — только вы. Потом в «Доступ по email» можно дать ему только чтение или убрать доступ: тогда заметка исчезнет у него.'
+  )
+  if (!ok) return
+  takeOwnershipBusy.value = true
+  error.value = ''
+  try {
+    await notesApi.takeOwnership(note.value.id)
+    emailSharesExpanded.value = true
+    emitRefresh()
+    await load()
+  } catch (e) {
+    error.value = errMessage(e)
+  } finally {
+    takeOwnershipBusy.value = false
+  }
+}
+
 async function removeNote() {
   if (!note.value || !confirm('Переместить заметку в корзину?')) return
 
@@ -1029,8 +1070,11 @@ async function removeNote() {
   try {
     await notesApi.remove(idToRemove)
     emitRefresh()
-    if (openAfterTrash) await router.push({ name: 'note', params: { id: openAfterTrash } })
-    else await router.push({ name: 'notes' })
+    if (openAfterTrash && !props.embedded) {
+      await router.push({ name: 'note', params: { id: openAfterTrash } })
+    } else {
+      await leaveEmbeddedOr({ name: 'notes' })
+    }
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1055,7 +1099,7 @@ async function purgeForever() {
   try {
     await notesApi.purge(note.value.id)
     emitRefresh()
-    await router.push({ name: 'notes' })
+    await leaveEmbeddedOr({ name: 'notes' })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1331,21 +1375,13 @@ watch(
     <template v-else>
       <header class="bar">
         <div class="bar-tools">
-          <a href="#" class="back" @click.prevent="closePanel">← Закрыть</a>
+          <a href="#" class="back" @click.prevent="closePanel">{{
+            embedded ? props.embeddedBackLabel || '← К схемам' : '← Закрыть'
+          }}</a>
           <template v-if="isTrashed && isOwner">
             <button type="button" class="btn primary" @click="restoreFromTrash">Восстановить</button>
             <button type="button" class="danger" @click="purgeForever">Удалить навсегда</button>
           </template>
-          <button
-            v-if="!isTrashed && !isOwner"
-            type="button"
-            class="share-hub-tile share-hub-tile-mail share-mail-bar"
-            :title="mailHistoryTitle"
-            @click="openMailModal"
-          >
-            <span class="share-hub-ico" aria-hidden="true">✉</span>
-            По почте
-          </button>
           <template v-if="!isTrashed">
             <div
               v-if="noteNavVisible"
@@ -1376,7 +1412,7 @@ watch(
               </button>
             </div>
             <button
-              v-if="note"
+              v-if="note && !embedded"
               type="button"
               class="btn-editor-focus"
               :aria-label="
@@ -1390,6 +1426,26 @@ watch(
               @click="toggleEditorFocusMode"
             >
               {{ editorFocusMode ? 'Обычный режим' : 'На весь экран' }}
+            </button>
+            <button
+              v-if="!isOwner"
+              type="button"
+              class="share-hub-tile share-hub-tile-mail share-mail-bar"
+              :title="mailHistoryTitle"
+              @click="openMailModal"
+            >
+              <span class="share-hub-ico" aria-hidden="true">✉</span>
+              По почте
+            </button>
+            <button
+              v-if="canTakeOwnership"
+              type="button"
+              class="btn primary"
+              :disabled="takeOwnershipBusy"
+              title="Стать создателем: удалять заметку сможете только вы"
+              @click="takeOwnership"
+            >
+              {{ takeOwnershipBusy ? '…' : 'Стать создателем' }}
             </button>
           </template>
         </div>
@@ -1658,6 +1714,7 @@ watch(
               <button type="button" class="share-hub-btn-secondary" @click="addShare">Добавить</button>
             </div>
             <ContactBookPanel pick-mode="single" @pick="pickShareContact" />
+            <p v-if="shares.length" class="share-email-caption">Кому открыт доступ</p>
             <ul v-if="shares.length" class="share-email-list">
               <li v-for="s in shares" :key="s.id" class="share-email-item">
                 <span class="share-email-who">{{ shareRecipientLabel(s) }}</span>
@@ -2648,6 +2705,12 @@ watch(
 .share-hub-btn-secondary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.share-email-caption {
+  margin: 0.45rem 0 0.3rem;
+  font-size: var(--fs-2xs);
+  font-weight: 650;
+  color: var(--text-3);
 }
 .share-email-list {
   list-style: none;

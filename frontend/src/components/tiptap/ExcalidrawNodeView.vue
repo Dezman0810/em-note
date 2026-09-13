@@ -11,7 +11,32 @@ import {
 } from 'vue'
 import type { Root } from 'react-dom/client'
 
+import BlockTitleField from '../BlockTitleField.vue'
+
 const props = defineProps(nodeViewProps)
+
+const blockTitle = computed(() => {
+  const raw = props.node.attrs.title
+  if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  try {
+    const data = JSON.parse(String(props.node.attrs.scene || '{}')) as {
+      elements?: Array<{ type?: string; text?: string; isDeleted?: boolean }>
+    }
+    for (const el of data.elements || []) {
+      if (el?.type !== 'text' || el.isDeleted) continue
+      const text = String(el.text || '').trim()
+      if (text) return text.slice(0, 80)
+    }
+  } catch {
+    /* */
+  }
+  return 'Схема'
+})
+
+function saveBlockTitle(next: string) {
+  if (!props.editor.isEditable) return
+  props.updateAttributes({ title: next })
+}
 
 /** Состояние свёрнутости хранится в attrs.collapsed (сохраняется в content_json). */
 function expandedFromAttrs(): boolean {
@@ -344,11 +369,21 @@ function onImportFile(ev: Event) {
 </script>
 
 <template>
-  <NodeViewWrapper class="excalidraw-node" :class="{ 'excalidraw-node--note-wide': noteWideUi }">
+  <NodeViewWrapper
+    class="excalidraw-node"
+    :class="{ 'excalidraw-node--note-wide': noteWideUi, 'excalidraw-node--readonly': excalReadOnly }"
+  >
     <div class="excalidraw-node-head">
       <button type="button" class="excal-toggle excal-toggle-main" @click="toggle">
-        {{ expanded ? '▼ Свернуть' : '▶ Схема' }}
+        {{ expanded ? '▼ Схема' : '▶ Схема' }}
       </button>
+      <BlockTitleField
+        :model-value="blockTitle"
+        :disabled="!editor.isEditable"
+        placeholder="Схема"
+        aria-label="Название схемы"
+        @save="saveBlockTitle"
+      />
       <label v-if="editor.isEditable" class="excal-import">
         <input type="file" accept=".excalidraw,application/json" class="visually-hidden" @change="onImportFile" />
         <span class="excal-import-btn">Импорт</span>
@@ -565,6 +600,12 @@ function onImportFile(ev: Event) {
   display: none !important;
 }
 .excal-host :deep(.excalidraw .App-toolbar .App-toolbar__divider:last-of-type) {
+  display: none !important;
+}
+
+/* Публичная ссылка / только чтение: нижняя полоса Excalidraw (язык, зум, «?», наши кнопки). */
+.excalidraw-node--readonly .excal-host :deep(.layer-ui__wrapper__footer),
+.excalidraw-node--readonly .excal-host :deep(.App-bottom-bar) {
   display: none !important;
 }
 </style>

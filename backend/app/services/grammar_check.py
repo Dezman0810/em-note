@@ -23,6 +23,7 @@ from app.services.grammar_text import (
     GrammarMatch,
     is_cross_line_repeat,
     languages_for_text,
+    drop_duplicate_sentence_ends,
     line_end_matches,
     remap_match,
     text_for_languagetool,
@@ -479,6 +480,8 @@ async def check_text(text: str) -> GrammarCheckResponse:
             if mapped is None or is_cross_line_repeat(cleaned, mapped):
                 continue
             remapped.append(mapped)
-    matches = merge_matches([remapped, line_end_matches(cleaned)])
+    matches = merge_matches(
+        [remapped, drop_duplicate_sentence_ends(remapped, line_end_matches(cleaned))]
+    )
     language = detected_language(payloads, langs[0] if langs else "")
     return response_from_matches(cleaned, matches, language=language)

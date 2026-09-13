@@ -49,6 +49,82 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresHabits: true },
     },
     {
+      path: '/budget',
+      name: 'budget',
+      component: () => import('../views/BudgetView.vue'),
+      meta: { requiresAuth: true, requiresBudget: true },
+    },
+    {
+      path: '/schemas',
+      name: 'schemas',
+      component: () => import('../views/SchemasView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+    },
+    {
+      path: '/schemas/note/:noteId',
+      name: 'schema-note',
+      component: () => import('../views/SchemasView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return { name: 'schemas' }
+        }
+      },
+    },
+    {
+      path: '/schemas/:noteId/:index',
+      name: 'schema-edit',
+      component: () => import('../views/SchemasView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        const index = Number(to.params.index)
+        if (
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ||
+          !Number.isInteger(index) ||
+          index < 0
+        ) {
+          return { name: 'schemas' }
+        }
+      },
+    },
+    {
+      path: '/mindmaps',
+      name: 'mindmaps',
+      component: () => import('../views/MapsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+    },
+    {
+      path: '/mindmaps/note/:noteId',
+      name: 'mindmap-note',
+      component: () => import('../views/MapsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return { name: 'mindmaps' }
+        }
+      },
+    },
+    {
+      path: '/mindmaps/:noteId/:index',
+      name: 'mindmap-edit',
+      component: () => import('../views/MapsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        const index = Number(to.params.index)
+        if (
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ||
+          !Number.isInteger(index) ||
+          index < 0
+        ) {
+          return { name: 'mindmaps' }
+        }
+      },
+    },
+    {
       path: '/h/:token',
       name: 'public-habits',
       component: () => import('../views/HabitsView.vue'),
@@ -86,6 +162,12 @@ router.beforeEach(async (to) => {
     return { name: 'notes' }
   }
   if (to.meta.requiresHabits && !auth.user?.can_use_habits) {
+    return { name: 'notes' }
+  }
+  if (to.meta.requiresBudget && !auth.user?.can_use_budget) {
+    return { name: 'notes' }
+  }
+  if (to.meta.requiresSchemas && !auth.user?.can_use_schemas) {
     return { name: 'notes' }
   }
   return true

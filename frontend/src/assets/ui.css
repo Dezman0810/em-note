@@ -350,6 +350,37 @@
   white-space: nowrap;
 }
 
+/* Почта / тема / выход и разделы — один блок у правого края шапки. */
+.header-end {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.header-end .header-user {
+  margin-left: 0;
+}
+.header-end .user {
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-end .btn {
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+}
+
 .u-visually-hidden {
   position: absolute;
   width: 1px;

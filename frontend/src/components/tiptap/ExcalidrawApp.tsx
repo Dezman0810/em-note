@@ -661,12 +661,7 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
   )
 
   const excalChildren = readOnly
-    ? createElement(
-        Fragment,
-        null,
-        customMainMenu,
-        createElement(Footer, null, createEmbedFooter(hostRef, false))
-      )
+    ? createElement(Fragment, null, customMainMenu)
     : createElement(
         Fragment,
         null,

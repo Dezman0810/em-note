@@ -115,44 +115,46 @@ defineExpose({ reload: loadContacts, contacts })
       <option v-for="c in contacts" :key="c.id" :value="c.id">{{ contactLabel(c) }}</option>
     </select>
 
-    <button
-      type="button"
-      class="contact-book-toggle"
-      :aria-expanded="bookExpanded"
-      @click="bookExpanded = !bookExpanded"
-    >
-      <span class="contact-book-chevron" :class="{ open: bookExpanded }" aria-hidden="true" />
-      Мои контакты
-      <span v-if="contacts.length" class="contact-book-count">{{ contacts.length }}</span>
-    </button>
+    <div class="contact-book-card" :class="{ 'contact-book-card--open': bookExpanded }">
+      <button
+        type="button"
+        class="contact-book-toggle"
+        :aria-expanded="bookExpanded"
+        @click="bookExpanded = !bookExpanded"
+      >
+        <span class="contact-book-chevron" :class="{ open: bookExpanded }" aria-hidden="true" />
+        Мои контакты
+        <span v-if="contacts.length" class="contact-book-count">{{ contacts.length }}</span>
+      </button>
 
-    <div v-show="bookExpanded" class="contact-book-body">
-      <div class="contact-book-form">
-        <input v-model="newName" type="text" class="contact-book-input" placeholder="Имя" />
-        <input v-model="newEmail" type="email" class="contact-book-input" placeholder="Email" />
-        <button type="button" class="contact-book-btn" :disabled="saving" @click="addContact">
-          {{ saving ? '…' : 'Добавить' }}
-        </button>
+      <div v-show="bookExpanded" class="contact-book-body">
+        <div class="contact-book-form">
+          <input v-model="newName" type="text" class="contact-book-input" placeholder="Имя" />
+          <input v-model="newEmail" type="email" class="contact-book-input" placeholder="Email" />
+          <button type="button" class="contact-book-btn" :disabled="saving" @click="addContact">
+            {{ saving ? '…' : 'Добавить' }}
+          </button>
+        </div>
+        <p v-if="loading" class="contact-book-muted">Загрузка…</p>
+        <p v-else-if="error" class="contact-book-err">{{ error }}</p>
+        <ul v-if="contacts.length" class="contact-book-list">
+          <li v-for="c in contacts" :key="c.id" class="contact-book-item">
+            <div class="contact-book-item-main">
+              <span class="contact-book-name">{{ c.name }}</span>
+              <span class="contact-book-email">{{ c.email }}</span>
+            </div>
+            <div class="contact-book-item-actions">
+              <button type="button" class="contact-book-link" @click="pickFromList(c)">
+                {{ pickMode === 'multi' ? 'Добавить' : 'Выбрать' }}
+              </button>
+              <button type="button" class="contact-book-link contact-book-link--danger" @click="removeContact(c)">
+                Удалить
+              </button>
+            </div>
+          </li>
+        </ul>
+        <p v-else-if="!loading" class="contact-book-muted">Пока нет сохранённых контактов</p>
       </div>
-      <p v-if="loading" class="contact-book-muted">Загрузка…</p>
-      <p v-else-if="error" class="contact-book-err">{{ error }}</p>
-      <ul v-if="contacts.length" class="contact-book-list">
-        <li v-for="c in contacts" :key="c.id" class="contact-book-item">
-          <div class="contact-book-item-main">
-            <span class="contact-book-name">{{ c.name }}</span>
-            <span class="contact-book-email">{{ c.email }}</span>
-          </div>
-          <div class="contact-book-item-actions">
-            <button type="button" class="contact-book-link" @click="pickFromList(c)">
-              {{ pickMode === 'multi' ? 'Добавить' : 'Выбрать' }}
-            </button>
-            <button type="button" class="contact-book-link contact-book-link--danger" @click="removeContact(c)">
-              Удалить
-            </button>
-          </div>
-        </li>
-      </ul>
-      <p v-else-if="!loading" class="contact-book-muted">Пока нет сохранённых контактов</p>
     </div>
   </div>
 </template>
@@ -176,10 +178,19 @@ defineExpose({ reload: loadContacts, contacts })
   background: var(--surface-1);
   color: inherit;
 }
+.contact-book-card {
+  border-radius: 12px;
+}
+.contact-book-card--open {
+  padding: 0.2rem 0.55rem 0.55rem;
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-1));
+  border: 1px solid var(--accent-border-soft);
+}
 .contact-book-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  width: 100%;
   padding: 0.35rem 0;
   border: none;
   background: transparent;
@@ -189,6 +200,9 @@ defineExpose({ reload: loadContacts, contacts })
   color: var(--text-2);
   cursor: pointer;
   text-align: left;
+}
+.contact-book-card--open .contact-book-toggle {
+  color: var(--accent-text-strong);
 }
 .contact-book-toggle:hover {
   color: var(--accent-text);
@@ -214,21 +228,21 @@ defineExpose({ reload: loadContacts, contacts })
   color: var(--text-3);
 }
 .contact-book-body {
-  padding: 0.15rem 0 0.25rem;
+  padding: 0.1rem 0 0;
 }
 .contact-book-form {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.4rem;
   align-items: center;
   margin-bottom: 0.45rem;
 }
 .contact-book-input {
-  flex: 1 1 7rem;
+  flex: 1 1 0;
   min-width: 0;
   padding: 0.38rem 0.5rem;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--accent-border-soft);
   font: inherit;
   font-size: var(--fs-xs);
   background: var(--surface-1);
@@ -259,29 +273,37 @@ defineExpose({ reload: loadContacts, contacts })
 }
 .contact-book-item {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.35rem 0.65rem;
-  padding: 0.4rem 0.5rem;
-  border-radius: 10px;
-  background: var(--surface-2-translucent);
-  border: 1px solid var(--border-subtle);
+  gap: 0.5rem;
+  padding: 0.32rem 0.5rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-1));
+  border: 1px solid var(--accent-border-soft);
 }
 .contact-book-item-main {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 0.45rem;
 }
 .contact-book-name {
-  font-weight: 600;
+  font-weight: 650;
   font-size: var(--fs-xs);
+  flex-shrink: 0;
+  color: var(--accent-text-strong);
 }
 .contact-book-email {
-  font-size: var(--fs-2xs);
-  color: var(--text-4);
-  word-break: break-all;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .contact-book-item-actions {
   display: flex;

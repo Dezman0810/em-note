@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NoteEditorColumn from '../components/NoteEditorColumn.vue'
 import AdminUsersModal from '../components/AdminUsersModal.vue'
+import AppSectionNav from '../components/AppSectionNav.vue'
 import ReminderCalendar from '../components/ReminderCalendar.vue'
 import { errMessage, foldersApi, noteFilterPresetsApi, notesApi, tagsApi, type TagsNoteCountsParams } from '../api/client'
 import {
@@ -25,6 +26,7 @@ import {
 import {
   isDescendantTag,
   tagCountsFromNoteList,
+  tagIdsInSubtrees,
   tagNavAncestorClosure,
   tagNavIdsRelevantToNotes,
   tagsWithChildrenSet,
@@ -745,23 +747,33 @@ function applyTagExcludeFilterToggle(t: Tag) {
   toggleTagExcludeRoot(id)
 }
 
+const tagIdsIncludedInSidebar = computed(() =>
+  tagIdsInSubtrees(tags.value, filterTagIds.value),
+)
+const tagIdsConjunctInSidebar = computed(() =>
+  tagIdsInSubtrees(tags.value, filterConjunctTagIds.value),
+)
+const tagIdsExcludedInSidebar = computed(() => {
+  const excluded = tagIdsInSubtrees(tags.value, filterExcludeTagIds.value)
+  if (!filterExcludeUndoTagIds.value.length) return excluded
+  const undone = tagIdsInSubtrees(tags.value, filterExcludeUndoTagIds.value)
+  for (const id of undone) excluded.delete(id)
+  return excluded
+})
+
 /** В строке подсветка «показываем ветку» — узел входит в выбранный под любым корнем (+). */
 function tagRowSubtreeIncluded(tagId: string): boolean {
-  const flat = tags.value
-  return filterTagIds.value.some((inc) => isDescendantTag(flat, inc, tagId))
+  return tagIdsIncludedInSidebar.value.has(tagId)
 }
 
 /** Строка в зоне блока ∧ — узел входит под любым корнем «∧» (аналог охвата красным для «−»). */
 function tagRowSubtreeConjunct(tagId: string): boolean {
-  const flat = tags.value
-  return filterConjunctTagIds.value.some((cid) => isDescendantTag(flat, cid, tagId))
+  return tagIdsConjunctInSidebar.value.has(tagId)
 }
 
 /** Строка в зоне исключения поддерева (учитываются carve-out «снять с подветки»). */
 function tagRowSubtreeExcluded(tagId: string): boolean {
-  const flat = tags.value
-  if (filterExcludeUndoTagIds.value.some((u) => isDescendantTag(flat, u, tagId))) return false
-  return filterExcludeTagIds.value.some((ex) => isDescendantTag(flat, ex, tagId))
+  return tagIdsExcludedInSidebar.value.has(tagId)
 }
 
 /** Кнопка «−»: явное исключение или активный carve-out. */
@@ -1893,22 +1905,9 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-
-          <button
-            v-if="auth.user?.can_use_habits"
-            type="button"
-            class="btn secondary header-tags-btn"
-            @click="router.push('/habits')"
-          >
-            Привычки
-          </button>
-          <button type="button" class="btn secondary header-tags-btn" @click="router.push('/tags')">
-            Метки
-          </button>
         </div>
       </div>
-      <div class="header-user">
-        <span class="user" v-if="auth.user">{{ auth.user.email }}</span>
+      <div class="header-end">
         <label
           class="note-fit-toggle"
           title="Заметка на высоту экрана: шапка и доступы всегда видны, скролл внутри текста"
@@ -1920,16 +1919,20 @@ onBeforeUnmount(() => {
           />
           <span class="note-fit-toggle-text">Скролл в заметке</span>
         </label>
-        <button
-          type="button"
-          class="theme-toggle"
-          :aria-label="themeLabel"
-          :title="themeLabel"
-          @click="cycleTheme"
-        >
-          <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
-        </button>
-        <button type="button" class="btn ghost" @click="logout">Выйти</button>
+        <AppSectionNav active="notes" />
+        <div class="header-user">
+          <span class="user" v-if="auth.user">{{ auth.user.email }}</span>
+          <button
+            type="button"
+            class="theme-toggle"
+            :aria-label="themeLabel"
+            :title="themeLabel"
+            @click="cycleTheme"
+          >
+            <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+          </button>
+          <button type="button" class="btn ghost" @click="logout">Выйти</button>
+        </div>
       </div>
     </header>
 
@@ -2949,12 +2952,14 @@ onBeforeUnmount(() => {
   gap: 0.4rem;
   padding-left: 0.85rem;
   border-left: 1px solid var(--border);
-  margin-left: auto;
   flex-shrink: 0;
 }
 .user {
+  font-family: inherit;
   font-size: var(--fs-2xs);
-  color: var(--note-list-meta);
+  font-weight: 400;
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1,maximum-scale=1,minimum-scale=1">
+  <link rel="icon" href="assets/logo.ico">
+  <title>Интеллект-карты</title>
+  <script>
+    window.externalPublicPath = './assets/'
+    window.takeOverApp = false
+    try {
+      localStorage.setItem('SIMPLE_MIND_MAP_LANG', 'en')
+      localStorage.setItem('webUseTip', '1')
+      var raw = localStorage.getItem('SIMPLE_MIND_MAP_DATA')
+      if (raw && /根节点|二级节点|分支主题|概要|中心主题|子主题/.test(raw)) {
+        localStorage.setItem(
+          'SIMPLE_MIND_MAP_DATA',
+          raw
+            .replace(/中心主题/g, 'Главная')
+            .replace(/根节点/g, 'Главная')
+            .replace(/二级节点/g, 'Подгруппа')
+            .replace(/分支主题/g, 'Подгруппа')
+            .replace(/子主题/g, 'Тема')
+            .replace(/概要/g, 'Сводка')
+        )
+      }
+    } catch (e) {}
+  </script>
+  <link href="assets/css/chunk-vendors.css?c38ada11529d60265d8b" rel="stylesheet">
+  <link href="assets/css/app.css?c38ada11529d60265d8b" rel="stylesheet">
+  <link href="ru-ui.css?v=12" rel="stylesheet">
+</head>
+<body>
+  <noscript><strong>Включите JavaScript, чтобы пользоваться интеллект-картами.</strong></noscript>
+  <div id="app"></div>
+  <script src="assets/js/chunk-vendors.js?c38ada11529d60265d8b"></script>
+  <script src="assets/js/app.js?c38ada11529d60265d8b"></script>
+  <script src="ru-i18n.js?v=19"></script>
+</body>
+</html>

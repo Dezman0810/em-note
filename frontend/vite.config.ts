@@ -10,7 +10,22 @@ const devWebPort = Number(process.env.COMPOSE_WEB_PORT ?? 8080)
 const dockerDev = !!process.env.API_PROXY_TARGET
 
 export default defineConfig({
-  plugins: [vue(), react()],
+  plugins: [
+    vue(),
+    react(),
+    {
+      name: 'mindmap-app-index',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          const url = req.url?.split('?')[0] || ''
+          if (url === '/mindmap-app' || url === '/mindmap-app/') {
+            req.url = '/mindmap-app/index.html'
+          }
+          next()
+        })
+      },
+    },
+  ],
   optimizeDeps: {
     include: [
       '@excalidraw/excalidraw',

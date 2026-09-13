@@ -25,8 +25,12 @@ def plain_text_from_tiptap_json(content_json: str) -> str:
             return
         if node.get("type") == "text" and isinstance(node.get("text"), str):
             parts.append(node["text"])
-        if node.get("type") == "excalidrawBlock":
-            parts.append("[схема]")
+        if node.get("type") in {"excalidrawBlock", "mindmapBlock"}:
+            attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+            raw_title = attrs.get("title")
+            title = raw_title.strip()[:80] if isinstance(raw_title, str) and raw_title.strip() else ""
+            marker = "схема" if node.get("type") == "excalidrawBlock" else "карта"
+            parts.append(f"[{marker}: {title}]" if title else f"[{marker}]")
         if node.get("type") == "audioNote":
             attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
             raw = attrs.get("label")

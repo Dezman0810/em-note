@@ -18,6 +18,10 @@ import type {
   HabitPublicLink,
   PublicHabitsPayload,
   GrammarCheckResult,
+  NoteMindmapDetail,
+  NoteMindmapListItem,
+  NoteSchemaDetail,
+  NoteSchemaListItem,
 } from './types'
 
 import { cachedGet, clearRequestCache, invalidateCache } from './requestCache'
@@ -86,6 +90,14 @@ export const adminApi = {
   },
   async setCanUseGrammar(userId: string, can_use_grammar: boolean): Promise<AdminUserRow> {
     const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_grammar })
+    return data
+  },
+  async setCanUseBudget(userId: string, can_use_budget: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_budget })
+    return data
+  },
+  async setCanUseSchemas(userId: string, can_use_schemas: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_schemas })
     return data
   },
   async resetPassword(userId: string): Promise<{ email: string; temporary_password: string }> {
@@ -191,6 +203,10 @@ export const notesApi = {
   },
   async get(id: string): Promise<Note> {
     const { data } = await api.get<Note>(`/api/notes/${id}`)
+    return data
+  },
+  async takeOwnership(id: string): Promise<Note> {
+    const { data } = await api.post<Note>(`/api/notes/${id}/take-ownership`)
     return data
   },
   async create(
@@ -575,6 +591,52 @@ export const publicHabitsApi = {
 export const grammarApi = {
   async check(text: string): Promise<GrammarCheckResult> {
     const { data } = await api.post<GrammarCheckResult>('/api/grammar/check', { text })
+    return data
+  },
+}
+
+type BlockPatchBody = {
+  scene?: string
+  title?: string
+  block_id?: string | null
+}
+
+export const schemasApi = {
+  async list(): Promise<NoteSchemaListItem[]> {
+    const { data } = await api.get<NoteSchemaListItem[]>('/api/schemas')
+    return data
+  },
+  async get(noteId: string, schemaIndex: number): Promise<NoteSchemaDetail> {
+    const { data } = await api.get<NoteSchemaDetail>(`/api/schemas/${noteId}/${schemaIndex}`)
+    return data
+  },
+  async update(
+    noteId: string,
+    schemaIndex: number,
+    body: BlockPatchBody
+  ): Promise<NoteSchemaDetail> {
+    const { data } = await api.patch<NoteSchemaDetail>(`/api/schemas/${noteId}/${schemaIndex}`, body)
+    invalidateCache('notes:')
+    return data
+  },
+}
+
+export const mindmapsApi = {
+  async list(): Promise<NoteMindmapListItem[]> {
+    const { data } = await api.get<NoteMindmapListItem[]>('/api/mindmaps')
+    return data
+  },
+  async get(noteId: string, schemaIndex: number): Promise<NoteMindmapDetail> {
+    const { data } = await api.get<NoteMindmapDetail>(`/api/mindmaps/${noteId}/${schemaIndex}`)
+    return data
+  },
+  async update(
+    noteId: string,
+    schemaIndex: number,
+    body: BlockPatchBody
+  ): Promise<NoteMindmapDetail> {
+    const { data } = await api.patch<NoteMindmapDetail>(`/api/mindmaps/${noteId}/${schemaIndex}`, body)
+    invalidateCache('notes:')
     return data
   },
 }

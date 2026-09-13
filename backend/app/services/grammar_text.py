@@ -42,9 +42,10 @@ def line_offsets(text: str) -> list[tuple[str, int]]:
 
 
 def close_line(line: str, has_following_break: bool = False) -> tuple[str, str]:
-    """Перенос = конец фразы. Возвращает (строка, same|add_period|replace_comma)."""
+    """В конце фразы нужна точка, если её ещё нет — в том числе на последней строке."""
+    del has_following_break
     raw = line.rstrip(" \t")
-    if not has_following_break or not any(ch.isalpha() for ch in raw):
+    if not raw or not any(ch.isalpha() for ch in raw):
         return line, "same"
     last = raw[-1]
     if last in _LINE_END_OK:
@@ -63,7 +64,7 @@ def close_lines(text: str) -> str:
 
 
 def line_end_matches(text: str) -> list[GrammarMatch]:
-    """Точка в конце строки с переносом — это новый текст, не продолжение."""
+    """Точка в конце фразы, если её нет (каждая строка и конец выделения)."""
     matches: list[GrammarMatch] = []
     parts = text.split("\n")
     for i, (line, start) in enumerate(line_offsets(text)):
@@ -76,7 +77,7 @@ def line_end_matches(text: str) -> list[GrammarMatch]:
                 GrammarMatch(
                     offset=start + utf16_len(raw) - 1,
                     length=1,
-                    message="Перенос строки — фраза закончилась, вместо запятой точка.",
+                    message="В конце предложения нужна точка, не запятая.",
                     short_message="Точка",
                     replacements=["."],
                     issue_type="typographical",
@@ -87,7 +88,7 @@ def line_end_matches(text: str) -> list[GrammarMatch]:
                 GrammarMatch(
                     offset=start + utf16_len(raw),
                     length=0,
-                    message="Перенос строки — фраза закончилась, нужна точка.",
+                    message="В конце предложения нет точки.",
                     short_message="Точка",
                     replacements=["."],
                     issue_type="typographical",
@@ -95,6 +96,31 @@ def line_end_matches(text: str) -> list[GrammarMatch]:
             )
         _ = closed
     return matches
+
+
+def drop_duplicate_sentence_ends(
+    existing: list[GrammarMatch],
+    ends: list[GrammarMatch],
+) -> list[GrammarMatch]:
+    """Не ставить вторую точку, если LanguageTool уже закрыл фразу."""
+    taken_ends: set[int] = set()
+    covered: list[tuple[int, int]] = []
+    for match in existing:
+        if not match.replacements:
+            continue
+        repl = match.replacements[0]
+        if repl and repl[-1] in ".!?…":
+            taken_ends.add(match.offset + match.length)
+        if match.length > 0:
+            covered.append((match.offset, match.offset + match.length))
+    out: list[GrammarMatch] = []
+    for match in ends:
+        if match.length == 0 and match.offset in taken_ends:
+            continue
+        if match.length > 0 and any(start <= match.offset < end for start, end in covered):
+            continue
+        out.append(match)
+    return out
 
 
 def text_for_languagetool(text: str) -> tuple[str, list[int]]:

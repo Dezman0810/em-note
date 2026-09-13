@@ -7,12 +7,15 @@ from app.api.routers import (
     admin,
     attachments,
     auth,
+    budget,
     folders,
     grammar,
     habits,
     mail,
     note_filter_presets,
     note_public_links,
+    note_mindmaps,
+    note_schemas,
     notes,
     public_notes,
     shares,
@@ -57,6 +60,9 @@ app.include_router(mail.router, prefix="/api")
 app.include_router(user_contacts.router, prefix="/api")
 app.include_router(habits.router, prefix="/api")
 app.include_router(grammar.router, prefix="/api")
+app.include_router(budget.router, prefix="/api")
+app.include_router(note_schemas.router, prefix="/api")
+app.include_router(note_mindmaps.router, prefix="/api")
 app.include_router(user_settings.router, prefix="/api")
 
 

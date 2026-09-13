@@ -16,6 +16,7 @@ import { EncryptedInline } from './tiptap/EncryptedInlineExtension'
 import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { CodeSnippetBlock } from './tiptap/CodeSnippetExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
+import { MindmapBlock } from './tiptap/MindmapExtension'
 import { ExcalidrawUndoGuard } from './tiptap/ExcalidrawUndoGuard'
 import { RichClipboardPasteFix } from './tiptap/RichClipboardPasteFix'
 import { TaskItemNote } from './tiptap/taskItemNote'
@@ -28,13 +29,13 @@ import { TableMap } from '@tiptap/pm/tables'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { attachmentsApi, errMessage, grammarApi, publicNoteApi } from '../api/client'
-import type { GrammarCheckResult } from '../api/types'
+import type { GrammarAdvice, GrammarCheckResult } from '../api/types'
 import { useNoteLayout } from '../composables/useNoteLayout'
 import { useAuthStore } from '../stores/auth'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 import { normalizePastedRichCodeHtml } from '../utils/normalizePastedRichCodeHtml'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
-import { applyPunctuationKeepingMarks } from '../utils/grammarMarks'
+import { applyTextKeepingMarks } from '../utils/grammarMarks'
 import { rewriteAttachmentImagesInTipTapDoc } from '../utils/tiptapContent'
 import { UploadedFileBlock } from './tiptap/UploadedFileExtension'
 import {
@@ -132,6 +133,8 @@ const grammarBusy = ref(false)
 const grammarErr = ref('')
 const grammarHint = ref('')
 const grammarOriginal = ref('')
+const grammarDraft = ref('')
+const grammarDraftDirty = ref(false)
 const grammarResult = ref<GrammarCheckResult | null>(null)
 const grammarChosen = ref('')
 let grammarFrom = 0
@@ -268,6 +271,7 @@ const editor = useEditor({
     ResizableImage.configure({ inline: false, allowBase64: true }),
     EncryptedInline,
     ExcalidrawBlock,
+    MindmapBlock,
     CodeSnippetBlock,
     AudioNoteBlock,
     UploadedFileBlock,
@@ -740,6 +744,10 @@ function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
 }
 
+function insertMindmap() {
+  editor.value?.chain().focus().insertMindmap().run()
+}
+
 function insertCodeSnippet() {
   editor.value?.chain().focus().insertCodeSnippet().run()
 }
@@ -1039,18 +1047,11 @@ const grammarLeftParts = computed(() => {
   return [{ text: grammarOriginal.value, kind: 'ok', message: '', before: '', after: '' }]
 })
 
-const grammarRightParts = computed(() => {
-  const parts = grammarChosenSuggestion.value?.revised_parts
-  if (parts?.length) return parts
-  return [{ text: grammarChosenSuggestion.value?.text ?? grammarOriginal.value, kind: 'ok', message: '', before: '', after: '' }]
-})
-
 const grammarChanges = computed(() => grammarChosenSuggestion.value?.changes ?? [])
 const grammarAdvice = computed(() => grammarResult.value?.advice ?? [])
 
 const grammarCanApply = computed(() => {
-  const next = grammarChosenSuggestion.value?.text
-  return !!next && next !== grammarOriginal.value
+  return grammarDraft.value !== grammarOriginal.value
 })
 
 function flashGrammarHint(msg: string) {
@@ -1108,6 +1109,8 @@ function openGrammarDialog() {
     if (!grammarHint.value) flashGrammarHint('Выделите текст, который нужно проверить.')
     return
   }
+  grammarDraft.value = grammarOriginal.value
+  grammarDraftDirty.value = false
   grammarDlg.value = true
   void runGrammarCheck()
 }
@@ -1120,6 +1123,8 @@ function closeGrammarDialog() {
   grammarFrom = 0
   grammarTo = 0
   grammarOriginal.value = ''
+  grammarDraft.value = ''
+  grammarDraftDirty.value = false
 }
 
 async function runGrammarCheck() {
@@ -1130,6 +1135,9 @@ async function runGrammarCheck() {
     grammarResult.value = result
     const first = result.suggestions.find((s) => s.text !== result.original) ?? result.suggestions[0]
     grammarChosen.value = first?.id ?? ''
+    if (!grammarDraftDirty.value) {
+      grammarDraft.value = first?.text ?? grammarOriginal.value
+    }
   } catch (e) {
     grammarErr.value = errMessage(e)
   } finally {
@@ -1137,13 +1145,38 @@ async function runGrammarCheck() {
   }
 }
 
+function applyAdviceToDraft(item: GrammarAdvice) {
+  const src = grammarDraft.value
+  const needle = item.before
+  if (!needle) {
+    grammarDraft.value = `${src}${item.after}`
+    grammarDraftDirty.value = true
+    return
+  }
+  let idx = src.indexOf(needle)
+  if (idx < 0) idx = src.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase())
+  if (idx < 0) return
+  grammarDraft.value = src.slice(0, idx) + item.after + src.slice(idx + needle.length)
+  grammarDraftDirty.value = true
+}
+
 function applyGrammarSuggestion() {
   const ed = editor.value
-  const next = grammarChosenSuggestion.value?.text
-  if (!ed || !next || !grammarCanApply.value) return
-  const ok = applyPunctuationKeepingMarks(ed, grammarFrom, grammarTo, next)
+  const next = grammarDraft.value
+  if (!ed || !grammarCanApply.value) return
+  const size = ed.state.doc.content.size
+  if (grammarFrom < 0 || grammarTo > size || grammarFrom >= grammarTo) {
+    flashGrammarHint('Фрагмент в заметке уже изменился. Выделите текст снова.')
+    return
+  }
+  const current = ed.state.doc.textBetween(grammarFrom, grammarTo, '\n', '\n')
+  if (current !== grammarOriginal.value) {
+    flashGrammarHint('Фрагмент в заметке уже изменился. Выделите текст снова.')
+    return
+  }
+  const ok = applyTextKeepingMarks(ed, grammarFrom, grammarTo, next)
   if (!ok) {
-    flashGrammarHint('Не удалось вставить знаки, не задев слова и оформление.')
+    flashGrammarHint('Не удалось вставить, сохранив оформление.')
     return
   }
   closeGrammarDialog()
@@ -1540,6 +1573,9 @@ onBeforeUnmount(() => {
         Грамматика
       </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
+      <button type="button" class="tb" title="Интеллект-карта, как в редакторе на localhost:8200" @click="insertMindmap">
+        Карта
+      </button>
       <button
         type="button"
         class="tb"
@@ -1613,12 +1649,12 @@ onBeforeUnmount(() => {
         <div class="enc-dlg grammar-dlg" role="dialog" aria-labelledby="grammar-dlg-title">
           <h3 id="grammar-dlg-title" class="enc-dlg-title">Грамматика и орфография</h3>
           <p class="enc-dlg-lead muted small">
-            Сами меняем только знаки препинания. Цвет и заливку букв не сбрасываем. Слова не
-            подменяем — возможные замены справа как совет.
+            Справа — текст вставки: его можно поправить, в том числе поставить запятую. Цвет,
+            заливка и выделение в заметке сохраняются.
           </p>
           <p v-if="grammarBusy" class="muted small">Проверяю текст…</p>
           <p v-if="grammarErr" class="enc-dlg-err">{{ grammarErr }}</p>
-          <div v-if="grammarResult && !grammarBusy" class="grammar-compare">
+          <div v-if="!grammarBusy" class="grammar-compare">
             <div class="grammar-col">
               <div class="grammar-col-lab">Сейчас</div>
               <p class="grammar-text">
@@ -1632,23 +1668,28 @@ onBeforeUnmount(() => {
               </p>
             </div>
             <div class="grammar-col">
-              <div class="grammar-col-lab">Знаки</div>
-              <p class="grammar-text grammar-text--new">
-                <span
-                  v-for="(part, idx) in grammarRightParts"
-                  :key="'r' + idx"
-                  :class="['gseg', part.kind !== 'ok' ? 'gseg--' + part.kind : '']"
-                  :title="part.message || undefined"
-                  >{{ part.text }}</span
-                >
-              </p>
+              <div class="grammar-col-lab">Вставка</div>
+              <textarea
+                v-model="grammarDraft"
+                class="grammar-text grammar-text--new grammar-draft"
+                rows="6"
+                spellcheck="false"
+                @input="grammarDraftDirty = true"
+              />
               <div v-if="grammarAdvice.length" class="grammar-advice">
-                <div class="grammar-col-lab">Совет — слова не меняем</div>
+                <div class="grammar-col-lab">Совет — нажмите, чтобы подставить</div>
                 <ul class="grammar-changes grammar-advice-list">
                   <li v-for="(item, idx) in grammarAdvice.slice(0, 16)" :key="'a' + idx">
-                    <span class="grammar-advice-old">{{ item.before }}</span>
-                    <span class="grammar-chg-arrow" aria-hidden="true">→</span>
-                    <span class="grammar-advice-new">{{ item.after }}</span>
+                    <button
+                      type="button"
+                      class="grammar-advice-btn"
+                      :title="'Подставить в вставку: ' + item.after"
+                      @click="applyAdviceToDraft(item)"
+                    >
+                      <span class="grammar-advice-old">{{ item.before }}</span>
+                      <span class="grammar-chg-arrow" aria-hidden="true">→</span>
+                      <span class="grammar-advice-new">{{ item.after }}</span>
+                    </button>
                     <span v-if="item.message" class="muted"> — {{ item.message }}</span>
                   </li>
                 </ul>
@@ -1673,7 +1714,7 @@ onBeforeUnmount(() => {
             "
             class="muted small"
           >
-            Ошибок не найдено.
+            Автоматических правок нет. Можно поправить текст справа и вставить.
           </p>
           <div class="enc-dlg-actions">
             <button type="button" class="enc-dlg-btn" @click="closeGrammarDialog">Отмена</button>
@@ -1683,7 +1724,7 @@ onBeforeUnmount(() => {
               :disabled="!grammarCanApply || grammarBusy"
               @click="applyGrammarSuggestion"
             >
-              Вставить знаки
+              Вставить
             </button>
           </div>
         </div>
@@ -1857,6 +1898,30 @@ onBeforeUnmount(() => {
 .grammar-text--new {
   border-color: var(--positive-border, var(--accent-border));
   background: var(--positive-subtle, var(--surface-1));
+}
+.grammar-draft {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  box-sizing: border-box;
+  color: inherit;
+}
+.grammar-advice-btn {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.28rem 0.35rem;
+  margin: 0;
+  padding: 0.12rem 0.2rem;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.grammar-advice-btn:hover {
+  background: var(--surface-2, var(--border));
 }
 .grammar-advice {
   margin-top: 0.65rem;

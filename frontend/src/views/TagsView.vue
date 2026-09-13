@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import NoteEditorColumn from '../components/NoteEditorColumn.vue'
+import AppSectionNav from '../components/AppSectionNav.vue'
 import { errMessage, foldersApi, notesApi, tagsApi } from '../api/client'
 import type { Folder, Note, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
@@ -776,23 +777,16 @@ onBeforeUnmount(() => {
   <div class="workspace" :class="{ 'workspace--fit': innerScroll }">
     <header class="workspace-header">
       <div class="header-left">
-        <h1 class="logo logo-wordmark" lang="ru">
+        <button
+          type="button"
+          class="logo logo-wordmark logo-home-btn"
+          lang="ru"
+          @click="router.push({ name: 'notes' })"
+        >
           <span class="logo-brand"><span class="logo-brand-accent">Em</span><span class="logo-brand-dash">-</span><span>Note</span></span>
-        </h1>
-        <span class="header-sub">Метки</span>
+        </button>
       </div>
       <div class="actions">
-        <button type="button" class="btn secondary" @click="router.push({ name: 'notes' })">
-          ← Заметки
-        </button>
-        <button
-          v-if="auth.user?.can_use_habits"
-          type="button"
-          class="btn secondary"
-          @click="router.push({ name: 'habits' })"
-        >
-          Привычки
-        </button>
         <button
           type="button"
           class="btn primary"
@@ -802,19 +796,22 @@ onBeforeUnmount(() => {
         >
           Новая в метке
         </button>
+      </div>
+      <div class="header-end">
+        <label
+          class="note-fit-toggle"
+          title="Заметка на высоту экрана: шапка и доступы всегда видны, скролл внутри текста"
+        >
+          <input
+            type="checkbox"
+            :checked="innerScroll"
+            @change="setInnerScroll(($event.target as HTMLInputElement).checked)"
+          />
+          <span class="note-fit-toggle-text">Скролл в заметке</span>
+        </label>
+        <AppSectionNav active="tags" />
         <div class="header-user">
           <span v-if="auth.user" class="user">{{ auth.user.email }}</span>
-          <label
-            class="note-fit-toggle"
-            title="Заметка на высоту экрана: шапка и доступы всегда видны, скролл внутри текста"
-          >
-            <input
-              type="checkbox"
-              :checked="innerScroll"
-              @change="setInnerScroll(($event.target as HTMLInputElement).checked)"
-            />
-            <span class="note-fit-toggle-text">Скролл в заметке</span>
-          </label>
           <button
             type="button"
             class="theme-toggle"
@@ -1093,6 +1090,14 @@ onBeforeUnmount(() => {
   margin: 0;
   line-height: 1.05;
 }
+.logo-home-btn {
+  display: inline-flex;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
 .logo-wordmark {
   font-family: 'Sora', 'Inter', system-ui, sans-serif;
   font-size: var(--fs-xl);
@@ -1113,30 +1118,30 @@ onBeforeUnmount(() => {
   font-weight: 600;
   margin: 0 0.02em;
 }
-.header-sub {
-  font-size: var(--fs-2xs);
-  font-weight: 500;
-  color: var(--note-list-meta);
-  text-transform: lowercase;
-}
 .actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-left: auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .header-user {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.4rem;
-  padding-left: 0.5rem;
+  padding-left: 0.85rem;
   border-left: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .user {
+  font-family: inherit;
   font-size: var(--fs-2xs);
+  font-weight: 400;
+  line-height: var(--lh-tight);
   color: var(--text-muted);
-  max-width: 180px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

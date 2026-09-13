@@ -1,5 +1,7 @@
 """Открытие заметки в корзине: GET и вспомогательные вызовы владельца не должны отдавать 404."""
 
+import json
+
 from httpx import AsyncClient
 
 
@@ -61,6 +63,54 @@ async def test_patch_trashed_note_is_rejected(client: AsyncClient) -> None:
         headers=h,
     )
     assert patch_r.status_code == 400, patch_r.text
+
+
+async def test_restore_trashed_note_with_mindmap(client: AsyncClient) -> None:
+    h = await _auth_headers(client)
+    scene = json.dumps(
+        {
+            "root": {"data": {"text": "Главная"}, "children": []},
+            "theme": {"template": "classic4", "config": {}},
+            "layout": "mindMap",
+            "config": {},
+            "view": None,
+        },
+        ensure_ascii=False,
+    )
+    created = await client.post(
+        "/api/notes",
+        json={
+            "title": "Карта в корзине",
+            "content_json": json.dumps(
+                {
+                    "type": "doc",
+                    "content": [
+                        {
+                            "type": "mindmapBlock",
+                            "attrs": {"scene": scene, "collapsed": False, "title": "Карта"},
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+        headers=h,
+    )
+    assert created.status_code == 201, created.text
+    note_id = created.json()["id"]
+
+    assert (await client.delete(f"/api/notes/{note_id}", headers=h)).status_code == 204
+
+    restored = await client.post(f"/api/notes/{note_id}/restore", headers=h)
+    assert restored.status_code == 200, restored.text
+    body = restored.json()
+    assert body["id"] == note_id
+    assert body["deleted_at"] is None
+    assert "mindmapBlock" in body["content_json"]
+
+    live = await client.get(f"/api/notes/{note_id}", headers=h)
+    assert live.status_code == 200, live.text
+    assert live.json()["deleted_at"] is None
 
 
 async def test_empty_trash_purges_trashed_notes_and_keeps_live(client: AsyncClient) -> None:

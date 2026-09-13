@@ -20,7 +20,7 @@ def _email_key(email: str) -> str:
 
 
 def is_instance_owner_email(email_norm: str) -> bool:
-    """Владелец инстанса: ему автоматически включены заметки, привычки и грамматика."""
+    """Владелец инстанса: ему автоматически включены заметки, привычки, грамматика, бюджет и схемы."""
     admin = (settings.admin_email or "").strip().lower()
     return bool(admin) and email_norm == admin
 
@@ -42,6 +42,8 @@ async def register(
         can_create_notes=is_owner,
         can_use_habits=is_owner,
         can_use_grammar=is_owner,
+        can_use_budget=is_owner,
+        can_use_schemas=is_owner,
     )
     db.add(user)
     await db.flush()
@@ -68,6 +70,10 @@ async def login(
             user.can_use_habits = True
         if not user.can_use_grammar:
             user.can_use_grammar = True
+        if not user.can_use_budget:
+            user.can_use_budget = True
+        if not user.can_use_schemas:
+            user.can_use_schemas = True
         await db.flush()
     await claim_invite_shares_for_user(db, user)
     await ensure_share_access_tags_for_user(db, user.id)

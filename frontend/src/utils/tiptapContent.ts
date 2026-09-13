@@ -50,6 +50,24 @@ export function rewriteAttachmentImagesInTipTapDoc(doc: unknown): unknown {
 
 /** Обход TipTap JSON. */
 
+export function contentHasMindmap(contentJson: string): boolean {
+  let doc: unknown
+  try {
+    doc = JSON.parse(contentJson || '{}')
+  } catch {
+    return false
+  }
+  function walk(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false
+    const o = node as Record<string, unknown>
+    if (o.type === 'mindmapBlock') return true
+    const c = o.content
+    if (Array.isArray(c)) return c.some(walk)
+    return false
+  }
+  return walk(doc)
+}
+
 export function contentHasExcalidraw(contentJson: string): boolean {
   let doc: unknown
   try {
