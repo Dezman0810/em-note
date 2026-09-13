@@ -164,14 +164,6 @@ const filtered = computed(() => {
   })
 })
 
-function ruSchemaWord(n: number): string {
-  const n10 = n % 10
-  const n100 = n % 100
-  if (n10 === 1 && n100 !== 11) return 'схема'
-  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return 'схемы'
-  return 'схем'
-}
-
 function rowKey(row: Pick<NoteSchemaListItem, 'note_id' | 'schema_index'>) {
   return `${row.note_id}:${row.schema_index}`
 }
