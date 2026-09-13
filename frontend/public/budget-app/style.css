@@ -213,7 +213,25 @@ body.hide-balance-strip .balance-strip-wrap {
   grid-column: 1 / -1;
 }
 
-.home-today-card > .muted.small {
+.home-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.home-list-head .card-title {
+  margin: 0;
+}
+
+.home-list-mode {
+  margin-bottom: 0;
+}
+
+.home-today-card > .muted.small,
+#home-list-hint {
   margin: 0 0 0.35rem;
 }
 

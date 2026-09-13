@@ -386,9 +386,10 @@ async def list_transactions(
     sort: Annotated[
         str | None,
         Query(
-            description="date_desc|date_asc|amount_desc|amount_asc|kind|category|note",
+            description="date_desc|date_asc|amount_desc|amount_asc|kind|category|note|id_desc",
         ),
     ] = None,
+    limit: Annotated[int | None, Query(ge=1, le=500, description="Max rows")] = None,
 ):
     OC = aliased(BudgetCategory)
 
@@ -435,7 +436,9 @@ async def list_transactions(
             note_needle = nt.lower()
 
     sort_n = (sort or "date_desc").lower().strip()
-    if sort_n == "category":
+    if sort_n == "id_desc":
+        stmt = stmt.order_by(BudgetTransaction.id.desc())
+    elif sort_n == "category":
         stmt = stmt.outerjoin(OC, BudgetTransaction.category_id == OC.id).order_by(
             case((OC.name.is_(None), 1), else_=0),
             OC.name.asc(),
@@ -464,6 +467,8 @@ async def list_transactions(
     else:
         stmt = stmt.order_by(BudgetTransaction.occurred_on.desc(), BudgetTransaction.id.desc())
 
+    if limit is not None and note_needle is None:
+        stmt = stmt.limit(limit)
     rows = list((await db.scalars(stmt)).all())
     if note_needle is not None:
         rows = [
@@ -471,6 +476,8 @@ async def list_transactions(
             for r in rows
             if r.note is not None and note_needle in (r.note or "").lower()
         ]
+        if limit is not None:
+            rows = rows[:limit]
     return [await serialize_transaction(db, t) for t in rows]
 
 

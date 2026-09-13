@@ -2519,10 +2519,70 @@ function categoryPathOptionsHtml(flat, selectedId) {
   return opts.join("");
 }
 
-function renderTodayHomeRows(el, rows) {
+function fillFormAsCopy(row) {
+  if (!form || !row) return;
+  form.querySelector('[name="id"]').value = "";
+  showHomeTxnForm();
+  fillTxnForm(row);
+  form.querySelector('[name="occurred_on"]').value = todayISO();
+  setTxnSubmitMode(false);
+  toast("Заполнено копией — дата на сегодня");
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function bindLedgerRowActions(el, rows, source = "ledger") {
+  if (!el) return;
+  el.querySelectorAll(".edit").forEach((b) =>
+    b.addEventListener("click", () => {
+      const row = rows.find((x) => String(x.id) === b.dataset.id);
+      if (!row) return;
+      beginLedgerInlineEdit(b.closest("tr"), row, source).catch((e) => toast(String(e.message || e)));
+    })
+  );
+  el.querySelectorAll(".dup").forEach((b) =>
+    b.addEventListener("click", () => {
+      const row = rows.find((x) => String(x.id) === b.dataset.id);
+      if (!row) return;
+      fillFormAsCopy(row);
+    })
+  );
+  el.querySelectorAll(".delete").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Удалить операцию?")) return;
+      try {
+        await api(`/api/transactions/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+        toast("Удалено");
+        await loadLedger();
+      } catch (err) {
+        toast(String(err.message || err));
+      }
+    })
+  );
+}
+
+const HOME_LIST_MODE_KEY = "budjet-home-list-mode";
+
+function getHomeListMode() {
+  const checked = document.querySelector('input[name="home-list-mode"]:checked');
+  return checked?.value === "recent" ? "recent" : "today";
+}
+
+function applyHomeListModeToUi() {
+  const mode = getHomeListMode();
+  const heading = $("#home-today-heading");
+  const hint = $("#home-list-hint");
+  if (heading) heading.textContent = mode === "recent" ? "10 последних" : "Сегодня";
+  if (hint) {
+    hint.textContent =
+      mode === "recent" ? "Последние добавленные операции, любая дата" : "Все операции за сегодня";
+  }
+}
+
+function renderTodayHomeRows(el, rows, mode = "today") {
   if (!el) return;
   if (!rows.length) {
-    el.innerHTML = `<p class="muted">За сегодня операций нет.</p>`;
+    el.innerHTML =
+      mode === "recent" ? `<p class="muted">Операций пока нет.</p>` : `<p class="muted">За сегодня операций нет.</p>`;
     return;
   }
   let inc = 0;
@@ -2531,49 +2591,117 @@ function renderTodayHomeRows(el, rows) {
     if (r.kind === "income") inc += r.amount;
     else exp += r.amount;
   }
+  const totalLabel = mode === "recent" ? "Итого в списке" : "Итого за сегодня";
   el.innerHTML = `
-    <p class="small muted">Итого за сегодня: доход <span class="kind-income">${fmtMoney(inc)}</span> · расход <span class="kind-expense">${fmtMoney(
+    <p class="small muted">${totalLabel}: доход <span class="kind-income">${fmtMoney(inc)}</span> · расход <span class="kind-expense">${fmtMoney(
       exp
     )}</span> · баланс <strong>${fmtMoney(inc - exp)}</strong></p>
     <table>
-      <thead><tr><th>Тип</th><th>Сумма</th><th>Категория</th><th>Комментарий</th></tr></thead>
+      <thead><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Категория</th><th>Комментарий</th><th></th></tr></thead>
       <tbody>
         ${rows
           .map(
             (r) => `
-          <tr>
+          <tr data-row-id="${r.id}">
+            <td>${escapeHtml(r.occurred_on || "")}</td>
             <td class="${r.kind === "income" ? "kind-income" : "kind-expense"}">${r.kind === "income" ? "доход" : "расход"}</td>
             <td>${fmtMoney(r.amount)}</td>
             <td>${escapeHtml(txnCategoryLabel(r))}</td>
             <td>${escapeHtml(r.note || "")}</td>
+            <td class="nowrap">
+              <button type="button" class="linkish edit" data-id="${r.id}">изменить</button>
+              <button type="button" class="linkish dup" data-id="${r.id}">копия</button>
+              <button type="button" class="linkish delete" data-id="${r.id}">удалить</button>
+            </td>
           </tr>`
           )
           .join("")}
       </tbody>
     </table>`;
+  bindLedgerRowActions(el, rows, "today");
 }
+
+let homeListLoadSeq = 0;
 
 async function loadTodayHome() {
   const el = $("#home-today-ledger");
   if (!el) return;
-  const day = todayISO();
-  const params = new URLSearchParams({ from_date: day, to_date: day, sort: "date_desc" });
+  const seq = ++homeListLoadSeq;
+  applyHomeListModeToUi();
+  const mode = getHomeListMode();
+  const params = new URLSearchParams();
+  if (mode === "recent") {
+    params.set("sort", "id_desc");
+    params.set("limit", "10");
+  } else {
+    const day = todayISO();
+    params.set("from_date", day);
+    params.set("to_date", day);
+    params.set("sort", "date_desc");
+  }
   try {
     const raw = await api(`/api/transactions?${params}`);
-    renderTodayHomeRows(el, Array.isArray(raw) ? raw : []);
+    if (seq !== homeListLoadSeq) return;
+    let rows = Array.isArray(raw) ? raw : [];
+    if (mode === "recent") rows = rows.slice(0, 10);
+    renderTodayHomeRows(el, rows, mode);
   } catch (e) {
+    if (seq !== homeListLoadSeq) return;
     el.innerHTML = `<p class="muted">${escapeHtml(String(e.message || e))}</p>`;
   }
 }
 
-async function beginLedgerInlineEdit(tr, row) {
+function initHomeListMode() {
+  const saved = localStorage.getItem(HOME_LIST_MODE_KEY) === "recent" ? "recent" : "today";
+  const input = document.querySelector(`input[name="home-list-mode"][value="${saved}"]`);
+  if (input) input.checked = true;
+  applyHomeListModeToUi();
+  document.querySelectorAll('input[name="home-list-mode"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      try {
+        localStorage.setItem(HOME_LIST_MODE_KEY, getHomeListMode());
+      } catch {
+        /* ignore */
+      }
+      loadTodayHome().catch((e) => toast(String(e.message || e)));
+    });
+  });
+}
+
+initHomeListMode();
+
+function ledgerInlineLayout(source) {
+  if (source === "today") {
+    return {
+      host: $("#home-today-ledger"),
+      amountIdx: 2,
+      catIdx: 3,
+      noteIdx: 4,
+      actionsIdx: 5,
+      minCells: 6,
+      reload: () => loadTodayHome(),
+    };
+  }
+  return {
+    host: $("#ledger"),
+    amountIdx: 2,
+    catIdx: 3,
+    noteIdx: 5,
+    actionsIdx: 6,
+    minCells: 7,
+    reload: () => loadLedger(),
+  };
+}
+
+async function beginLedgerInlineEdit(tr, row, source = "ledger") {
   if (!tr || !row) return;
-  const host = $("#ledger");
+  const layout = ledgerInlineLayout(source);
+  const host = layout.host;
   const other = host?.querySelector("tr.is-editing");
   if (other && other !== tr) {
-    await loadLedger();
+    await layout.reload();
     const again = host?.querySelector(`tr[data-row-id="${row.id}"]`);
-    if (again) return beginLedgerInlineEdit(again, row);
+    if (again) return beginLedgerInlineEdit(again, row, source);
     return;
   }
   if (tr.classList.contains("is-editing")) return;
@@ -2585,25 +2713,25 @@ async function beginLedgerInlineEdit(tr, row) {
     return;
   }
   const tds = tr.querySelectorAll("td");
-  if (tds.length < 7) return;
+  if (tds.length < layout.minCells) return;
   tr.classList.add("is-editing");
-  tds[2].innerHTML = `<input type="number" class="inline-amt" step="0.01" min="0.01" value="${Number(row.amount).toFixed(2)}" aria-label="Сумма">`;
-  tds[3].innerHTML = `<select class="inline-cat" aria-label="Категория">${categoryPathOptionsHtml(flat, row.category_id)}</select>`;
-  tds[5].innerHTML = `<input type="text" class="inline-note" maxlength="512" value="${escapeHtml(row.note || "")}" aria-label="Комментарий">`;
-  tds[6].innerHTML = `
+  tds[layout.amountIdx].innerHTML = `<input type="number" class="inline-amt" step="0.01" min="0.01" value="${Number(row.amount).toFixed(2)}" aria-label="Сумма">`;
+  tds[layout.catIdx].innerHTML = `<select class="inline-cat" aria-label="Категория">${categoryPathOptionsHtml(flat, row.category_id)}</select>`;
+  tds[layout.noteIdx].innerHTML = `<input type="text" class="inline-note" maxlength="512" value="${escapeHtml(row.note || "")}" aria-label="Комментарий">`;
+  tds[layout.actionsIdx].innerHTML = `
     <button type="button" class="linkish inline-save">сохранить</button>
     <button type="button" class="linkish inline-cancel">отмена</button>`;
 
   const save = async () => {
-    const rawAmt = tds[2].querySelector(".inline-amt")?.value ?? "";
+    const rawAmt = tds[layout.amountIdx].querySelector(".inline-amt")?.value ?? "";
     const amount = Number(String(rawAmt).replace(",", "."));
     if (!Number.isFinite(amount) || amount <= 0) {
       toast("Сумма должна быть числом больше нуля");
       return;
     }
-    const cidRaw = tds[3].querySelector(".inline-cat")?.value ?? "";
+    const cidRaw = tds[layout.catIdx].querySelector(".inline-cat")?.value ?? "";
     const category_id = cidRaw ? Number(cidRaw) : null;
-    const note = (tds[5].querySelector(".inline-note")?.value || "").trim() || null;
+    const note = (tds[layout.noteIdx].querySelector(".inline-note")?.value || "").trim() || null;
     try {
       await api(`/api/transactions/${encodeURIComponent(row.id)}`, {
         method: "PATCH",
@@ -2616,11 +2744,11 @@ async function beginLedgerInlineEdit(tr, row) {
     }
   };
 
-  tds[6].querySelector(".inline-save")?.addEventListener("click", () => {
+  tds[layout.actionsIdx].querySelector(".inline-save")?.addEventListener("click", () => {
     save().catch((e) => toast(String(e.message || e)));
   });
-  tds[6].querySelector(".inline-cancel")?.addEventListener("click", () => {
-    loadLedger().catch((e) => toast(String(e.message || e)));
+  tds[layout.actionsIdx].querySelector(".inline-cancel")?.addEventListener("click", () => {
+    layout.reload().catch((e) => toast(String(e.message || e)));
   });
   tr.querySelectorAll(".inline-amt, .inline-note").forEach((inp) => {
     inp.addEventListener("keydown", (e) => {
@@ -2630,11 +2758,11 @@ async function beginLedgerInlineEdit(tr, row) {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        loadLedger().catch((err) => toast(String(err.message || err)));
+        layout.reload().catch((err) => toast(String(err.message || err)));
       }
     });
   });
-  tds[2].querySelector(".inline-amt")?.focus();
+  tds[layout.amountIdx].querySelector(".inline-amt")?.focus();
 }
 
 async function loadLedger() {
@@ -2688,42 +2816,7 @@ async function loadLedger() {
       </tbody>
     </table>`;
   el.innerHTML = head + table;
-
-  el.querySelectorAll(".edit").forEach((b) =>
-    b.addEventListener("click", () => {
-      const row = rows.find((x) => String(x.id) === b.dataset.id);
-      if (!row) return;
-      const tr = b.closest("tr");
-      beginLedgerInlineEdit(tr, row).catch((e) => toast(String(e.message || e)));
-    })
-  );
-
-  el.querySelectorAll(".dup").forEach((b) =>
-    b.addEventListener("click", () => {
-      const row = rows.find((x) => String(x.id) === b.dataset.id);
-      if (!row) return;
-      form.querySelector('[name="id"]').value = "";
-      showHomeTxnForm();
-      fillTxnForm(row);
-      form.querySelector('[name="occurred_on"]').value = todayISO();
-      setTxnSubmitMode(false);
-      toast("Заполнено копией — дата на сегодня");
-      form.scrollIntoView({ behavior: "smooth", block: "start" });
-    })
-  );
-
-    el.querySelectorAll(".delete").forEach((b) =>
-    b.addEventListener("click", async () => {
-      if (!confirm("Удалить операцию?")) return;
-      try {
-        await api(`/api/transactions/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
-        toast("Удалено");
-        await loadLedger();
-      } catch (err) {
-        toast(String(err.message || err));
-      }
-    })
-  );
+  bindLedgerRowActions(el, rows, "ledger");
   } finally {
     void refreshGlobalTotals().catch(() => {});
     void loadTodayHome().catch(() => {});

@@ -6,9 +6,9 @@
   <!-- Непустое значение, если UI открыт под префиксом (например /budget), а не с корня домена -->
   <meta name="budjet-mount" content="" />
   <title>Семейный бюджет</title>
-  <link rel="stylesheet" href="/budget-app/style.css?v=20260913g" />
+  <link rel="stylesheet" href="/budget-app/style.css?v=20260913j" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
-  <script id="budjet-app-script" src="/budget-app/app.js?v=20260913g" defer></script>
+  <script id="budjet-app-script" src="/budget-app/app.js?v=20260913j" defer></script>
 </head>
 <body class="is-home-tab">
   <header class="top">
@@ -140,8 +140,14 @@
       </form>
 
       <section class="card home-today-card" aria-labelledby="home-today-heading">
-        <h2 id="home-today-heading" class="card-title">Сегодня</h2>
-        <p class="muted small">Все операции за сегодня</p>
+        <div class="home-list-head">
+          <h2 id="home-today-heading" class="card-title">Сегодня</h2>
+          <div class="segmented kind-seg home-list-mode" role="radiogroup" aria-label="Какие операции показать">
+            <label><input type="radio" name="home-list-mode" value="today" checked /><span>Сегодня</span></label>
+            <label><input type="radio" name="home-list-mode" value="recent" /><span>10 последних</span></label>
+          </div>
+        </div>
+        <p class="muted small" id="home-list-hint">Все операции за сегодня</p>
         <div class="ledger home-today-ledger" id="home-today-ledger">
           <p class="muted small ledger-loading">Загрузка…</p>
         </div>

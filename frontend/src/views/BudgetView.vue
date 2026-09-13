@@ -47,7 +47,7 @@ function logout() {
         </div>
       </div>
     </header>
-    <iframe class="budget-frame" src="/budget-app/index.html?v=20260913g" title="Семейный бюджет" />
+    <iframe class="budget-frame" src="/budget-app/index.html?v=20260913j" title="Семейный бюджет" />
   </div>
 </template>
 
