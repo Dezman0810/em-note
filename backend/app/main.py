@@ -14,6 +14,7 @@ from app.api.routers import (
     mail,
     note_filter_presets,
     note_public_links,
+    note_diagrams,
     note_mindmaps,
     note_schemas,
     notes,
@@ -63,6 +64,7 @@ app.include_router(grammar.router, prefix="/api")
 app.include_router(budget.router, prefix="/api")
 app.include_router(note_schemas.router, prefix="/api")
 app.include_router(note_mindmaps.router, prefix="/api")
+app.include_router(note_diagrams.router, prefix="/api")
 app.include_router(user_settings.router, prefix="/api")
 
 

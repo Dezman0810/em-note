@@ -260,7 +260,7 @@ async def test_grammar_applies_mocked_languagetool(client: AsyncClient, monkeypa
     assert body["issues"][0]["message"] == "Возможно, опечатка."
 
 
-async def test_admin_cannot_disable_own_grammar(client: AsyncClient) -> None:
+async def test_admin_can_disable_own_grammar(client: AsyncClient) -> None:
     await client.post(
         "/api/auth/register",
         json={"email": "tagtest@example.com", "password": "password99", "display_name": "A"},
@@ -274,4 +274,17 @@ async def test_admin_cannot_disable_own_grammar(client: AsyncClient) -> None:
     r = await client.patch(
         f"/api/admin/users/{uid}", headers=headers, json={"can_use_grammar": False}
     )
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text
+    assert r.json()["can_use_grammar"] is False
+
+    me_after = await client.get("/api/auth/me", headers=headers)
+    assert me_after.status_code == 200, me_after.text
+    assert me_after.json()["can_use_grammar"] is False
+
+    relogin = await client.post(
+        "/api/auth/login", json={"email": "tagtest@example.com", "password": "password99"}
+    )
+    assert relogin.status_code == 200, relogin.text
+    relogin_headers = {"Authorization": f"Bearer {relogin.json()['access_token']}"}
+    me_relogin = await client.get("/api/auth/me", headers=relogin_headers)
+    assert me_relogin.json()["can_use_grammar"] is False

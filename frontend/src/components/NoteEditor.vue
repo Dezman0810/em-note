@@ -17,8 +17,19 @@ import { AudioNoteBlock } from './tiptap/AudioNoteExtension'
 import { CodeSnippetBlock } from './tiptap/CodeSnippetExtension'
 import { ExcalidrawBlock } from './tiptap/ExcalidrawExtension'
 import { MindmapBlock } from './tiptap/MindmapExtension'
+import { C4Block } from './tiptap/C4Extension'
 import { ExcalidrawUndoGuard } from './tiptap/ExcalidrawUndoGuard'
 import { RichClipboardPasteFix } from './tiptap/RichClipboardPasteFix'
+import { TableColumnFilter } from './tiptap/TableColumnFilterExtension'
+import TableColumnFilterOverlay from './tiptap/TableColumnFilterOverlay.vue'
+import { NoteTable } from './tiptap/noteTableFilterTable'
+import {
+  findTableAtState,
+  isTableFilterEnabled,
+  setTableFilterEnabled,
+} from './tiptap/noteTableFilterCommands'
+import { refreshTableFilterDecorations } from './tiptap/tableFilterSession'
+import { cleanupLegacyTableFilterStyles } from './tiptap/tableFilterDomSync'
 import { TaskItemNote } from './tiptap/taskItemNote'
 import { TaskListEnterKeymap } from './tiptap/taskListEnterKeymap'
 import { FontFamily, TextStyle } from '@tiptap/extension-text-style'
@@ -88,6 +99,7 @@ const noteAttachmentContext = computed(() => ({
 provide('noteAttachmentContext', noteAttachmentContext)
 
 const toolbarTick = ref(0)
+const editorContentHostRef = ref<HTMLElement | null>(null)
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024
 /** Битрейт Opus/WebM: баланс качества и размера (~1 МБ на 1–1.5 мин речи). */
@@ -245,19 +257,21 @@ const editor = useEditor({
   extensions: [
     ExcalidrawUndoGuard,
     RichClipboardPasteFix,
+    TableColumnFilter,
     StarterKit.configure({
       heading: { levels: [2, 3] },
     }),
     TableKit.configure({
-      table: {
-        resizable: true,
-        /** Совпадает с TABLE_COL_WIDTH_MIN — иначе узкие colwidth поджимаются при отрисовке. */
-        cellMinWidth: 20,
-        handleWidth: 6,
-        lastColumnResizable: true,
-      },
+      table: false,
       tableCell: false,
       tableHeader: false,
+    }),
+    NoteTable.configure({
+      resizable: true,
+      /** Совпадает с TABLE_COL_WIDTH_MIN — иначе узкие colwidth поджимаются при отрисовке. */
+      cellMinWidth: 20,
+      handleWidth: 6,
+      lastColumnResizable: true,
     }),
     NoteTableCell,
     NoteTableHeader,
@@ -272,6 +286,7 @@ const editor = useEditor({
     EncryptedInline,
     ExcalidrawBlock,
     MindmapBlock,
+    C4Block,
     CodeSnippetBlock,
     AudioNoteBlock,
     UploadedFileBlock,
@@ -366,6 +381,14 @@ const orderedListOn = computed(() => {
 
 const tableDd = ref<HTMLDetailsElement | null>(null)
 
+const TABLE_INSERT_COLS_MIN = 1
+const TABLE_INSERT_COLS_MAX = 30
+const TABLE_INSERT_ROWS_MIN = 1
+const TABLE_INSERT_ROWS_MAX = 100
+const tableCustomCols = ref(4)
+const tableCustomRows = ref(4)
+const tableCustomErr = ref('')
+
 /** Якорь ячейки: сохраняем на pointerdown по summary (до ухода фокуса с редактора). */
 const tableMenuSavedAnchor = ref<number | null>(null)
 
@@ -439,6 +462,25 @@ const canTableToggleHeaderRow = computed(() => {
   void toolbarTick.value
   return editor.value?.can().toggleHeaderRow() ?? false
 })
+
+const tableColumnFilterEnabled = computed(() => {
+  void toolbarTick.value
+  void tableMenuSavedAnchor.value
+  const ed = editor.value
+  if (!ed) return false
+  const anchor = tableMenuSavedAnchor.value ?? ed.state.selection.anchor
+  const found = findTableAtState(ed.state, anchor)
+  return found ? isTableFilterEnabled(found.tableNode) : false
+})
+
+function toggleTableColumnFiltering(event: Event) {
+  const checked = (event.target as HTMLInputElement).checked
+  const ed = editor.value
+  if (!ed) return
+  setTableFilterEnabled(ed, checked)
+  refreshTableFilterDecorations(ed)
+  bumpToolbar()
+}
 
 const tableCellMetrics = computed(() => {
   void toolbarTick.value
@@ -748,6 +790,10 @@ function insertMindmap() {
   editor.value?.chain().focus().insertMindmap().run()
 }
 
+function insertC4() {
+  editor.value?.chain().focus().insertC4().run()
+}
+
 function insertCodeSnippet() {
   editor.value?.chain().focus().insertCodeSnippet().run()
 }
@@ -763,6 +809,21 @@ function insertNoteTable(rows: number, cols: number, withHeaderRow: boolean) {
     .insertTable({ rows, cols, withHeaderRow })
     .run()
   closeTableDd()
+}
+
+function insertCustomNoteTable() {
+  const cols = Math.round(Number(tableCustomCols.value))
+  const rows = Math.round(Number(tableCustomRows.value))
+  if (!Number.isFinite(cols) || cols < TABLE_INSERT_COLS_MIN || cols > TABLE_INSERT_COLS_MAX) {
+    tableCustomErr.value = `Столбцов: от ${TABLE_INSERT_COLS_MIN} до ${TABLE_INSERT_COLS_MAX}`
+    return
+  }
+  if (!Number.isFinite(rows) || rows < TABLE_INSERT_ROWS_MIN || rows > TABLE_INSERT_ROWS_MAX) {
+    tableCustomErr.value = `Строк: от ${TABLE_INSERT_ROWS_MIN} до ${TABLE_INSERT_ROWS_MAX}`
+    return
+  }
+  tableCustomErr.value = ''
+  insertNoteTable(rows, cols, true)
 }
 
 function triggerFilePick() {
@@ -1221,6 +1282,10 @@ async function confirmEncrypt() {
 
 onMounted(() => {
   window.addEventListener('scroll', bumpToolbar, true)
+  nextTick(() => {
+    const root = editorContentHostRef.value?.querySelector('.ProseMirror')
+    if (root) cleanupLegacyTableFilterStyles(root)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -1326,11 +1391,47 @@ onBeforeUnmount(() => {
                 type="button"
                 class="table-dd-preset"
                 aria-label="Таблица 3 столбца на 5 строк"
-                @click="insertNoteTable(3, 5, true)"
+                @click="insertNoteTable(5, 3, true)"
               >
                 3×5
               </button>
             </div>
+            <p class="table-dd-hint table-dd-hint--tight">Свой размер (первая строка — заголовок):</p>
+            <div class="table-dd-custom">
+              <label class="table-dd-custom-field">
+                <span class="table-dd-custom-lab">Столбцов</span>
+                <input
+                  v-model.number="tableCustomCols"
+                  type="number"
+                  class="table-dd-inp table-dd-inp--inline"
+                  :min="TABLE_INSERT_COLS_MIN"
+                  :max="TABLE_INSERT_COLS_MAX"
+                  step="1"
+                  inputmode="numeric"
+                  aria-label="Число столбцов"
+                  @keydown.enter.prevent="insertCustomNoteTable"
+                />
+              </label>
+              <span class="table-dd-custom-x" aria-hidden="true">×</span>
+              <label class="table-dd-custom-field">
+                <span class="table-dd-custom-lab">Строк</span>
+                <input
+                  v-model.number="tableCustomRows"
+                  type="number"
+                  class="table-dd-inp table-dd-inp--inline"
+                  :min="TABLE_INSERT_ROWS_MIN"
+                  :max="TABLE_INSERT_ROWS_MAX"
+                  step="1"
+                  inputmode="numeric"
+                  aria-label="Число строк"
+                  @keydown.enter.prevent="insertCustomNoteTable"
+                />
+              </label>
+              <button type="button" class="table-dd-act table-dd-act--insert" @click="insertCustomNoteTable">
+                Вставить
+              </button>
+            </div>
+            <p v-if="tableCustomErr" class="table-dd-custom-err">{{ tableCustomErr }}</p>
             <p class="table-dd-note">
               Ширина таблицы по колонкам (не на всю строку): граница между ячейками — потянуть мышью. Tab —
               следующая ячейка.
@@ -1427,6 +1528,17 @@ onBeforeUnmount(() => {
                   Удалить
                 </button>
               </div>
+              <label class="table-dd-filter-toggle">
+                <input
+                  type="checkbox"
+                  :checked="tableColumnFilterEnabled"
+                  @change="toggleTableColumnFiltering"
+                />
+                <span>Фильтрация по столбцам</span>
+              </label>
+              <p class="table-dd-hint table-dd-hint--tight">
+                Фильтры сохраняются в заметке. Кнопки ▾ появятся в заголовках столбцов.
+              </p>
               <div class="table-dd-row table-dd-row--footer">
                 <button
                   type="button"
@@ -1567,15 +1679,17 @@ onBeforeUnmount(() => {
         type="button"
         class="tb"
         title="Проверить выделенный текст: орфография, пунктуация, грамматика"
+        aria-label="Грамматика и орфография"
         @mousedown="onGrammarMouseDown"
         @click="openGrammarDialog"
       >
-        Грамматика
+        ГР
       </button>
       <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
       <button type="button" class="tb" title="Интеллект-карта, как в редакторе на localhost:8200" @click="insertMindmap">
         Карта
       </button>
+      <button type="button" class="tb" title="Диаграмма draw.io (diagrams.net, русский интерфейс)" @click="insertC4">Диаграмма</button>
       <button
         type="button"
         class="tb"
@@ -1619,7 +1733,15 @@ onBeforeUnmount(() => {
     <p v-if="recordErr" class="record-err">{{ recordErr }}</p>
     <p v-if="encryptHint" class="encrypt-hint">{{ encryptHint }}</p>
     <p v-if="grammarHint" class="encrypt-hint">{{ grammarHint }}</p>
-    <EditorContent :editor="editor" class="editor-content" />
+    <div ref="editorContentHostRef" class="editor-content-host">
+      <EditorContent :editor="editor" class="editor-content" />
+      <TableColumnFilterOverlay
+        v-if="editor"
+        :editor="editor"
+        :editable="editable"
+        :host-el="editorContentHostRef"
+      />
+    </div>
     <Teleport to="body">
       <div v-if="encryptDlg" class="enc-dlg-root" @click.self="closeEncryptDialog">
         <div class="enc-dlg" role="dialog" aria-labelledby="enc-dlg-title">
@@ -1751,10 +1873,36 @@ onBeforeUnmount(() => {
   top: 0;
   flex-shrink: 0;
 }
-.editor-wrap--fit .editor-content {
+.editor-wrap--fit .editor-content-host {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
+}
+.editor-wrap--fit .editor-content {
+  min-height: 100%;
+}
+.editor-content-host {
+  position: relative;
+}
+.editor-wrap:not(.editor-wrap--fit) .editor-content-host {
+  overflow-x: auto;
+  overflow-y: visible;
+  max-width: 100%;
+}
+/* Без «Скролл в заметке»: страница вниз, горизонтальный скролл у блока текста (широкие таблицы). */
+.editor-wrap:not(.editor-wrap--fit) .editor-content {
+  overflow: visible;
+  max-width: 100%;
+}
+.editor-wrap:not(.editor-wrap--fit) .editor-content :deep(.tableWrapper),
+.editor-wrap:not(.editor-wrap--fit) .editor-content :deep(.ProseMirror > table) {
+  width: max-content;
+  max-width: none;
+}
+.editor-wrap:not(.editor-wrap--fit) .editor-content :deep(.ProseMirror table) {
+  width: max-content;
+  max-width: none;
+  table-layout: auto;
 }
 .editor-wrap--fit :deep(.ProseMirror) {
   min-height: 100%;
@@ -2354,6 +2502,43 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--text-3);
 }
+.table-dd-hint--tight {
+  margin-top: 0.55rem;
+}
+.table-dd-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.35rem 0.45rem;
+  margin-bottom: 0.15rem;
+}
+.table-dd-custom-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.table-dd-custom-lab {
+  font-size: var(--fs-2xs);
+  color: var(--text-4);
+}
+.table-dd-custom-x {
+  align-self: center;
+  padding-bottom: 0.28rem;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  line-height: 1;
+}
+.table-dd-act--insert {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+  align-self: flex-end;
+}
+.table-dd-custom-err {
+  margin: 0.15rem 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
+}
 .table-dd-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -2449,6 +2634,19 @@ onBeforeUnmount(() => {
   padding: 0.26rem 0.4rem;
   font-weight: 600;
 }
+.table-dd-filter-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.table-dd-filter-toggle input {
+  margin-top: 0.12rem;
+  flex-shrink: 0;
+}
 .table-dd-row--footer {
   margin-top: 0.25rem;
   padding-top: 0.45rem;
@@ -2481,14 +2679,15 @@ onBeforeUnmount(() => {
   background: var(--danger-subtle);
 }
 
-.editor-content :deep(.tableWrapper) {
+.editor-content :deep(.tableWrapper),
+.editor-content :deep(.ProseMirror > table) {
   margin: 0.65rem 0;
   overflow: visible;
   /* Таблица по ширине содержимого/колонок, без отдельного скролла обёртки */
   width: max-content;
   max-width: 100%;
 }
-.editor-content :deep(.tableWrapper table) {
+.editor-content :deep(.ProseMirror table) {
   border-collapse: collapse;
   table-layout: fixed;
   width: auto;
@@ -2496,8 +2695,8 @@ onBeforeUnmount(() => {
   overflow: hidden;
   font-size: var(--fs-sm);
 }
-.editor-content :deep(.tableWrapper td),
-.editor-content :deep(.tableWrapper th) {
+.editor-content :deep(.ProseMirror table td),
+.editor-content :deep(.ProseMirror table th) {
   border: 1px solid var(--border);
   padding: 0.35rem 0.45rem;
   vertical-align: top;
@@ -2505,7 +2704,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   position: relative;
 }
-.editor-content :deep(.tableWrapper th) {
+.editor-content :deep(.ProseMirror table th) {
   background: var(--surface-wash);
   font-weight: 600;
   text-align: left;
@@ -2533,10 +2732,13 @@ onBeforeUnmount(() => {
   z-index: 3;
   opacity: 0.65;
 }
-.editor-content :deep(.tableWrapper p) {
+.editor-content :deep(.ProseMirror table p) {
   margin: 0;
 }
-.editor-content :deep(.tableWrapper p + p) {
+.editor-content :deep(.ProseMirror table p + p) {
   margin-top: 0.35em;
+}
+.editor-content :deep(tr.note-table-row--filtered-out) {
+  display: none;
 }
 </style>

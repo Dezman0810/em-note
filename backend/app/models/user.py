@@ -35,6 +35,9 @@ class User(Base):
     can_use_grammar: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     can_use_schemas: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_export_schemas: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_export_mindmaps: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_export_diagrams: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     notes: Mapped[list["Note"]] = relationship(

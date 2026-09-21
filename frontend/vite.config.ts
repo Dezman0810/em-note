@@ -4,6 +4,7 @@ import vue from '@vitejs/plugin-vue'
 
 /** В Docker (docker-compose) прокси на сервис `api`; локально — на хост. */
 const apiProxyTarget = process.env.API_PROXY_TARGET ?? 'http://127.0.0.1:8000'
+const drawioProxyTarget = process.env.DRAWIO_PROXY_TARGET ?? 'http://127.0.0.1:8082'
 /** Порт UI: как на VPS (COMPOSE_WEB_PORT, по умолчанию 8080). */
 const devWebPort = Number(process.env.COMPOSE_WEB_PORT ?? 8080)
 /** В контейнере bind-mount на Windows часто не даёт inotify — без polling Vite не видит правки. */
@@ -13,6 +14,18 @@ export default defineConfig({
   plugins: [
     vue(),
     react(),
+    {
+      name: 'drawio-app-index',
+      configureServer(server) {
+        server.middlewares.use((req, _res, next) => {
+          const url = req.url?.split('?')[0] || ''
+          if (url === '/drawio-app' || url === '/drawio-app/') {
+            req.url = '/drawio-app/embed.html'
+          }
+          next()
+        })
+      },
+    },
     {
       name: 'mindmap-app-index',
       configureServer(server) {
@@ -79,6 +92,12 @@ export default defineConfig({
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
+      },
+      // Только /drawio/… — иначе /drawio-app/embed.html попадает в Tomcat как /-app/embed.html (404).
+      '/drawio/': {
+        target: drawioProxyTarget,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/drawio\/?/, '/'),
       },
     },
   },

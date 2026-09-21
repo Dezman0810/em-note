@@ -14,7 +14,7 @@ import {
 } from '../utils/dndTags'
 import type { Folder, FolderNoteCounts, Note, NoteFilterPreset, Tag } from '../api/types'
 import { useAuthStore } from '../stores/auth'
-import { fmtCompactMsk } from '../utils/datetime'
+import { fmtCompactMsk, reminderCalendarDayKeyFromIso } from '../utils/datetime'
 import { foldersSortedAlphabetical } from '../utils/folders'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import {
@@ -23,6 +23,15 @@ import {
   sortNotes,
   type NoteSort,
 } from '../utils/noteList'
+import {
+  diffNotesList,
+  mergeRefreshHints,
+  noteListItemEqual,
+  remindersSnapshot,
+  tagCountMapEqual,
+  tagCountsToMap,
+  type NoteListRefreshHint,
+} from '../utils/noteListSync'
 import {
   isDescendantTag,
   tagCountsFromNoteList,
@@ -314,6 +323,106 @@ const notes = ref<Note[]>([])
 const folders = ref<Folder[]>([])
 const q = ref('')
 const loading = ref(true)
+const flashNoteIds = ref<Record<string, true>>({})
+const flashTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function flashNoteId(id: string) {
+  flashNoteIds.value = { ...flashNoteIds.value, [id]: true }
+  const prev = flashTimers.get(id)
+  if (prev) clearTimeout(prev)
+  flashTimers.set(
+    id,
+    setTimeout(() => {
+      const next = { ...flashNoteIds.value }
+      delete next[id]
+      flashNoteIds.value = next
+      flashTimers.delete(id)
+    }, 1400)
+  )
+}
+
+function patchNoteInList(updated: Note): boolean {
+  const idx = notes.value.findIndex((n) => n.id === updated.id)
+  if (idx < 0) return false
+  const prev = notes.value[idx]!
+  if (noteListItemEqual(prev, updated)) return false
+  const next = notes.value.slice()
+  next[idx] = updated
+  notes.value = next
+  flashNoteId(updated.id)
+  return true
+}
+
+function folderCountsEqual(a: FolderNoteCounts | null, b: FolderNoteCounts): boolean {
+  if (!a) return false
+  if (a.total !== b.total || a.unfoldered !== b.unfoldered) return false
+  if (a.folder_counts.length !== b.folder_counts.length) return false
+  for (let i = 0; i < a.folder_counts.length; i++) {
+    const x = a.folder_counts[i]!
+    const y = b.folder_counts[i]!
+    if (x.folder_id !== y.folder_id || x.count !== y.count) return false
+  }
+  return true
+}
+
+function tagsListEqual(a: Tag[], b: Tag[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!
+    const y = b[i]!
+    if (x.id !== y.id || x.name !== y.name || x.parent_id !== y.parent_id || x.slug !== y.slug) {
+      return false
+    }
+  }
+  return true
+}
+
+async function refreshSidebarTagCounts() {
+  if (folderViewTrash.value) {
+    try {
+      const [tagList, counts] = await Promise.all([tagsApi.list(), tagsApi.noteCounts(undefined)])
+      const nextTags = Array.isArray(tagList) ? [...tagList] : []
+      const nextMap = tagCountsToMap(counts)
+      if (!tagsListEqual(tags.value, nextTags)) tags.value = nextTags
+      if (!tagCountMapEqual(tagCountById.value, nextMap)) tagCountById.value = nextMap
+    } catch {
+      try {
+        const tagList = await tagsApi.list()
+        const nextTags = Array.isArray(tagList) ? [...tagList] : []
+        if (!tagsListEqual(tags.value, nextTags)) tags.value = nextTags
+      } catch {
+        /* сохраняем предыдущие данные */
+      }
+    }
+    return
+  }
+  const countsParams = tagCountsRequestParams()
+  try {
+    const [tagList, counts] = await Promise.all([
+      tagsApi.list(),
+      tagsApi.noteCounts(countsParams),
+    ])
+    const nextTags = Array.isArray(tagList) ? [...tagList] : []
+    const nextMap = tagCountsToMap(counts)
+    if (!tagsListEqual(tags.value, nextTags)) tags.value = nextTags
+    if (!tagCountMapEqual(tagCountById.value, nextMap)) tagCountById.value = nextMap
+  } catch {
+    try {
+      const tagList = await tagsApi.list()
+      const nextTags = Array.isArray(tagList) ? [...tagList] : []
+      if (!tagsListEqual(tags.value, nextTags)) tags.value = nextTags
+    } catch {
+      /* не обнуляем счётчики */
+    }
+  }
+}
+
+function bumpReminderRefreshIfNeeded(prevSnapshot: string) {
+  const nextSnapshot = remindersSnapshot(notes.value)
+  if (nextSnapshot !== prevSnapshot) {
+    reminderRefreshSignal.value++
+  }
+}
 const error = ref('')
 
 /** Корзина — отдельный режим; иначе смотрим filterFolderIds. */
@@ -890,7 +999,10 @@ const sidebarAllNotesParenText = computed(() => {
 
 async function loadFolderCounts() {
   try {
-    folderNoteCounts.value = await foldersApi.noteCounts()
+    const next = await foldersApi.noteCounts()
+    if (!folderCountsEqual(folderNoteCounts.value, next)) {
+      folderNoteCounts.value = next
+    }
   } catch {
     /* не сбрасываем — оставляем предыдущие числа */
   }
@@ -945,7 +1057,36 @@ function bumpEditorSyncIfOpen(noteId: string) {
 
 const noteSort = ref<NoteSort>('created_desc')
 
-const sortedNotes = computed(() => sortNotes(notes.value, noteSort.value))
+/** Фильтр списка заметок по дате напоминания (клик по дате в календаре). */
+const calendarDayFilterKey = ref<string | null>(null)
+
+const calendarDayFilterLabel = computed(() => {
+  const key = calendarDayFilterKey.value
+  if (!key) return ''
+  const parts = key.split('-').map((x) => parseInt(x, 10))
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return key
+  const dt = new Date(parts[0]!, parts[1]! - 1, parts[2]!)
+  return dt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+})
+
+function toggleCalendarDayFilter(payload: { key: string; date: Date }) {
+  calendarDayFilterKey.value =
+    calendarDayFilterKey.value === payload.key ? null : payload.key
+}
+
+function clearCalendarDayFilter() {
+  calendarDayFilterKey.value = null
+}
+
+const notesForList = computed(() => {
+  const key = calendarDayFilterKey.value
+  if (!key || folderViewTrash.value) return notes.value
+  return notes.value.filter(
+    (n) => n.reminder_at && reminderCalendarDayKeyFromIso(n.reminder_at) === key
+  )
+})
+
+const sortedNotes = computed(() => sortNotes(notesForList.value, noteSort.value))
 
 async function loadFolders() {
   try {
@@ -1184,33 +1325,34 @@ function goHomeFromLogo() {
   void nextTick(() => clampTagsPanelHeight())
 }
 
-async function load() {
-  loading.value = true
+type LoadOptions = {
+  /** Не показывать «Загрузка…» поверх уже открытого списка */
+  silent?: boolean
+  /** Обновить календарь даже если напоминания в списке не менялись */
+  reminders?: boolean
+}
+
+async function load(opts: LoadOptions = {}) {
+  const silent = opts.silent === true && notes.value.length > 0
+  const prevReminderSnapshot = remindersSnapshot(notes.value)
+  if (!silent) loading.value = true
   error.value = ''
   try {
     if (folderViewTrash.value) {
-      notes.value = await notesApi.listTrash()
-      try {
-        const [tagList, counts] = await Promise.all([
-          tagsApi.list(),
-          tagsApi.noteCounts(undefined),
-        ])
-        tags.value = Array.isArray(tagList) ? [...tagList] : []
-        const map: Record<string, number> = {}
-        for (const c of counts) {
-          map[String(c.tag_id)] = c.count
-        }
-        tagCountById.value = map
-      } catch {
-        try {
-          tags.value = await tagsApi.list()
-        } catch (e2) {
-          error.value = errMessage(e2)
-          tags.value = []
-        }
+      const noteList = await notesApi.listTrash()
+      const apply = diffNotesList(notes.value, noteList)
+      if (apply.changed) {
+        notes.value = noteList
+        for (const id of apply.newIds) flashNoteId(id)
+        for (const id of apply.updatedIds) flashNoteId(id)
       }
+      await refreshSidebarTagCounts()
       void loadFolderCounts()
-      reminderRefreshSignal.value++
+      if (opts.reminders) {
+        reminderRefreshSignal.value++
+      } else {
+        bumpReminderRefreshIfNeeded(prevReminderSnapshot)
+      }
       return
     }
     const fParams = folderListParams()
@@ -1219,29 +1361,14 @@ async function load() {
     const noteList = query
       ? await notesApi.search(query, { ...fParams, ...tParams })
       : await notesApi.list({ ...fParams, ...tParams })
-    notes.value = noteList
-
-    const countsParams = tagCountsRequestParams()
-    try {
-      const [tagList, counts] = await Promise.all([
-        tagsApi.list(),
-        tagsApi.noteCounts(countsParams),
-      ])
-      tags.value = Array.isArray(tagList) ? [...tagList] : []
-      const map: Record<string, number> = {}
-      for (const c of counts) {
-        map[String(c.tag_id)] = c.count
-      }
-      tagCountById.value = map
-    } catch {
-      try {
-        tags.value = await tagsApi.list()
-      } catch (e2) {
-        error.value = errMessage(e2)
-        tags.value = []
-      }
-      /* не обнуляем счётчики — иначе при сбое /counts все метки покажут (0) */
+    const apply = diffNotesList(notes.value, noteList)
+    if (apply.changed) {
+      notes.value = noteList
+      for (const id of apply.newIds) flashNoteId(id)
+      for (const id of apply.updatedIds) flashNoteId(id)
     }
+
+    await refreshSidebarTagCounts()
   } catch (e) {
     error.value = errMessage(e)
     if (folderViewTrash.value) {
@@ -1251,20 +1378,63 @@ async function load() {
     loading.value = false
   }
   void loadFolderCounts()
-  reminderRefreshSignal.value++
+  if (opts.reminders) {
+    reminderRefreshSignal.value++
+  } else {
+    bumpReminderRefreshIfNeeded(prevReminderSnapshot)
+  }
 }
 
 /**
  * Редактор просит обновить список после сохранения, смены папки, метки, ссылки.
- * За одно действие таких просьб приходит несколько — склеиваем в одну перезагрузку.
+ * Без явных изменений список и календарь не «мигают».
  */
 let reloadTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleReload() {
+let pendingRefreshHint: NoteListRefreshHint | undefined
+
+function scheduleReload(opts: LoadOptions = { silent: true }) {
   if (reloadTimer) clearTimeout(reloadTimer)
   reloadTimer = setTimeout(() => {
     reloadTimer = null
-    void load()
+    void load(opts)
   }, 150)
+}
+
+function onEditorRefresh(hint?: NoteListRefreshHint) {
+  pendingRefreshHint = mergeRefreshHints(pendingRefreshHint, hint)
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null
+    const h = pendingRefreshHint
+    pendingRefreshHint = undefined
+
+    if (h?.patchNote) {
+      patchNoteInList(h.patchNote)
+    }
+
+    if (h?.full) {
+      void load({ silent: true, reminders: h.reminders })
+      if (h.counts) void refreshSidebarTagCounts()
+      return
+    }
+
+    if (h?.counts) {
+      void refreshSidebarTagCounts()
+      void loadFolderCounts()
+    }
+
+    if (h?.reminders) {
+      reminderRefreshSignal.value++
+    }
+
+    const needsListFetch =
+      !h ||
+      (!h.patchNote && !h.full && !h.counts && !h.reminders)
+
+    if (needsListFetch) {
+      scheduleReload({ silent: true })
+    }
+  }, 120)
 }
 
 async function loadFilterPresets() {
@@ -1604,6 +1774,7 @@ onMounted(async () => {
 watch(folderViewTrash, (trash) => {
   if (bulkPresetApplyDepth.value > 0) return
   if (trash) {
+    calendarDayFilterKey.value = null
     presetSelectId.value = ''
     presetBaselineFingerprint.value = null
     filterTagIds.value = []
@@ -1651,6 +1822,8 @@ watch(
 onBeforeUnmount(() => {
   if (reloadTimer) clearTimeout(reloadTimer)
   reloadTimer = null
+  for (const t of flashTimers.values()) clearTimeout(t)
+  flashTimers.clear()
   mobileMq?.removeEventListener('change', syncNarrowLayout)
   mobileMq = null
   window.removeEventListener('resize', clampTagsPanelHeight)
@@ -2312,7 +2485,9 @@ onBeforeUnmount(() => {
                     :fraction-from-list-filter="listRefinementBeyondFolders && !folderViewTrash"
                     :refresh-signal="reminderRefreshSignal"
                     :scope-note-ids="scopeNoteIds"
+                    :selected-day-filter-key="calendarDayFilterKey"
                     @open-note="openNote"
+                    @toggle-day-filter="toggleCalendarDayFilter"
                   />
                 </div>
               </div>
@@ -2389,22 +2564,35 @@ onBeforeUnmount(() => {
                 −
               </button>
             </div>
+            <div v-if="calendarDayFilterKey && !folderViewTrash" class="list-calendar-filter">
+              <span class="list-calendar-filter-label"
+                >Напоминания: {{ calendarDayFilterLabel }}</span
+              >
+              <button
+                type="button"
+                class="list-calendar-filter-clear"
+                title="Снять фильтр по дате"
+                aria-label="Снять фильтр по дате"
+                @click="clearCalendarDayFilter"
+              >
+                ×
+              </button>
+            </div>
           </div>
         </div>
         <div class="list-scroll">
           <p v-if="error" class="err">{{ error }}</p>
           <!-- Не скрываем список при обновлении: иначе заметки «мигают» -->
           <p v-if="loading && sortedNotes.length === 0" class="muted load-hint">Загрузка…</p>
-          <ul
-            v-else
-            class="list"
-            :class="{ 'list--refreshing': loading && sortedNotes.length > 0 }"
-          >
+          <ul v-else class="list">
             <li v-for="row in noteRows" :key="row.id" :class="{ trashrow: folderViewTrash }">
               <button
                 type="button"
                 class="note-item"
-                :class="{ current: row.id === activeNoteId }"
+                :class="{
+                  current: row.id === activeNoteId,
+                  'note-item--flash': !!flashNoteIds[row.id],
+                }"
                 :data-note-list-id="row.id"
                 :title="row.tooltip"
                 :draggable="!folderViewTrash"
@@ -2455,7 +2643,13 @@ onBeforeUnmount(() => {
               </div>
             </li>
           </ul>
-          <p v-if="!loading && sortedNotes.length === 0" class="empty">Заметок пока нет.</p>
+          <p v-if="!loading && sortedNotes.length === 0" class="empty">
+            {{
+              calendarDayFilterKey
+                ? 'Нет заметок с напоминанием на эту дату в текущем списке.'
+                : 'Заметок пока нет.'
+            }}
+          </p>
         </div>
       </div>
 
@@ -2475,7 +2669,7 @@ onBeforeUnmount(() => {
           :note-id="activeNoteId"
           :sorted-note-ids="sortedNoteIds"
           :editor-sync-signal="editorSyncSignal"
-          @refresh="scheduleReload"
+          @refresh="onEditorRefresh"
         />
       </div>
     </div>
@@ -3045,6 +3239,40 @@ onBeforeUnmount(() => {
   gap: 0.4rem 0.55rem;
   min-width: 0;
   justify-content: flex-end;
+}
+.list-calendar-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  padding: 0.18rem 0.22rem 0.18rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-subtle);
+  font-size: var(--fs-2xs);
+  color: var(--accent-text);
+}
+.list-calendar-filter-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.list-calendar-filter-clear {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.list-calendar-filter-clear:hover {
+  background: var(--accent-subtle-hover);
 }
 .list-toolbar-sort-row {
   display: flex;
@@ -4173,11 +4401,6 @@ onBeforeUnmount(() => {
 .list > li {
   min-width: 0;
 }
-.list--refreshing {
-  opacity: 0.72;
-  pointer-events: none;
-  transition: opacity var(--dur-base) var(--ease);
-}
 .list li.trashrow {
   display: flex;
   flex-direction: column;
@@ -4211,6 +4434,17 @@ onBeforeUnmount(() => {
   border-color: var(--accent-border);
   background: var(--list-row-active);
   box-shadow: 0 0 0 1px var(--accent-glow);
+}
+.note-item--flash {
+  animation: note-list-flash 1.35s ease-out;
+}
+@keyframes note-list-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent-subtle) 80%, var(--list-row-active));
+  }
+  100% {
+    background: transparent;
+  }
 }
 .trash-actions {
   display: flex;

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>draw.io в заметке</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; }
+    iframe { width: 100%; height: 100%; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="editor" title="draw.io"></iframe>
+  <script>
+    var DEFAULT_XML = '<mxfile host="Em-Note" agent="Em-Note" version="22.1.0" type="device"><diagram id="page-1" name="Страница-1"><mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>'
+
+    var editor = document.getElementById('editor')
+    var drawioReady = false
+    var readonly = false
+    var pendingXml = null
+    var configured = false
+
+    var params = new URLSearchParams(window.location.search)
+    var drawioBase = params.get('drawio') || '/drawio/'
+    if (!drawioBase.endsWith('/')) drawioBase += '/'
+    var drawioUrl = drawioBase + '?embed=1&ui=kennedy&lang=ru&proto=json&spin=1&libraries=1&noSaveBtn=1&saveAndExit=0&noExitBtn=1'
+    editor.src = drawioUrl
+
+    function parseMsg(raw) {
+      if (raw == null) return null
+      if (typeof raw === 'string') {
+        try { return JSON.parse(raw) } catch (e) { return null }
+      }
+      if (typeof raw === 'object') return raw
+      return null
+    }
+
+    function postToDrawio(payload) {
+      if (!editor.contentWindow) return
+      editor.contentWindow.postMessage(JSON.stringify(payload), '*')
+    }
+
+    function sendConfigure() {
+      if (configured) return
+      configured = true
+      postToDrawio({
+        action: 'configure',
+        config: {
+          defaultFonts: ['Helvetica', 'Verdana', 'Times New Roman', 'Garamond', 'Comic Sans MS', 'Courier New', 'Georgia', 'Lucida Console', 'Tahoma'],
+        },
+      })
+      if (readonly) {
+        postToDrawio({ action: 'configure', config: { editable: false } })
+      }
+    }
+
+    function sendLoad() {
+      var xml = pendingXml || DEFAULT_XML
+      postToDrawio({
+        action: 'load',
+        xml: xml,
+        autosave: readonly ? 0 : 1,
+      })
+    }
+
+    function notifyReady() {
+      try {
+        window.parent.postMessage({ type: 'em-note-drawio-ready' }, '*')
+      } catch (e) {}
+    }
+
+    window.addEventListener('message', function (evt) {
+      if (evt.source === window.parent) {
+        var host = evt.data
+        if (!host || typeof host !== 'object') return
+        if (host.type === 'em-note-drawio-init') {
+          readonly = !!host.readonly
+          pendingXml = typeof host.xml === 'string' && host.xml.trim() ? host.xml : DEFAULT_XML
+          configured = false
+          if (drawioReady) {
+            sendConfigure()
+            sendLoad()
+          }
+        }
+        return
+      }
+
+      if (evt.source !== editor.contentWindow) return
+
+      var msg = parseMsg(evt.data)
+      if (!msg) return
+
+      if (msg.event === 'init') {
+        drawioReady = true
+        sendConfigure()
+        notifyReady()
+        if (pendingXml !== null) sendLoad()
+        return
+      }
+
+      if (readonly) return
+
+      if ((msg.event === 'autosave' || msg.event === 'save') && typeof msg.xml === 'string') {
+        try {
+          window.parent.postMessage({ type: 'em-note-drawio-save', xml: msg.xml }, '*')
+        } catch (e) {}
+      }
+    })
+  </script>
+</body>
+</html>

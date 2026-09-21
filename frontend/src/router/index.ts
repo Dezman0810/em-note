@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { warmupMindmapEmbed } from '../utils/mindmapWarmup'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -125,6 +126,41 @@ const router = createRouter({
       },
     },
     {
+      path: '/diagrams',
+      name: 'diagrams',
+      component: () => import('../views/DiagramsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+    },
+    {
+      path: '/diagrams/note/:noteId',
+      name: 'diagram-note',
+      component: () => import('../views/DiagramsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return { name: 'diagrams' }
+        }
+      },
+    },
+    {
+      path: '/diagrams/:noteId/:index',
+      name: 'diagram-edit',
+      component: () => import('../views/DiagramsView.vue'),
+      meta: { requiresAuth: true, requiresSchemas: true },
+      beforeEnter: (to) => {
+        const id = String(to.params.noteId || '')
+        const index = Number(to.params.index)
+        if (
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) ||
+          !Number.isInteger(index) ||
+          index < 0
+        ) {
+          return { name: 'diagrams' }
+        }
+      },
+    },
+    {
       path: '/h/:token',
       name: 'public-habits',
       component: () => import('../views/HabitsView.vue'),
@@ -169,6 +205,12 @@ router.beforeEach(async (to) => {
   }
   if (to.meta.requiresSchemas && !auth.user?.can_use_schemas) {
     return { name: 'notes' }
+  }
+  if (
+    auth.user?.can_use_schemas &&
+    (to.name === 'mindmaps' || to.name === 'mindmap-edit' || to.name === 'mindmap-note')
+  ) {
+    warmupMindmapEmbed()
   }
   return true
 })

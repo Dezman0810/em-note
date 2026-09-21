@@ -20,7 +20,7 @@ def _email_key(email: str) -> str:
 
 
 def is_instance_owner_email(email_norm: str) -> bool:
-    """Владелец инстанса: ему автоматически включены заметки, привычки, грамматика, бюджет и схемы."""
+    """Владелец инстанса: при регистрации и входе ему гарантировано создание заметок."""
     admin = (settings.admin_email or "").strip().lower()
     return bool(admin) and email_norm == admin
 
@@ -44,6 +44,9 @@ async def register(
         can_use_grammar=is_owner,
         can_use_budget=is_owner,
         can_use_schemas=is_owner,
+        can_export_schemas=is_owner,
+        can_export_mindmaps=is_owner,
+        can_export_diagrams=is_owner,
     )
     db.add(user)
     await db.flush()
@@ -63,17 +66,8 @@ async def login(
     user = result.scalar_one_or_none()
     if user is None or not await verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if is_instance_owner_email(_email_key(user.email)):
-        if not user.can_create_notes:
-            user.can_create_notes = True
-        if not user.can_use_habits:
-            user.can_use_habits = True
-        if not user.can_use_grammar:
-            user.can_use_grammar = True
-        if not user.can_use_budget:
-            user.can_use_budget = True
-        if not user.can_use_schemas:
-            user.can_use_schemas = True
+    if is_instance_owner_email(_email_key(user.email)) and not user.can_create_notes:
+        user.can_create_notes = True
         await db.flush()
     await claim_invite_shares_for_user(db, user)
     await ensure_share_access_tags_for_user(db, user.id)
@@ -109,9 +103,6 @@ async def me(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
-    if is_instance_owner_email(_email_key(user.email)) and not user.can_use_grammar:
-        user.can_use_grammar = True
-        await db.flush()
     await claim_invite_shares_for_user(db, user)
     await ensure_share_access_tags_for_user(db, user.id)
     return user

@@ -1385,6 +1385,13 @@ window.SIMPLE_MIND_MAP_RU = {
       closeSidePanelsOnce(root);
       patchSidebarToggleTitle(lang);
       patchNavigatorShortcuts(root, lang);
+      if (root) {
+        walkAll(root, function (vm) {
+          if (vm.mindMap && vm.mindMap.opt) {
+            patchNoteContentHide(vm.mindMap, window.$bus || root.$bus);
+          }
+        });
+      }
       if (
         root &&
         document.querySelector('.el-dialog, .iconBox, .boxContent, .imgUpload')
@@ -1434,6 +1441,17 @@ window.SIMPLE_MIND_MAP_RU = {
     else apply()
   }
 
+  function patchNoteContentHide(mindMap, bus) {
+    if (!mindMap || !mindMap.opt || !mindMap.opt.customNoteContentShow) return;
+    if (mindMap.opt.customNoteContentShow.__emNoteHidePatched) return;
+    var emitBus = bus || window.$bus;
+    if (!emitBus || typeof emitBus.$emit !== 'function') return;
+    mindMap.opt.customNoteContentShow.hide = function () {
+      emitBus.$emit('hideNoteContent');
+    };
+    mindMap.opt.customNoteContentShow.__emNoteHidePatched = true;
+  }
+
   function applyUiPatches(root, lang) {
     if (!root) return;
     var mindMap = null;
@@ -1449,6 +1467,7 @@ window.SIMPLE_MIND_MAP_RU = {
         lang === 'ru' ? 'Сводка' : 'Summary';
       wrapSummaryToggle(mindMap, window.$bus || (root && root.$bus));
       patchDefaultThemeMargins(mindMap);
+      patchNoteContentHide(mindMap, window.$bus || (root && root.$bus));
     }
     walkAll(root, function (vm) {
       patchSidebarTriggers(vm, lang);

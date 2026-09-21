@@ -291,6 +291,20 @@
         window.$bus.$on('app_inited', function (mindMap) {
           window.__emNoteMindmap.api = mindMap
           try {
+            if (
+              mindMap &&
+              mindMap.opt &&
+              mindMap.opt.customNoteContentShow &&
+              window.$bus &&
+              !mindMap.opt.customNoteContentShow.__emNoteHidePatched
+            ) {
+              mindMap.opt.customNoteContentShow.hide = function () {
+                window.$bus.$emit('hideNoteContent')
+              }
+              mindMap.opt.customNoteContentShow.__emNoteHidePatched = true
+            }
+          } catch (e) {}
+          try {
             mindMap.updateConfig({
               readonly: !!window.__emNoteMindmap.readonly,
               useLeftKeySelectionRightKeyDrag: true,
@@ -380,7 +394,7 @@
   <div id="app"></div>
   <script src="assets/js/chunk-vendors.js?c38ada11529d60265d8b"></script>
   <script src="assets/js/app.js?c38ada11529d60265d8b&v=ro1"></script>
-  <script src="ru-i18n.js?v=20"></script>
+  <script src="ru-i18n.js?v=21"></script>
   <script>
     (function () {
       notifyParent({ type: 'em-note-mindmap-ready' })

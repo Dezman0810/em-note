@@ -4,8 +4,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 
 import BlockTitleField from '../BlockTitleField.vue'
 import { parseMindmapScene, stringifyMindmapScene } from './mindmapDefaultScene'
+import { useAuthStore } from '../../stores/auth'
+import { downloadTextFile, safeDownloadBaseName } from '../../utils/downloadTextFile'
+import { primeMindmapOnIntent } from '../../utils/mindmapWarmup'
 
 const props = defineProps(nodeViewProps)
+
+const auth = useAuthStore()
+const canExport = computed(() => !!auth.user?.can_export_mindmaps)
 
 const PLACEHOLDER_ROOT = new Set(['главная', 'центр', 'root', 'central topic'])
 
@@ -102,8 +108,22 @@ function setupNoteWideLayout() {
   updateNoteWideInset()
 }
 const frameKey = ref(0)
+const frameRequested = ref(expandedFromAttrs())
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let initSent = false
+
+function primeFrame() {
+  if (!frameRequested.value) frameRequested.value = true
+  primeMindmapOnIntent()
+}
+
+watch(
+  expanded,
+  (open) => {
+    if (open) frameRequested.value = true
+  },
+  { immediate: true }
+)
 
 const frameSrc = computed(() => {
   const id = typeof props.node.attrs.blockId === 'string' ? props.node.attrs.blockId : 'map'
@@ -228,9 +248,52 @@ async function toggleFullscreen() {
 
 function toggle() {
   const next = !expanded.value
+  if (next) primeFrame()
   expanded.value = next
   if (!props.editor.isEditable) return
   props.updateAttributes({ collapsed: !next })
+}
+
+function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !props.editor.isEditable) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    const text = String(reader.result || '')
+    try {
+      const json = stringifyMindmapScene(JSON.parse(text))
+      lastEmittedScene.value = json
+      props.updateAttributes({ scene: json })
+      initSent = false
+      frameKey.value++
+      if (!expanded.value) {
+        primeFrame()
+        expanded.value = true
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  reader.readAsText(file, 'utf-8')
+}
+
+function exportSceneFile() {
+  const title = safeDownloadBaseName(blockTitle.value, 'map')
+  downloadTextFile(`${title}.json`, stringifyMindmapScene(scene.value), 'application/json')
+}
+
+function reloadBlock() {
+  initSent = false
+  lastEmittedScene.value = scene.value
+  frameKey.value++
+  frameRequested.value = true
+  primeMindmapOnIntent()
+  if (!expanded.value) {
+    expanded.value = true
+    if (props.editor.isEditable) props.updateAttributes({ collapsed: false })
+  }
 }
 
 onMounted(() => {
@@ -251,7 +314,13 @@ onBeforeUnmount(() => {
 <template>
   <NodeViewWrapper class="mindmap-node" :class="{ 'mindmap-node--note-wide': noteWideUi }">
     <div class="mindmap-node-head">
-      <button type="button" class="mindmap-toggle mindmap-toggle-main" @click="toggle">
+      <button
+        type="button"
+        class="mindmap-toggle mindmap-toggle-main"
+        @mouseenter="primeFrame"
+        @focus="primeFrame"
+        @click="toggle"
+      >
         {{ expanded ? '▼ Карта' : '▶ Карта' }}
       </button>
       <BlockTitleField
@@ -261,16 +330,33 @@ onBeforeUnmount(() => {
         aria-label="Название карты"
         @save="saveBlockTitle"
       />
+      <label v-if="editor.isEditable" class="mindmap-import">
+        <input type="file" accept=".json,.smm,application/json" class="visually-hidden" @change="onImportFile" />
+        <span class="mindmap-import-btn">Импорт</span>
+      </label>
+      <button v-if="canExport" type="button" class="mindmap-import-btn" @click="exportSceneFile">Экспорт</button>
+      <button
+        v-if="editor.isEditable"
+        type="button"
+        class="mindmap-toggle"
+        title="Перезагрузить карту, если загрузка зависла"
+        @click="reloadBlock"
+      >
+        Обновить
+      </button>
       <button v-if="editor.isEditable" type="button" class="mindmap-toggle" @click="deleteNode">Удалить блок</button>
     </div>
     <div
-      v-show="expanded"
+      v-if="frameRequested"
       ref="fullscreenShellRef"
       class="mindmap-fullscreen-shell"
-      :class="{ 'mindmap-fullscreen-shell--note-wide': noteWideUi }"
+      :class="{
+        'mindmap-fullscreen-shell--note-wide': noteWideUi,
+        'mindmap-fullscreen-shell--preloading': !expanded,
+      }"
       :style="noteWideShellStyle"
     >
-      <div v-show="!shellInNativeFullscreen" class="mindmap-innerbar">
+      <div v-show="expanded && !shellInNativeFullscreen" class="mindmap-innerbar">
         <span v-if="!editor.isEditable" class="mindmap-readonly-hint">Только просмотр</span>
         <div class="mindmap-innerbar-spacer" />
         <button
@@ -329,6 +415,24 @@ onBeforeUnmount(() => {
 .mindmap-toggle-main {
   font-weight: 600;
 }
+.mindmap-import {
+  cursor: pointer;
+}
+.mindmap-import-btn {
+  cursor: pointer;
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
 .mindmap-fullscreen-shell {
   display: flex;
   flex-direction: column;
@@ -353,6 +457,18 @@ onBeforeUnmount(() => {
   flex-direction: column;
   box-shadow: 0 0 0 9999px var(--shadow-tint-strong);
   border-radius: 0;
+}
+.mindmap-fullscreen-shell--preloading {
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+  border: 0 !important;
+  margin: 0 !important;
 }
 .mindmap-innerbar {
   display: flex;

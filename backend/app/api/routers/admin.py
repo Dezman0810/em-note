@@ -40,26 +40,6 @@ async def patch_user_access(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Нельзя отключить создание заметок у аккаунта администратора",
         )
-    if is_admin_user and body.can_use_habits is False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Нельзя отключить привычки у аккаунта администратора",
-        )
-    if is_admin_user and body.can_use_grammar is False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Нельзя отключить грамматику у аккаунта администратора",
-        )
-    if is_admin_user and body.can_use_budget is False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Нельзя отключить бюджет у аккаунта администратора",
-        )
-    if is_admin_user and body.can_use_schemas is False:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Нельзя отключить схемы у аккаунта администратора",
-        )
     if body.can_create_notes is not None:
         user.can_create_notes = body.can_create_notes
     if body.can_use_habits is not None:
@@ -70,6 +50,12 @@ async def patch_user_access(
         user.can_use_budget = body.can_use_budget
     if body.can_use_schemas is not None:
         user.can_use_schemas = body.can_use_schemas
+    if body.can_export_schemas is not None:
+        user.can_export_schemas = body.can_export_schemas
+    if body.can_export_mindmaps is not None:
+        user.can_export_mindmaps = body.can_export_mindmaps
+    if body.can_export_diagrams is not None:
+        user.can_export_diagrams = body.can_export_diagrams
     await db.flush()
     await db.refresh(user)
     return user

@@ -660,14 +660,12 @@ export function ExcalidrawApp({ sceneJson, readOnly, sceneKey, onSceneDebounced 
     createElement(MainMenu.DefaultItems.ChangeCanvasBackground)
   )
 
-  const excalChildren = readOnly
-    ? createElement(Fragment, null, customMainMenu)
-    : createElement(
-        Fragment,
-        null,
-        customMainMenu,
-        createElement(Footer, null, createEmbedFooter(hostRef, true))
-      )
+  const excalChildren = createElement(
+    Fragment,
+    null,
+    customMainMenu,
+    createElement(Footer, null, createEmbedFooter(hostRef, !readOnly))
+  )
 
   const uiOptions = useMemo(
     () => ({

@@ -86,6 +86,24 @@ export function contentHasExcalidraw(contentJson: string): boolean {
   return walk(doc)
 }
 
+export function contentHasC4(contentJson: string): boolean {
+  let doc: unknown
+  try {
+    doc = JSON.parse(contentJson || '{}')
+  } catch {
+    return false
+  }
+  function walk(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false
+    const o = node as Record<string, unknown>
+    if (o.type === 'c4Block') return true
+    const c = o.content
+    if (Array.isArray(c)) return c.some(walk)
+    return false
+  }
+  return walk(doc)
+}
+
 /** Есть ли в документе аудио (вложение audio/* или legacy audioNote). */
 export function contentHasAudio(contentJson: string): boolean {
   let doc: unknown

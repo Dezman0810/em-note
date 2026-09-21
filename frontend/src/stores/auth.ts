@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { authApi, clearRequestCache, setAuthToken } from '../api/client'
 import type { User } from '../api/types'
+import { scheduleMindmapWarmup } from '../utils/mindmapWarmup'
 
 const TOKEN_KEY = 'note_token'
 
@@ -35,6 +36,7 @@ export const useAuthStore = defineStore('auth', () => {
     persistToken(data.access_token)
     user.value = await authApi.me()
     loaded.value = true
+    if (user.value?.can_use_schemas) scheduleMindmapWarmup()
   }
 
   async function register(email: string, password: string, display_name?: string) {
@@ -52,6 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
       const me = await authApi.me()
       if (authEpoch !== epoch) return
       user.value = me
+      if (me.can_use_schemas) scheduleMindmapWarmup()
     } catch {
       if (authEpoch !== epoch) return
       persistToken(null)

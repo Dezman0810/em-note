@@ -22,6 +22,9 @@ class UserRead(BaseModel):
     can_use_grammar: bool = False
     can_use_budget: bool = False
     can_use_schemas: bool = False
+    can_export_schemas: bool = False
+    can_export_mindmaps: bool = False
+    can_export_diagrams: bool = False
     must_change_password: bool = False
 
     model_config = {"from_attributes": True}
@@ -43,6 +46,9 @@ class UserAdminListItem(BaseModel):
     can_use_grammar: bool = False
     can_use_budget: bool = False
     can_use_schemas: bool = False
+    can_export_schemas: bool = False
+    can_export_mindmaps: bool = False
+    can_export_diagrams: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -53,6 +59,9 @@ class UserAdminUpdate(BaseModel):
     can_use_grammar: bool | None = None
     can_use_budget: bool | None = None
     can_use_schemas: bool | None = None
+    can_export_schemas: bool | None = None
+    can_export_mindmaps: bool | None = None
+    can_export_diagrams: bool | None = None
 
 
 class UserAdminPasswordReset(BaseModel):

@@ -6,9 +6,11 @@ import type { NoteMindmapDetail, NoteMindmapListItem } from '../api/types'
 import NoteEditorColumn from '../components/NoteEditorColumn.vue'
 import MindmapStandaloneEditor from '../components/MindmapStandaloneEditor.vue'
 import BlockTitleField from '../components/BlockTitleField.vue'
+import VisualBlockSceneActions from '../components/VisualBlockSceneActions.vue'
 import AppSectionNav from '../components/AppSectionNav.vue'
 import { useTheme } from '../composables/useTheme'
 import { useAuthStore } from '../stores/auth'
+import { warmupMindmapEmbed } from '../utils/mindmapWarmup'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -138,9 +140,9 @@ onBeforeUnmount(() => {
 
 const detail = ref<NoteMindmapDetail | null>(null)
 const detailLoading = ref(false)
-const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const saveError = ref('')
 const lastMap = ref<{ noteId: string; index: number } | null>(null)
+const sceneEditorRef = ref<InstanceType<typeof MindmapStandaloneEditor> | null>(null)
 
 const showingSchema = computed(() => route.name === 'mindmap-edit')
 const showingNote = computed(() => route.name === 'mindmap-note')
@@ -214,7 +216,6 @@ async function loadDetail() {
     return
   }
   detailLoading.value = true
-  saveState.value = 'idle'
   saveError.value = ''
   try {
     detail.value = await mindmapsApi.get(noteId.value, schemaIndex.value)
@@ -230,17 +231,14 @@ async function loadDetail() {
 async function onSceneChange(scene: string) {
   const current = detail.value
   if (!current?.can_edit) return
-  saveState.value = 'saving'
   saveError.value = ''
   try {
     detail.value = await mindmapsApi.update(current.note_id, current.schema_index, {
       scene,
       block_id: current.block_id,
     })
-    saveState.value = 'saved'
     if (detail.value) applyDetailToList(current, detail.value)
   } catch (e) {
-    saveState.value = 'error'
     saveError.value = errMessage(e)
   }
 }
@@ -248,17 +246,14 @@ async function onSceneChange(scene: string) {
 async function onTitleSave(title: string) {
   const current = detail.value
   if (!current?.can_edit) return
-  saveState.value = 'saving'
   saveError.value = ''
   try {
     detail.value = await mindmapsApi.update(current.note_id, current.schema_index, {
       title,
       block_id: current.block_id,
     })
-    saveState.value = 'saved'
     if (detail.value) applyDetailToList(current, detail.value)
   } catch (e) {
-    saveState.value = 'error'
     saveError.value = errMessage(e)
   }
 }
@@ -296,6 +291,18 @@ function logout() {
   void router.push({ name: 'login' })
 }
 
+function onSceneImport(text: string) {
+  sceneEditorRef.value?.applyImportText(text)
+}
+
+function onSceneExport() {
+  sceneEditorRef.value?.exportSceneFile()
+}
+
+function onSceneReload() {
+  sceneEditorRef.value?.reloadEditor()
+}
+
 watch(
   () => [route.name, noteId.value, schemaIndex.value] as const,
   () => {
@@ -304,6 +311,7 @@ watch(
 )
 
 onMounted(() => {
+  warmupMindmapEmbed()
   void loadList()
   void loadDetail()
 })
@@ -453,11 +461,19 @@ onMounted(() => {
                 aria-label="Название карты"
                 @save="onTitleSave"
               />
-              <span class="muted">{{ detail.note_title || 'Без названия' }}</span>
+              <span class="muted preview-note-title">{{ detail.note_title || 'Без названия' }}</span>
             </div>
-            <span v-if="saveState === 'saving'" class="muted">Сохранение…</span>
-            <span v-else-if="saveState === 'saved'" class="ok">Сохранено в заметку</span>
-            <span v-else-if="saveState === 'error'" class="err">{{ saveError }}</span>
+            <VisualBlockSceneActions
+              v-if="detail"
+              :can-edit="detail.can_edit"
+              :can-export="!!auth.user?.can_export_mindmaps"
+              accept=".json,.smm,application/json"
+              reload-title="Перезагрузить карту, если загрузка зависла"
+              @import-text="onSceneImport"
+              @export="onSceneExport"
+              @reload="onSceneReload"
+            />
+            <span v-if="saveError" class="err preview-save-err">{{ saveError }}</span>
             <button
               v-if="detail || noteId"
               type="button"
@@ -471,10 +487,14 @@ onMounted(() => {
           <p v-else-if="!detail" class="err pad">{{ error || 'Карта не найдена' }}</p>
           <MindmapStandaloneEditor
             v-else
+            ref="sceneEditorRef"
             :key="`${detail.note_id}:${detail.schema_index}`"
+            hide-file-toolbar
             :scene="detail.scene"
             :read-only="!detail.can_edit"
             :block-id="detail.block_id"
+            :can-export="!!auth.user?.can_export_mindmaps"
+            :export-title="detail.caption"
             @change="onSceneChange"
           />
         </template>
@@ -649,6 +669,7 @@ onMounted(() => {
 .cols-head {
   display: grid;
   align-items: center;
+  min-height: 2rem;
   padding: 0.25rem 0.35rem 0.2rem;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -660,6 +681,10 @@ onMounted(() => {
   text-transform: uppercase;
   color: var(--text-4);
   padding: 0.2rem 0.35rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .col-split {
   width: 6px;
@@ -685,9 +710,11 @@ onMounted(() => {
 .row {
   display: grid;
   align-items: center;
+  min-height: 2.35rem;
   padding: 0.12rem 0;
   border: 1px solid transparent;
   border-radius: 10px;
+  box-sizing: border-box;
 }
 .row:hover {
   background: var(--sidebar-hover, var(--surface-2));
@@ -710,13 +737,16 @@ onMounted(() => {
   cursor: pointer;
   padding: 0.32rem 0.35rem;
   border-radius: 8px;
+  line-height: 1.25;
+  min-height: 1.85rem;
+  box-sizing: border-box;
 }
 .row-schema {
   font-weight: 700;
   font-size: var(--fs-sm);
 }
 .row-note {
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 .row-schema:hover,
@@ -738,10 +768,12 @@ onMounted(() => {
 }
 .preview-bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.55rem 0.75rem;
   padding: 0.5rem 0.75rem;
+  min-height: 4.25rem;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--surface-1);
   flex-shrink: 0;
@@ -749,12 +781,45 @@ onMounted(() => {
 .preview-title {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   min-width: 0;
-  flex: 1 1 12rem;
+  flex: 1 1 auto;
   gap: 0.2rem;
+  overflow: hidden;
 }
 .preview-title :deep(.block-title-wrap) {
   max-width: min(36rem, 100%);
+  height: 2rem;
+  min-width: 12rem;
+}
+.preview-title :deep(.block-title-sizer),
+.preview-title :deep(.block-title-field) {
+  height: 100%;
+}
+.preview-note-title {
+  display: block;
+  font-size: var(--fs-xs);
+  line-height: 1.25;
+  min-height: 1.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preview-save-err {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 14rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--fs-sm);
+}
+.preview-bar :deep(.block-scene-actions) {
+  flex-shrink: 0;
+}
+.preview-bar .btn.secondary {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .preview-empty {
   flex: 1;
@@ -781,10 +846,6 @@ onMounted(() => {
 }
 .err {
   color: var(--danger-text, #b42318);
-  font-size: var(--fs-sm);
-}
-.ok {
-  color: var(--accent-text);
   font-size: var(--fs-sm);
 }
 .pad {

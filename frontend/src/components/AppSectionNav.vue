@@ -2,8 +2,9 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { primeMindmapOnIntent } from '../utils/mindmapWarmup'
 
-export type AppSectionId = 'notes' | 'habits' | 'budget' | 'schemas' | 'mindmaps' | 'tags'
+export type AppSectionId = 'notes' | 'habits' | 'budget' | 'schemas' | 'mindmaps' | 'diagrams' | 'tags'
 
 defineProps<{
   active: AppSectionId
@@ -19,6 +20,7 @@ const items = computed(() => {
   if (auth.user?.can_use_schemas) {
     out.push({ id: 'schemas', label: 'Схемы', to: { name: 'schemas' } })
     out.push({ id: 'mindmaps', label: 'Карты', to: { name: 'mindmaps' } })
+    out.push({ id: 'diagrams', label: 'Диаграммы', to: { name: 'diagrams' } })
   }
   out.push({ id: 'tags', label: 'Метки', to: { name: 'tags' } })
   if (auth.user?.can_use_habits) {
@@ -29,6 +31,11 @@ const items = computed(() => {
   }
   return out
 })
+
+function openSection(item: (typeof items.value)[number]) {
+  if (item.id === 'mindmaps') primeMindmapOnIntent()
+  void router.push(item.to)
+}
 </script>
 
 <template>
@@ -40,7 +47,7 @@ const items = computed(() => {
       class="btn header-tags-btn"
       :class="item.id === active ? 'section-nav-on' : 'secondary'"
       :aria-current="item.id === active ? 'page' : undefined"
-      @click="router.push(item.to)"
+      @click="openSection(item)"
     >
       {{ item.label }}
     </button>

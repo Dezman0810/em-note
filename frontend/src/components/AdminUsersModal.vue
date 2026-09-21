@@ -133,6 +133,63 @@ async function toggleGrammar(row: AdminUserRow, ev: Event) {
   }
 }
 
+async function toggleExportSchemas(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':export-schemas'
+  err.value = ''
+  try {
+    await adminApi.setCanExportSchemas(row.id, next)
+    row.can_export_schemas = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
+async function toggleExportMindmaps(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':export-mindmaps'
+  err.value = ''
+  try {
+    await adminApi.setCanExportMindmaps(row.id, next)
+    row.can_export_mindmaps = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
+async function toggleExportDiagrams(row: AdminUserRow, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const next = input.checked
+  pending.value = row.id + ':export-diagrams'
+  err.value = ''
+  try {
+    await adminApi.setCanExportDiagrams(row.id, next)
+    row.can_export_diagrams = next
+    if (auth.user?.id === row.id) {
+      await auth.fetchMe()
+    }
+  } catch (e) {
+    err.value = errMessage(e)
+    input.checked = !next
+  } finally {
+    pending.value = null
+  }
+}
+
 function close() {
   revealed.value = null
   emit('update:open', false)
@@ -177,9 +234,11 @@ async function copyRevealed() {
           <button type="button" class="admin-close" aria-label="Закрыть" @click="close">×</button>
         </div>
         <p class="muted small admin-lead">
-          Галочки доступа: без «заметок» нельзя создавать заметки; без «привычек» раздел скрыт;
+          Галочки доступа: без «заметок» нельзя создавать заметки (у аккаунта администратора эту
+          галочку снять нельзя); без «привычек» раздел скрыт;
           без «грамматики» в заметке нет проверки орфографии; без «бюджета» скрыт общий семейный
-          бюджет; без «схем» скрыты разделы со схемами и картами из доступных заметок. Старый пароль узнать
+          бюджет; без «схем» скрыты разделы «Схемы», «Карты» и «Диаграммы»; галочки «Экспорт …» включают кнопку
+          скачивания файла в соответствующем разделе и в блоках заметки. Старый пароль узнать
           нельзя — он не хранится. Можно только сбросить и выдать новый.
         </p>
         <div v-if="revealed" class="admin-revealed">
@@ -203,6 +262,9 @@ async function copyRevealed() {
                 <th>Грамматика</th>
                 <th>Бюджет</th>
                 <th>Схемы / карты</th>
+                <th>Экспорт схем</th>
+                <th>Экспорт карт</th>
+                <th>Экспорт диаграмм</th>
                 <th>Сбросить пароль</th>
               </tr>
             </thead>
@@ -256,6 +318,33 @@ async function copyRevealed() {
                     @change="toggleSchemas(u, $event)"
                   />
                 </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_export_schemas"
+                    :disabled="pending === u.id + ':export-schemas'"
+                    :aria-label="`Экспорт схем для ${u.email}`"
+                    @change="toggleExportSchemas(u, $event)"
+                  />
+                </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_export_mindmaps"
+                    :disabled="pending === u.id + ':export-mindmaps'"
+                    :aria-label="`Экспорт карт для ${u.email}`"
+                    @change="toggleExportMindmaps(u, $event)"
+                  />
+                </td>
+                <td class="admin-chk">
+                  <input
+                    type="checkbox"
+                    :checked="u.can_export_diagrams"
+                    :disabled="pending === u.id + ':export-diagrams'"
+                    :aria-label="`Экспорт диаграмм для ${u.email}`"
+                    @change="toggleExportDiagrams(u, $event)"
+                  />
+                </td>
                 <td class="admin-acts">
                   <button
                     type="button"
@@ -290,7 +379,7 @@ async function copyRevealed() {
   animation: ui-fade-in var(--dur-slow) var(--ease);
 }
 .admin-modal {
-  width: min(1080px, 100%);
+  width: min(1280px, 100%);
   margin-top: min(8vh, 4rem);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);

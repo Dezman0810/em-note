@@ -13,6 +13,12 @@ export interface User {
   can_use_budget: boolean
   /** Если false — раздел «Схемы» скрыт (выдаёт админ). Список из доступных заметок. */
   can_use_schemas: boolean
+  /** Экспорт файлов схем (Excalidraw) — выдаёт админ. */
+  can_export_schemas: boolean
+  /** Экспорт файлов карт (mindmap) — выдаёт админ. */
+  can_export_mindmaps: boolean
+  /** Экспорт файлов диаграмм (draw.io) — выдаёт админ. */
+  can_export_diagrams: boolean
   /** Единственный email из настроек API; видит админку. */
   is_admin: boolean
   /** После сброса админом: нужно задать свой пароль. */
@@ -29,6 +35,9 @@ export interface AdminUserRow {
   can_use_grammar: boolean
   can_use_budget: boolean
   can_use_schemas: boolean
+  can_export_schemas: boolean
+  can_export_mindmaps: boolean
+  can_export_diagrams: boolean
 }
 
 export interface GrammarIssue {
@@ -261,3 +270,6 @@ export interface NoteSchemaDetail extends NoteSchemaListItem {
 
 export type NoteMindmapListItem = NoteSchemaListItem
 export type NoteMindmapDetail = NoteSchemaDetail
+
+export type NoteDiagramListItem = NoteSchemaListItem
+export type NoteDiagramDetail = NoteSchemaDetail

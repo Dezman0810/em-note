@@ -8,8 +8,10 @@ import NoteEditor from '../components/NoteEditor.vue'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
 import { useTheme } from '../composables/useTheme'
+import { useNoteLayout } from '../composables/useNoteLayout'
 
 const { label: themeLabel, icon: themeIcon, cycleTheme } = useTheme()
+const { innerScroll, setInnerScroll } = useNoteLayout()
 
 const route = useRoute()
 const token = computed(() => String(route.params.token || '').trim())
@@ -166,32 +168,52 @@ onBeforeUnmount(async () => {
 </script>
 
 <template>
-  <div class="public-wrap" :class="{ 'public-wrap--focus': publicFocusMode }">
+  <div
+    class="public-wrap"
+    :class="{
+      'public-wrap--focus': publicFocusMode,
+      'public-wrap--fit': innerScroll,
+    }"
+  >
     <header class="public-head" :class="{ 'public-head--minimal': publicFocusMode }">
       <template v-if="!publicFocusMode">
         <span class="brand">em-note</span>
         <span class="muted small public-head-banner">{{ bannerText }}</span>
       </template>
-      <button
-        v-if="note && !loading && !error"
-        type="button"
-        class="public-fs-btn"
-        :aria-pressed="publicFocusMode"
-        :aria-label="publicFocusMode ? 'Показать шапку и подпись ссылки' : 'Только заметка на весь экран'"
-        :title="publicFocusMode ? 'Выйти (Esc)' : 'Только заметка'"
-        @click="togglePublicFocusMode"
-      >
-        {{ publicFocusMode ? 'Шапка' : 'Только заметка' }}
-      </button>
-      <button
-        type="button"
-        class="theme-toggle"
-        :aria-label="themeLabel"
-        :title="themeLabel"
-        @click="cycleTheme"
-      >
-        <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
-      </button>
+      <div class="public-head-end">
+        <label
+          v-if="note && !loading && !error"
+          class="note-fit-toggle"
+          title="Заметка на высоту экрана: шапка всегда видна, скролл внутри текста"
+        >
+          <input
+            type="checkbox"
+            :checked="innerScroll"
+            @change="setInnerScroll(($event.target as HTMLInputElement).checked)"
+          />
+          <span class="note-fit-toggle-text">Скролл в заметке</span>
+        </label>
+        <button
+          v-if="note && !loading && !error"
+          type="button"
+          class="public-fs-btn"
+          :aria-pressed="publicFocusMode"
+          :aria-label="publicFocusMode ? 'Показать шапку и подпись ссылки' : 'Только заметка на весь экран'"
+          :title="publicFocusMode ? 'Выйти (Esc)' : 'Только заметка'"
+          @click="togglePublicFocusMode"
+        >
+          {{ publicFocusMode ? 'Шапка' : 'Только заметка' }}
+        </button>
+        <button
+          type="button"
+          class="theme-toggle"
+          :aria-label="themeLabel"
+          :title="themeLabel"
+          @click="cycleTheme"
+        >
+          <span class="theme-toggle-glyph" aria-hidden="true">{{ themeIcon }}</span>
+        </button>
+      </div>
     </header>
     <p v-if="loading" class="muted">Загрузка…</p>
     <p v-else-if="error" class="err">{{ error }}</p>
@@ -240,10 +262,58 @@ onBeforeUnmount(async () => {
   flex-direction: column;
   min-height: 0;
 }
+.public-wrap--fit {
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.public-wrap--fit .public-workspace-body {
+  flex: 1;
+  min-height: 0;
+}
+.public-wrap--fit .title-input,
+.public-wrap--fit .meta-line {
+  flex-shrink: 0;
+}
+.public-wrap--fit .public-workspace-body :deep(.editor-wrap) {
+  flex: 1;
+  min-height: 0;
+}
 .public-wrap--focus {
   max-width: none;
-  min-height: 100dvh;
-  padding: 0.65rem clamp(0.65rem, 2vw, 1.25rem) 2.5rem;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  padding: 0.65rem clamp(0.65rem, 2vw, 1.25rem) 0.65rem;
+  overflow: hidden;
+}
+.public-wrap--focus .public-head {
+  flex-shrink: 0;
+}
+/* Скролл всей заметки в focus-режиме, если выключен «Скролл в заметке». */
+.public-wrap--focus:not(.public-wrap--fit) .public-workspace-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  -webkit-overflow-scrolling: touch;
+}
+.public-wrap--focus:not(.public-wrap--fit) .public-workspace-body :deep(.editor-wrap--fit) {
+  height: auto;
+  flex: none;
+}
+.public-wrap--focus:not(.public-wrap--fit) .public-workspace-body :deep(.editor-wrap--fit .editor-content) {
+  overflow: visible;
+  flex: none;
+}
+.public-wrap--focus:not(.public-wrap--fit) .public-workspace-body :deep(.editor-wrap--fit .ProseMirror) {
+  min-height: auto;
+}
+.public-wrap--focus.public-wrap--fit .public-workspace-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .public-head {
   display: flex;
@@ -263,6 +333,15 @@ onBeforeUnmount(async () => {
   flex: 1 1 12rem;
   min-width: 0;
 }
+.public-head-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
 .public-fs-btn {
   font: inherit;
   font-size: var(--fs-xs);
@@ -274,7 +353,6 @@ onBeforeUnmount(async () => {
   color: var(--text-3);
   cursor: pointer;
   flex-shrink: 0;
-  margin-left: auto;
 }
 .public-fs-btn:hover {
   border-color: var(--accent-border);
@@ -305,5 +383,26 @@ onBeforeUnmount(async () => {
 }
 .err {
   color: var(--danger-text);
+}
+
+/* Галочка снята: колонка той же ширины; вниз — страница, вправо — скролл у текста заметки. */
+.public-wrap:not(.public-wrap--fit) {
+  overflow-x: clip;
+}
+
+.public-wrap:not(.public-wrap--fit) .public-workspace-body :deep(.editor-wrap:not(.editor-wrap--fit) .editor-content) {
+  overflow-x: auto;
+  overflow-y: visible;
+}
+
+/* Галочка включена: скролл внутри текста и вниз, и вбок. */
+.public-wrap--fit .public-workspace-body :deep(.editor-wrap--fit .editor-content) {
+  overflow: auto;
+}
+
+@media (max-width: 768px) {
+  .public-head-end .note-fit-toggle-text {
+    display: none;
+  }
 }
 </style>

@@ -46,6 +46,7 @@ export function normalizePastedRichCodeHtml(html: string): string {
     }
 
     unwrapNamedAnchors(body)
+    cleanupSpreadsheetTablePaste(body)
 
     return body.innerHTML
   } catch {
@@ -84,5 +85,13 @@ function unwrapNamedAnchors(root: HTMLElement) {
       while (el.firstChild) el.parentNode?.insertBefore(el.firstChild, el)
       el.remove()
     }
+  })
+}
+
+/** Excel / Sheets часто кладут PNG-превью рядом с `<table>` — для редактора нужна таблица. */
+function cleanupSpreadsheetTablePaste(root: HTMLElement) {
+  if (!root.querySelector('table')) return
+  root.querySelectorAll('img').forEach((img) => {
+    if (!img.closest('table')) img.remove()
   })
 }

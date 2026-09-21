@@ -20,6 +20,8 @@ import type {
   GrammarCheckResult,
   NoteMindmapDetail,
   NoteMindmapListItem,
+  NoteDiagramDetail,
+  NoteDiagramListItem,
   NoteSchemaDetail,
   NoteSchemaListItem,
 } from './types'
@@ -98,6 +100,18 @@ export const adminApi = {
   },
   async setCanUseSchemas(userId: string, can_use_schemas: boolean): Promise<AdminUserRow> {
     const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_use_schemas })
+    return data
+  },
+  async setCanExportSchemas(userId: string, can_export_schemas: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_export_schemas })
+    return data
+  },
+  async setCanExportMindmaps(userId: string, can_export_mindmaps: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_export_mindmaps })
+    return data
+  },
+  async setCanExportDiagrams(userId: string, can_export_diagrams: boolean): Promise<AdminUserRow> {
+    const { data } = await api.patch<AdminUserRow>(`/api/admin/users/${userId}`, { can_export_diagrams })
     return data
   },
   async resetPassword(userId: string): Promise<{ email: string; temporary_password: string }> {
@@ -636,6 +650,26 @@ export const mindmapsApi = {
     body: BlockPatchBody
   ): Promise<NoteMindmapDetail> {
     const { data } = await api.patch<NoteMindmapDetail>(`/api/mindmaps/${noteId}/${schemaIndex}`, body)
+    invalidateCache('notes:')
+    return data
+  },
+}
+
+export const diagramsApi = {
+  async list(): Promise<NoteDiagramListItem[]> {
+    const { data } = await api.get<NoteDiagramListItem[]>('/api/diagrams')
+    return data
+  },
+  async get(noteId: string, schemaIndex: number): Promise<NoteDiagramDetail> {
+    const { data } = await api.get<NoteDiagramDetail>(`/api/diagrams/${noteId}/${schemaIndex}`)
+    return data
+  },
+  async update(
+    noteId: string,
+    schemaIndex: number,
+    body: BlockPatchBody
+  ): Promise<NoteDiagramDetail> {
+    const { data } = await api.patch<NoteDiagramDetail>(`/api/diagrams/${noteId}/${schemaIndex}`, body)
     invalidateCache('notes:')
     return data
   },

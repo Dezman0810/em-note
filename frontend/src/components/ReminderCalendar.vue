@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { notesApi } from '../api/client'
 import type { Note } from '../api/types'
-import { fmtCompactMsk } from '../utils/datetime'
+import { calendarDayKeyFromDate, fmtCompactMsk, reminderCalendarDayKeyFromIso } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
+import { remindersEqual } from '../utils/noteListSync'
 
 const props = defineProps<{
   disabled?: boolean
@@ -14,8 +15,13 @@ const props = defineProps<{
   fractionFromListFilter?: boolean
   /** В боковой панели заголовок «Календарь» уже снаружи — дублировать не нужно */
   embedInSidebar?: boolean
+  /** Активный фильтр списка заметок по дате (YYYY-MM-DD). */
+  selectedDayFilterKey?: string | null
 }>()
-const emit = defineEmits<{ openNote: [id: string] }>()
+const emit = defineEmits<{
+  openNote: [id: string]
+  toggleDayFilter: [payload: { key: string; date: Date }]
+}>()
 
 /** Высота прокручиваемой области списка напоминаний (день / колонки недели). */
 const DAY_LIST_H_KEY = 'rem-cal-list-h'
@@ -102,13 +108,8 @@ function dayItemScopeClass(n: Note): Record<string, boolean> {
 const reminders = ref<Note[]>([])
 const loading = ref(false)
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
 function dayKeyLocal(iso: string): string {
-  const d = new Date(iso)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return reminderCalendarDayKeyFromIso(iso)
 }
 
 function rangeForView(): { from: Date; to: Date } {
@@ -132,22 +133,33 @@ function rangeForView(): { from: Date; to: Date } {
 
 async function loadReminders() {
   if (props.disabled) {
-    reminders.value = []
+    if (reminders.value.length > 0) reminders.value = []
     return
   }
-  loading.value = true
+  const hadData = reminders.value.length > 0
+  loading.value = !hadData
   try {
     const { from, to } = rangeForView()
-    reminders.value = await notesApi.listReminders({
+    const next = await notesApi.listReminders({
       from: from.toISOString(),
       to: to.toISOString(),
     })
+    if (!remindersEqual(reminders.value, next)) {
+      reminders.value = next
+    }
   } catch {
-    reminders.value = []
+    if (hadData) {
+      /* сохраняем предыдущие точки — без «мигания» пустым календарём */
+    } else {
+      reminders.value = []
+    }
   } finally {
     loading.value = false
   }
 }
+
+const showInitialLoadHint = computed(() => loading.value && reminders.value.length === 0)
+const showBackgroundRefresh = computed(() => loading.value && reminders.value.length > 0)
 
 const reminderFractionLabel = computed(() => {
   if (!props.fractionFromListFilter || !scopeTintActive.value || loading.value) return ''
@@ -263,7 +275,7 @@ function monthGrid(): { key: string; label: number; inMonth: boolean; d: Date }[
   for (let i = 0; i < 42; i++) {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)
     const inMonth = d.getMonth() === mo
-    const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    const key = calendarDayKeyFromDate(d)
     out.push({ key, label: d.getDate(), inMonth, d })
   }
   return out
@@ -285,7 +297,7 @@ const weekDays = computed(() => {
   const cells: { key: string; label: string; short: number; d: Date; titleFull: string }[] = []
   for (let i = 0; i < 7; i++) {
     const d = new Date(from.getTime() + i * 86400000)
-    const key = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    const key = calendarDayKeyFromDate(d)
     const label = d.toLocaleDateString('ru-RU', { weekday: 'short' }).replace(/\.$/, '')
     const titleFull = d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     cells.push({ key, label, short: d.getDate(), d, titleFull })
@@ -293,10 +305,7 @@ const weekDays = computed(() => {
   return cells
 })
 
-const dayKeyCursor = computed(() => {
-  const d = cursor.value
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-})
+const dayKeyCursor = computed(() => calendarDayKeyFromDate(cursor.value))
 
 const daySlots = computed(() => {
   if (view.value !== 'day') return []
@@ -327,6 +336,24 @@ function isToday(d: Date): boolean {
   const t = new Date()
   return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate()
 }
+
+function isDayFilterSelected(key: string): boolean {
+  return props.selectedDayFilterKey === key
+}
+
+function onDayFilterClick(key: string, d: Date, e: MouseEvent) {
+  if ((e.target as Element).closest('.rem-dot')) return
+  emit('toggleDayFilter', { key, date: d })
+}
+
+function dayFilterTitle(d: Date, hasReminders: boolean): string {
+  const base = cellDateTitle(d)
+  const hint = isDayFilterSelected(calendarDayKeyFromDate(d))
+    ? 'Повторный клик — снять фильтр списка заметок'
+    : 'Клик — фильтр списка заметок по напоминаниям на эту дату'
+  if (!hasReminders) return `${base}. ${hint}`
+  return `${base}. ${hint}`
+}
 </script>
 
 <template>
@@ -349,7 +376,13 @@ function isToday(d: Date): boolean {
     </div>
     <div class="rem-cal-nav">
       <button type="button" class="rem-cal-arrow" aria-label="Назад" title="Назад" @click="prev">‹</button>
-      <span class="rem-cal-range" :title="titleRangeTooltip">{{ titleRange }}</span>
+      <span
+        class="rem-cal-range rem-cal-range--pickable"
+        :class="{ 'rem-cal-range--selected': isDayFilterSelected(dayKeyCursor) }"
+        :title="dayFilterTitle(cursor, (byDay.get(dayKeyCursor)?.length ?? 0) > 0)"
+        @click="onDayFilterClick(dayKeyCursor, cursor, $event)"
+        >{{ titleRange }}</span
+      >
       <button type="button" class="rem-cal-arrow" aria-label="Вперёд" title="Вперёд" @click="next">›</button>
       <button type="button" class="rem-cal-today" @click="today">Сегодня</button>
     </div>
@@ -360,8 +393,12 @@ function isToday(d: Date): boolean {
     >
       Напоминания: {{ reminderFractionLabel }}
     </p>
-    <p v-if="loading" class="rem-cal-hint muted small">Загрузка…</p>
-    <div v-if="!loading && view === 'month'" class="rem-cal-month">
+    <p v-if="showInitialLoadHint" class="rem-cal-hint muted small">Загрузка…</p>
+    <div
+      v-if="view === 'month'"
+      class="rem-cal-month"
+      :class="{ 'rem-cal-body--refreshing': showBackgroundRefresh }"
+    >
       <div class="rem-cal-dow">
         <span v-for="w in ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']" :key="w">{{ w }}</span>
       </div>
@@ -371,7 +408,13 @@ function isToday(d: Date): boolean {
             v-for="c in week"
             :key="c.key"
             class="rem-cal-cell"
-            :class="{ 'rem-cal-cell--dots': c.inMonth && (byDay.get(c.key)?.length ?? 0) > 0 }"
+            :class="{
+              'rem-cal-cell--dots': c.inMonth && (byDay.get(c.key)?.length ?? 0) > 0,
+              'rem-cal-cell--pickable': c.inMonth,
+              'rem-cal-cell--selected': c.inMonth && isDayFilterSelected(c.key),
+            }"
+            :title="c.inMonth ? dayFilterTitle(c.d, (byDay.get(c.key)?.length ?? 0) > 0) : undefined"
+            @click="c.inMonth ? onDayFilterClick(c.key, c.d, $event) : undefined"
           >
             <template v-if="c.inMonth">
               <span
@@ -398,13 +441,23 @@ function isToday(d: Date): boolean {
         </template>
       </div>
     </div>
-    <div v-else-if="!loading && view === 'week'" class="rem-cal-week">
+    <div
+      v-else-if="view === 'week'"
+      class="rem-cal-week"
+      :class="{ 'rem-cal-body--refreshing': showBackgroundRefresh }"
+    >
       <div class="rem-cal-week-grid">
         <div
           v-for="c in weekDays"
           :key="c.key"
           class="rem-cal-wcol"
-          :class="{ 'rem-cal-wcol--has': (byDay.get(c.key)?.length ?? 0) > 0 }"
+          :class="{
+            'rem-cal-wcol--has': (byDay.get(c.key)?.length ?? 0) > 0,
+            'rem-cal-wcol--pickable': true,
+            'rem-cal-wcol--selected': isDayFilterSelected(c.key),
+          }"
+          :title="dayFilterTitle(c.d, (byDay.get(c.key)?.length ?? 0) > 0)"
+          @click="onDayFilterClick(c.key, c.d, $event)"
         >
           <div
             class="rem-cal-whead"
@@ -431,7 +484,11 @@ function isToday(d: Date): boolean {
         </div>
       </div>
     </div>
-    <div v-else-if="!loading && view === 'day'" class="rem-cal-dayview">
+    <div
+      v-else-if="view === 'day'"
+      class="rem-cal-dayview"
+      :class="{ 'rem-cal-body--refreshing': showBackgroundRefresh }"
+    >
       <ul v-if="daySlots.length" class="rem-cal-daylist">
         <li v-for="n in daySlots" :key="n.id">
           <button
@@ -448,7 +505,7 @@ function isToday(d: Date): boolean {
       <p v-else class="muted small rem-cal-empty">Нет напоминаний в этот день</p>
     </div>
     <div
-      v-if="!loading && view === 'week'"
+      v-if="view === 'week'"
       class="rem-cal-resize"
       title="Потяните — высота области с точками в колонках недели"
       @mousedown="onListResizeDown"
@@ -566,6 +623,23 @@ function isToday(d: Date): boolean {
   color: var(--text-4);
   text-align: center;
 }
+.rem-cal-range--pickable {
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 0.12rem 0.25rem;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.rem-cal-range--pickable:hover {
+  background: var(--list-row-hover);
+  color: var(--accent-text);
+}
+.rem-cal-range--selected {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
 .rem-cal-today {
   font-family: inherit;
   font-size: var(--fs-2xs);
@@ -585,6 +659,10 @@ function isToday(d: Date): boolean {
   margin: 0 0 0.35rem;
   font-size: var(--fs-2xs);
   color: var(--text-muted);
+}
+.rem-cal-body--refreshing {
+  opacity: 0.92;
+  transition: opacity var(--dur-base) var(--ease);
 }
 .rem-cal-dow {
   display: grid;
@@ -615,8 +693,17 @@ function isToday(d: Date): boolean {
   border: 1px solid transparent;
   transition: border-color var(--dur-fast) var(--ease);
 }
-.rem-cal-cell--dots:hover {
+.rem-cal-cell--dots:hover,
+.rem-cal-cell--pickable {
+  cursor: pointer;
+}
+.rem-cal-cell--pickable:hover {
   border-color: var(--accent-border-soft);
+}
+.rem-cal-cell--selected {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
 }
 .rem-cal-daynum {
   font-size: var(--fs-2xs);
@@ -669,6 +756,18 @@ function isToday(d: Date): boolean {
 }
 .rem-cal-wcol--has {
   border-color: var(--accent-border-soft);
+}
+.rem-cal-wcol--pickable {
+  cursor: pointer;
+}
+.rem-cal-wcol--pickable:hover {
+  border-color: var(--accent-border);
+  box-shadow: var(--shadow-sm);
+}
+.rem-cal-wcol--selected {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  box-shadow: inset 0 0 0 1px var(--accent-glow);
 }
 .rem-cal-whead {
   font-size: var(--fs-2xs);

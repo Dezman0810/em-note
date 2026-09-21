@@ -2,11 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { parseMindmapScene, stringifyMindmapScene } from './tiptap/mindmapDefaultScene'
+import { downloadTextFile, safeDownloadBaseName } from '../utils/downloadTextFile'
+import { warmupMindmapEmbed } from '../utils/mindmapWarmup'
 
 const props = defineProps<{
   scene: string
   readOnly: boolean
   blockId?: string | null
+  canExport?: boolean
+  exportTitle?: string
+  hideFileToolbar?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -201,8 +206,48 @@ async function toggleFullscreen() {
   await el.requestFullscreen()
 }
 
+function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || props.readOnly) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    applyImportText(String(reader.result || ''))
+  }
+  reader.readAsText(file, 'utf-8')
+}
+
+function exportSceneFile() {
+  const title = safeDownloadBaseName(props.exportTitle || 'map', 'map')
+  downloadTextFile(`${title}.json`, stringifyMindmapScene(props.scene), 'application/json')
+}
+
+function applyImportText(text: string) {
+  if (props.readOnly) return
+  try {
+    const json = stringifyMindmapScene(JSON.parse(text))
+    lastEmittedScene.value = json
+    emit('change', json)
+    initSent = false
+    frameKey.value++
+  } catch {
+    /* ignore */
+  }
+}
+
+function reloadEditor() {
+  initSent = false
+  lastEmittedScene.value = props.scene
+  frameKey.value++
+  warmupMindmapEmbed()
+}
+
+defineExpose({ exportSceneFile, applyImportText, reloadEditor })
+
 onMounted(() => {
   lastEmittedScene.value = props.scene
+  warmupMindmapEmbed()
   window.addEventListener('message', onFrameMessage)
   document.addEventListener('fullscreenchange', onFullscreenChange)
 })
@@ -227,6 +272,22 @@ onBeforeUnmount(() => {
     >
       <div v-show="!shellInNativeFullscreen" class="mindmap-innerbar">
         <span v-if="readOnly" class="mindmap-readonly-hint">Только просмотр</span>
+        <template v-if="!hideFileToolbar">
+          <label v-if="!readOnly" class="mindmap-import">
+            <input type="file" accept=".json,.smm,application/json" class="visually-hidden" @change="onImportFile" />
+            <span class="mindmap-import-btn">Импорт</span>
+          </label>
+          <button v-if="canExport" type="button" class="mindmap-import-btn" @click="exportSceneFile">Экспорт</button>
+          <button
+            v-if="!readOnly"
+            type="button"
+            class="mindmap-fs-btn"
+            title="Перезагрузить карту, если загрузка зависла"
+            @click="reloadEditor"
+          >
+            Обновить
+          </button>
+        </template>
         <div class="mindmap-innerbar-spacer" />
         <button
           type="button"
@@ -302,6 +363,26 @@ onBeforeUnmount(() => {
   color: var(--muted, #888);
   font-size: var(--fs-2xs);
   font-weight: 600;
+}
+.mindmap-import {
+  cursor: pointer;
+}
+.mindmap-import-btn {
+  cursor: pointer;
+  color: var(--accent-text);
+  text-decoration: underline;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
 }
 .mindmap-fs-btn {
   padding: 0.28rem 0.55rem;

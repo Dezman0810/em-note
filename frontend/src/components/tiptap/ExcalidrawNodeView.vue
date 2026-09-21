@@ -12,8 +12,13 @@ import {
 import type { Root } from 'react-dom/client'
 
 import BlockTitleField from '../BlockTitleField.vue'
+import { useAuthStore } from '../../stores/auth'
+import { downloadTextFile, safeDownloadBaseName } from '../../utils/downloadTextFile'
 
 const props = defineProps(nodeViewProps)
+
+const auth = useAuthStore()
+const canExport = computed(() => !!auth.user?.can_export_schemas)
 
 const blockTitle = computed(() => {
   const raw = props.node.attrs.title
@@ -366,6 +371,28 @@ function onImportFile(ev: Event) {
   }
   reader.readAsText(file, 'utf-8')
 }
+
+function exportSceneFile() {
+  const title = safeDownloadBaseName(blockTitle.value, 'schema')
+  let body = scene.value
+  try {
+    body = JSON.stringify(JSON.parse(body || '{}'), null, 2)
+  } catch {
+    /* keep raw */
+  }
+  downloadTextFile(`${title}.excalidraw`, body, 'application/json')
+}
+
+function reloadBlock() {
+  lastEmittedScene.value = scene.value
+  sceneKey.value++
+  if (!expanded.value) {
+    expanded.value = true
+    if (props.editor.isEditable) props.updateAttributes({ collapsed: false })
+  } else {
+    void nextTick(() => mountReact())
+  }
+}
 </script>
 
 <template>
@@ -388,6 +415,16 @@ function onImportFile(ev: Event) {
         <input type="file" accept=".excalidraw,application/json" class="visually-hidden" @change="onImportFile" />
         <span class="excal-import-btn">Импорт</span>
       </label>
+      <button v-if="canExport" type="button" class="excal-import-btn" @click="exportSceneFile">Экспорт</button>
+      <button
+        v-if="editor.isEditable"
+        type="button"
+        class="excal-toggle"
+        title="Перезагрузить схему, если загрузка зависла"
+        @click="reloadBlock"
+      >
+        Обновить
+      </button>
       <button v-if="editor.isEditable" type="button" class="excal-toggle" @click="deleteNode">Удалить блок</button>
     </div>
     <div

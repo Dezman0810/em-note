@@ -44,3 +44,24 @@ export function fmtCompactMsk(iso: string | undefined | null): string {
     return String(iso).slice(0, 16)
   }
 }
+
+/** Ключ локального календарного дня YYYY-MM-DD (как в виджете календаря). */
+export function calendarDayKeyFromDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+export function calendarDayKeyFromIso(iso: string): string {
+  const d = parseApiInstant(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return calendarDayKeyFromDate(d)
+}
+
+/** Ключ дня напоминания в календаре — как раньше: локальная дата из ISO. */
+export function reminderCalendarDayKeyFromIso(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return calendarDayKeyFromDate(d)
+}

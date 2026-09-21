@@ -10,6 +10,7 @@ import { useAuthStore } from '../stores/auth'
 import { fmtCompactMsk, fmtMsk } from '../utils/datetime'
 import { DEFAULT_NOTE_TITLE } from '../utils/noteDefaults'
 import { normalizeContentJson } from '../utils/noteSnapshot'
+import type { NoteListRefreshHint } from '../utils/noteListSync'
 import { contentHasAudio, contentHasExcalidraw, contentHasMindmap } from '../utils/tiptapContent'
 import { useNoteLayout } from '../composables/useNoteLayout'
 import { foldersSortedAlphabetical } from '../utils/folders'
@@ -24,7 +25,7 @@ const props = defineProps<{
   embedded?: boolean
   embeddedBackLabel?: string
 }>()
-const emit = defineEmits<{ refresh: []; close: [] }>()
+const emit = defineEmits<{ refresh: [hint?: NoteListRefreshHint]; close: [] }>()
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -41,8 +42,31 @@ const publicCopyOk = ref(false)
 const publicAccessBusy = ref(false)
 /** Раскрытые настройки общей ссылки (URL, режим, новый токен) */
 const publicShareExpanded = ref(false)
-/** Список приглашений по email */
-const emailSharesExpanded = ref(false)
+
+const EMAIL_SHARES_EXPANDED_KEY = 'note-editor-email-shares-expanded'
+
+function readBoolKey(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === '1') return true
+    if (raw === '0') return false
+  } catch {
+    /* */
+  }
+  return fallback
+}
+
+function writeBoolKey(key: string, v: boolean) {
+  try {
+    localStorage.setItem(key, v ? '1' : '0')
+  } catch {
+    /* */
+  }
+}
+
+/** Общее для всех заметок: развёрнут/свёрнут при переключении между заметками. */
+const emailSharesExpanded = ref(readBoolKey(EMAIL_SHARES_EXPANDED_KEY, false))
+watch(emailSharesExpanded, (v) => writeBoolKey(EMAIL_SHARES_EXPANDED_KEY, v))
 /** Запрос заметки с API; при переключении не скрываем редактор целиком */
 const fetching = ref(false)
 /** Полоска сверху: только если загрузка затянулась, чтобы быстрый клик не мигал. */
@@ -283,8 +307,8 @@ function editorTextUnchanged(): boolean {
   )
 }
 
-function emitRefresh() {
-  emit('refresh')
+function emitRefresh(hint?: NoteListRefreshHint) {
+  emit('refresh', hint)
 }
 
 async function loadFoldersOnly() {
@@ -367,8 +391,8 @@ async function updateReminderAt(iso: string | null) {
   error.value = ''
   try {
     note.value = await notesApi.update(note.value.id, { reminder_at: iso })
-    emitRefresh()
-    await syncAutoTags()
+    const tagsChanged = await syncAutoTags()
+    emitRefresh({ patchNote: note.value, reminders: true, counts: tagsChanged })
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -565,8 +589,8 @@ async function syncEmailShareTag() {
   return syncSystemTag(EMAIL_SHARE_TAG_NAME, shares.value.length > 0)
 }
 
-async function syncAutoTags() {
-  const changed = [
+async function syncAutoTags(): Promise<boolean> {
+  return [
     await syncSchemaTag(),
     await syncMapTag(),
     await syncReminderTag(),
@@ -574,7 +598,6 @@ async function syncAutoTags() {
     await syncPublicLinkTag(),
     await syncEmailShareTag(),
   ].some(Boolean)
-  if (changed) emitRefresh()
 }
 
 function shareRecipientLabel(s: NoteShare): string {
@@ -591,7 +614,7 @@ async function applyFolderChange() {
   try {
     note.value = await notesApi.update(note.value.id, { folder_id: want })
     await loadFoldersOnly()
-    emitRefresh()
+    emitRefresh({ patchNote: note.value, counts: true })
   } catch (e) {
     error.value = errMessage(e)
     folderSelect.value = note.value.folder_id ?? ''
@@ -729,7 +752,6 @@ async function load() {
     }
     if (gen !== loadGen || requestedId !== props.noteId) return
     publicShareExpanded.value = false
-    emailSharesExpanded.value = false
     await loadFoldersOnly()
     folderSelect.value = n.folder_id ?? ''
     reminderPanelOpen.value = false
@@ -773,7 +795,7 @@ async function refetchNoteIfRemoteNewer() {
     await loadFoldersOnly()
     folderSelect.value = remote.folder_id ?? ''
     syncLastSavedFromEditor()
-    emitRefresh()
+    emitRefresh({ patchNote: remote })
     void syncAutoTags()
   } catch {
     /* сеть / 401 — не мешаем редактированию */
@@ -792,8 +814,8 @@ async function save() {
     })
     note.value = updated
     syncLastSavedFromEditor()
-    emitRefresh()
-    await syncAutoTags()
+    const tagsChanged = await syncAutoTags()
+    emitRefresh({ patchNote: updated, counts: tagsChanged })
   } catch (e) {
     error.value = errMessage(e)
   } finally {
@@ -816,7 +838,7 @@ async function flushSave() {
       await loadFoldersOnly()
       folderSelect.value = remote.folder_id ?? ''
       syncLastSavedFromEditor()
-      emitRefresh()
+      emitRefresh({ patchNote: remote })
       void syncAutoTags()
       return
     }
@@ -883,7 +905,7 @@ async function pickTag(t: Tag) {
   try {
     note.value = await notesApi.attachTag(note.value.id, t.id)
     tagQuery.value = ''
-    emitRefresh()
+    emitRefresh({ patchNote: note.value, counts: true })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -901,7 +923,7 @@ async function removeChip(tagId: string) {
       publicShareExpanded.value = false
       publicCopyOk.value = false
       await syncPublicLinkTag()
-      emitRefresh()
+      emitRefresh({ patchNote: note.value, counts: true })
     } catch (e) {
       error.value = errMessage(e)
     } finally {
@@ -919,7 +941,7 @@ async function removeChip(tagId: string) {
       shares.value = []
       emailSharesExpanded.value = false
       await syncEmailShareTag()
-      emitRefresh()
+      emitRefresh({ patchNote: note.value, counts: true })
     } catch (e) {
       error.value = errMessage(e)
       shares.value = await sharesApi.list(note.value.id)
@@ -929,7 +951,7 @@ async function removeChip(tagId: string) {
   }
   try {
     note.value = await notesApi.detachTag(note.value.id, tagId)
-    emitRefresh()
+    emitRefresh({ patchNote: note.value, counts: true })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -948,7 +970,7 @@ async function createAndAttachTag() {
       )
     }
     tagQuery.value = ''
-    emitRefresh()
+    emitRefresh({ patchNote: note.value, counts: true })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1020,7 +1042,7 @@ async function onTagsBlockDrop(e: DragEvent) {
       attached.add(tagId)
     }
     note.value = n
-    emitRefresh()
+    emitRefresh({ patchNote: note.value, counts: true })
   } catch (err) {
     error.value = errMessage(err)
   }
@@ -1044,7 +1066,7 @@ async function takeOwnership() {
   try {
     await notesApi.takeOwnership(note.value.id)
     emailSharesExpanded.value = true
-    emitRefresh()
+    emitRefresh({ full: true })
     await load()
   } catch (e) {
     error.value = errMessage(e)
@@ -1069,7 +1091,7 @@ async function removeNote() {
   await flushSave()
   try {
     await notesApi.remove(idToRemove)
-    emitRefresh()
+    emitRefresh({ full: true, reminders: true })
     if (openAfterTrash && !props.embedded) {
       await router.push({ name: 'note', params: { id: openAfterTrash } })
     } else {
@@ -1088,7 +1110,7 @@ async function restoreFromTrash() {
     contentJson.value = note.value.content_json || '{}'
     await loadFoldersOnly()
     folderSelect.value = note.value.folder_id ?? ''
-    emitRefresh()
+    emitRefresh({ full: true, reminders: true })
   } catch (e) {
     error.value = errMessage(e)
   }
@@ -1098,7 +1120,7 @@ async function purgeForever() {
   if (!note.value || !confirm('Удалить заметку навсегда? Это действие необратимо.')) return
   try {
     await notesApi.purge(note.value.id)
-    emitRefresh()
+    emitRefresh({ full: true, reminders: true })
     await leaveEmbeddedOr({ name: 'notes' })
   } catch (e) {
     error.value = errMessage(e)
@@ -2001,6 +2023,11 @@ watch(
   min-width: 0;
   transition: opacity var(--dur-slow) var(--ease);
 }
+/** Метки и их выпадающий список — поверх липкого тулбара редактора (z-index 25). */
+.note-meta {
+  position: relative;
+  z-index: 30;
+}
 .editor-column--fit .editor-main {
   flex: 1;
   min-height: 0;
@@ -2469,7 +2496,7 @@ watch(
   min-width: 11rem;
   max-width: min(17rem, 92vw);
   margin-top: 4px;
-  z-index: 30;
+  z-index: 50;
 }
 .suggestion-compact {
   padding: 0.32rem 0.48rem;

@@ -3,6 +3,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import ResizableImageNodeView from './ResizableImageNodeView.vue'
+import { shouldPreferStructuredPasteOverImage } from '../../utils/clipboardStructuredPaste'
 
 function parseNum(v: string | null, fallback: number | null): number | null {
   if (v == null || v === '') return fallback
@@ -93,6 +94,7 @@ export const ResizableImage = Image.extend({
         key: new PluginKey('resizableImageClipboard'),
         props: {
           handlePaste: (view, event) => {
+            if (shouldPreferStructuredPasteOverImage(event.clipboardData)) return false
             const file = firstClipboardImage(event.clipboardData)
             if (!file) return false
             event.preventDefault()

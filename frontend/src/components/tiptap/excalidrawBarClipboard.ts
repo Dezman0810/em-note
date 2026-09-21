@@ -8,22 +8,29 @@ function focusInner(pasteRoot: HTMLDivElement) {
   pasteRoot.querySelector<HTMLElement>('.excalidraw.excalidraw-container')?.focus({ preventScroll: true })
 }
 
-/** Выделенные элементы + привязанный текст у фигур (без отдельного импорта scene из пакета). */
+/** Выделение в порядке слоёв сцены, включая привязанный текст у фигур. */
 function getSelectedElementsForBar(api: ExcalidrawImperativeAPI): ExcalidrawElement[] {
   const appState = api.getAppState()
   const sel = appState.selectedElementIds
   const selectedIds = new Set(Object.keys(sel).filter((k) => sel[k]))
   const elements = api.getSceneElements()
   const out: ExcalidrawElement[] = []
+  const added = new Set<string>()
+
   for (const el of elements) {
     if (el.isDeleted) continue
-    if (selectedIds.has(el.id)) out.push(el)
-  }
-  for (const el of elements) {
-    if (el.isDeleted) continue
-    if (el.type !== 'text') continue
-    const cid = 'containerId' in el && typeof el.containerId === 'string' ? el.containerId : null
-    if (cid && selectedIds.has(cid) && !selectedIds.has(el.id)) out.push(el)
+    if (selectedIds.has(el.id)) {
+      out.push(el)
+      added.add(el.id)
+      continue
+    }
+    if (el.type === 'text') {
+      const cid = 'containerId' in el && typeof el.containerId === 'string' ? el.containerId : null
+      if (cid && selectedIds.has(cid) && !added.has(el.id)) {
+        out.push(el)
+        added.add(el.id)
+      }
+    }
   }
   return out
 }

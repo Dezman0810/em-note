@@ -32,6 +32,8 @@ function interactiveInHead(target: Element): boolean {
     tag === 'SELECT' ||
     tag === 'TEXTAREA' ||
     !!target.closest('button') ||
+    !!target.closest('.mindmap-import') ||
+    !!target.closest('label.mindmap-import') ||
     !!target.closest('.block-title-field') ||
     !!target.closest('.block-title-wrap') ||
     !!(target as HTMLElement).isContentEditable
