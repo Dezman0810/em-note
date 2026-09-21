@@ -2065,14 +2065,14 @@ onBeforeUnmount(() => {
                 type="search"
                 placeholder="Поиск по заголовку и тексту…"
                 aria-label="Поиск заметок"
-                @keyup.enter="load"
+                @keyup.enter="() => load()"
               />
               <button
                 v-show="q.trim()"
                 type="button"
                 class="search-submit"
                 aria-label="Выполнить поиск"
-                @click="load"
+                @click="() => load()"
               >
                 Найти
               </button>

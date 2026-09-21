@@ -103,6 +103,7 @@ export function clearAllTableFiltersOnNode(
   tablePos: number,
   tableNode: PMNode
 ): boolean {
+  if (!editor) return false
   return updateTableAttrs(editor, tablePos, tableNode, { columnFilters: null })
 }
 

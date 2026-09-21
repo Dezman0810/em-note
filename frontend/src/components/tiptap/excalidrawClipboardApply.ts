@@ -102,7 +102,7 @@ function duplicateClipboardElements(
         const newBindingId = maybeGetNewId(binding.id)
         if (newBindingId) nextBindings.push({ ...binding, id: newBindingId })
       }
-      clonedElement.boundElements = nextBindings
+      clonedElement.boundElements = nextBindings as typeof clonedElement.boundElements
     }
 
     if ('endBinding' in clonedElement && clonedElement.endBinding) {

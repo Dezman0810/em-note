@@ -224,21 +224,6 @@ const titleRange = computed(() => {
   return d.toLocaleDateString('ru-RU', { month: 'long' })
 })
 
-const titleRangeTooltip = computed(() => {
-  const d = cursor.value
-  if (view.value === 'day') {
-    return d.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
-  }
-  if (view.value === 'week') {
-    const { from, to } = rangeForView()
-    const end = new Date(to.getTime() - 86400000)
-    const a = from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-    const b = end.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
-    return `${a} — ${b}`
-  }
-  return d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
-})
-
 function prev() {
   const d = cursor.value
   if (view.value === 'day') {

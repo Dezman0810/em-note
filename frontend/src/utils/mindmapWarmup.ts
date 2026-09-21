@@ -18,7 +18,8 @@ function prefetchAsset(href: string) {
   if (document.head.querySelector(`link[data-mindmap-warmup="${href}"]`)) return
   const link = document.createElement('link')
   link.rel = 'prefetch'
-  link.as = href.endsWith('.css') ? 'style' : href.endsWith('.js') ? 'script' : undefined
+  const as = href.endsWith('.css') ? 'style' : href.endsWith('.js') ? 'script' : null
+  if (as) link.as = as
   link.href = href
   link.setAttribute('data-mindmap-warmup', href)
   document.head.appendChild(link)
