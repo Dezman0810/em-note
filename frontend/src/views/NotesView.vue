@@ -1041,7 +1041,6 @@ const activeNoteId = computed(() =>
   route.name === 'note' && typeof route.params.id === 'string' ? route.params.id : null
 )
 
-const noteRouteOpen = computed(() => !!activeNoteId.value)
 /** На телефоне редактор только когда загружена именно выбранная заметка (без «старого» текста под новым id). */
 const notePaneReady = computed(() => {
   if (!activeNoteId.value) return false
