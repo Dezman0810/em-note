@@ -487,6 +487,10 @@ const tagsListExpanded = ref(readBoolKey(TAGS_LIST_EXPANDED_KEY, true))
 const reminderRefreshSignal = ref(0)
 /** Синхронизация открытой заметки в редакторе при изменениях из списка (DnD метки, папки и т.д.). */
 const editorSyncSignal = ref(0)
+const editorLoading = ref(false)
+const displayedNoteId = ref<string | null>(null)
+/** На телефоне: не уходим со списка на редактор, пока грузится другая заметка (prev/next оставляют редактор). */
+const mobileEditorPinned = ref(false)
 
 const MIME_NOTE_ID = 'application/x-em-note-id'
 
@@ -1038,17 +1042,37 @@ const activeNoteId = computed(() =>
 )
 
 const noteRouteOpen = computed(() => !!activeNoteId.value)
+/** На телефоне редактор только когда загружена именно выбранная заметка (без «старого» текста под новым id). */
+const notePaneReady = computed(() => {
+  if (!activeNoteId.value) return false
+  if (!isNarrowLayout.value) return true
+  if (displayedNoteId.value === activeNoteId.value) return true
+  return mobileEditorPinned.value
+})
+const listHighlightId = computed(() => displayedNoteId.value ?? activeNoteId.value)
 
 watch(isNarrowLayout, (narrow) => {
-  if (!narrow) mobileNavOpen.value = false
+  if (!narrow) {
+    mobileNavOpen.value = false
+    mobileEditorPinned.value = false
+  }
   if (narrow) {
     sidebarNavFullyCollapsed.value = false
     notesListColFullyCollapsed.value = false
   }
 })
 
-watch(activeNoteId, () => {
+watch(activeNoteId, (id, prev) => {
   mobileNavOpen.value = false
+  if (isNarrowLayout.value && id && prev && displayedNoteId.value === prev) {
+    // Prev/next внутри редактора — не прыгаем обратно на список.
+    mobileEditorPinned.value = true
+  }
+  if (!id) mobileEditorPinned.value = false
+})
+
+watch([displayedNoteId, activeNoteId], ([shown, active]) => {
+  if (shown && active && shown === active) mobileEditorPinned.value = false
 })
 
 function bumpEditorSyncIfOpen(noteId: string) {
@@ -1700,7 +1724,29 @@ function logout() {
 }
 
 function openNote(id: string) {
+  if (editorLoading.value && id !== activeNoteId.value) {
+    // Уже грузим другую — не переключаем; полоска загрузки уже видна.
+    return
+  }
+  if (id !== activeNoteId.value) {
+    editorLoading.value = true
+    if (isNarrowLayout.value) {
+      // Со списка не показываем старую заметку под новым URL.
+      displayedNoteId.value = null
+      mobileEditorPinned.value = false
+    }
+  }
   void router.push({ name: 'note', params: { id } })
+}
+
+function onEditorLoading(busy: boolean) {
+  editorLoading.value = busy
+}
+
+function onEditorDisplayed(id: string | null) {
+  // Пока грузится целевая заметка, не принимаем id предыдущей (иначе notePaneReady снова true).
+  if (id && activeNoteId.value && id !== activeNoteId.value) return
+  displayedNoteId.value = id
 }
 
 function onNoteListItemKeydown(e: KeyboardEvent, id: string) {
@@ -1843,7 +1889,7 @@ onBeforeUnmount(() => {
     class="workspace"
     :class="{
       'workspace--narrow': isNarrowLayout,
-      'workspace--note-route': noteRouteOpen,
+      'workspace--note-route': notePaneReady,
       'workspace--fit': innerScroll,
     }"
   >
@@ -2106,6 +2152,13 @@ onBeforeUnmount(() => {
           </button>
           <button type="button" class="btn ghost" @click="logout">Выйти</button>
         </div>
+      </div>
+      <div
+        class="header-load"
+        :class="{ 'header-load--on': editorLoading }"
+        aria-hidden="true"
+      >
+        <span class="header-load-bar" />
       </div>
     </header>
 
@@ -2584,13 +2637,15 @@ onBeforeUnmount(() => {
           <p v-if="error" class="err">{{ error }}</p>
           <!-- Не скрываем список при обновлении: иначе заметки «мигают» -->
           <p v-if="loading && sortedNotes.length === 0" class="muted load-hint">Загрузка…</p>
-          <ul v-else class="list">
+          <ul v-else class="list" :class="{ 'list--note-busy': editorLoading }">
             <li v-for="row in noteRows" :key="row.id" :class="{ trashrow: folderViewTrash }">
               <button
                 type="button"
                 class="note-item"
                 :class="{
-                  current: row.id === activeNoteId,
+                  current: row.id === listHighlightId,
+                  'note-item--opening':
+                    editorLoading && row.id === activeNoteId && row.id !== displayedNoteId,
                   'note-item--flash': !!flashNoteIds[row.id],
                 }"
                 :data-note-list-id="row.id"
@@ -2602,7 +2657,14 @@ onBeforeUnmount(() => {
                 @click="openNote(row.id)"
                 @keydown="onNoteListItemKeydown($event, row.id)"
               >
-                <span class="note-title">{{ row.title }}</span>
+                <span class="note-title-row">
+                  <span class="note-title">{{ row.title }}</span>
+                  <span
+                    v-if="editorLoading && row.id === activeNoteId && row.id !== displayedNoteId"
+                    class="note-load-dot"
+                    aria-hidden="true"
+                  />
+                </span>
                 <span v-if="row.preview" class="note-preview">{{ row.preview }}</span>
                 <span class="meta">
                   <span v-if="row.folderName || row.tagItems.length" class="note-list-badges">
@@ -2670,6 +2732,8 @@ onBeforeUnmount(() => {
           :sorted-note-ids="sortedNoteIds"
           :editor-sync-signal="editorSyncSignal"
           @refresh="onEditorRefresh"
+          @loading="onEditorLoading"
+          @displayed="onEditorDisplayed"
         />
       </div>
     </div>
@@ -4435,6 +4499,44 @@ onBeforeUnmount(() => {
   background: var(--list-row-active);
   box-shadow: 0 0 0 1px var(--accent-glow);
 }
+.note-item--opening {
+  cursor: progress;
+}
+.list--note-busy .note-item:not(.note-item--opening):not(.current) {
+  cursor: progress;
+}
+.note-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.note-title-row .note-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.note-load-dot {
+  display: inline-block;
+  width: 0.42rem;
+  height: 0.42rem;
+  margin-left: 0.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  opacity: 0.55;
+  animation: note-load-dot-pulse 1s ease-in-out infinite;
+}
+@keyframes note-load-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+}
 .note-item--flash {
   animation: note-list-flash 1.35s ease-out;
 }
@@ -4609,8 +4711,17 @@ onBeforeUnmount(() => {
 .workspace--narrow .header-user .user {
   display: none;
 }
+.workspace--narrow .note-fit-toggle {
+  display: none;
+}
 .workspace--narrow .note-fit-toggle-text {
   display: none;
+}
+.workspace--narrow .header-end {
+  flex: 1 1 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .workspace--narrow .header-user {
   border-left: none;

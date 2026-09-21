@@ -1860,6 +1860,8 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
+  min-width: 0;
+  max-width: 100%;
 }
 .editor-wrap--fit {
   flex: 1;
@@ -2151,6 +2153,29 @@ onBeforeUnmount(() => {
   background: var(--bg);
   font-size: var(--fs-xs);
   cursor: pointer;
+}
+@media (max-width: 768px) {
+  .toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 0.28rem 0.32rem;
+    padding: 0.32rem 0.5rem;
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .toolbar > * {
+    flex-shrink: 0;
+  }
+  .tb {
+    min-width: unset;
+    min-height: 2rem;
+    padding: 0.22rem 0.4rem;
+  }
 }
 .tb:hover {
   border-color: var(--accent);

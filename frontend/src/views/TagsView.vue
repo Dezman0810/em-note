@@ -159,6 +159,9 @@ const error = ref('')
 
 const selectedTagId = ref<string | null>(null)
 const activeNoteId = ref<string | null>(null)
+const editorLoading = ref(false)
+const displayedNoteId = ref<string | null>(null)
+const listHighlightId = computed(() => displayedNoteId.value ?? activeNoteId.value)
 /** Синхронизация редактора при DnD метки на строку заметки (как в NotesView). */
 const editorSyncSignal = ref(0)
 const notes = ref<Note[]>([])
@@ -446,8 +449,18 @@ async function onNoteTagAttachDrop(e: DragEvent, noteId: string) {
 }
 
 function openNote(id: string) {
+  if (editorLoading.value && id !== activeNoteId.value) return
+  if (id !== activeNoteId.value) editorLoading.value = true
   activeNoteId.value = id
   syncQuery()
+}
+
+function onEditorLoading(busy: boolean) {
+  editorLoading.value = busy
+}
+
+function onEditorDisplayed(id: string | null) {
+  displayedNoteId.value = id
 }
 
 function applyRouteQuery() {
@@ -824,6 +837,13 @@ onBeforeUnmount(() => {
           <button type="button" class="btn ghost" @click="logout">Выйти</button>
         </div>
       </div>
+      <div
+        class="header-load"
+        :class="{ 'header-load--on': editorLoading }"
+        aria-hidden="true"
+      >
+        <span class="header-load-bar" />
+      </div>
     </header>
 
     <div class="workspace-body">
@@ -1007,7 +1027,11 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="note-item"
-                  :class="{ current: row.id === activeNoteId }"
+                  :class="{
+                    current: row.id === listHighlightId,
+                    'note-item--opening':
+                      editorLoading && row.id === activeNoteId && row.id !== displayedNoteId,
+                  }"
                   :title="row.tooltip"
                   @click="openNote(row.id)"
                   @dragover="onNoteTagAttachDragOver"
@@ -1043,11 +1067,12 @@ onBeforeUnmount(() => {
       <div class="editor-shell">
         <NoteEditorColumn
           v-if="activeNoteId"
-          :key="activeNoteId"
           :note-id="activeNoteId"
           :sorted-note-ids="sortedNoteIds"
           :editor-sync-signal="editorSyncSignal"
           @refresh="onEditorRefresh"
+          @loading="onEditorLoading"
+          @displayed="onEditorDisplayed"
         />
         <div v-else class="editor-placeholder">
           <p class="ph-int">Выберите заметку в списке</p>
@@ -1071,6 +1096,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 .workspace-header {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1494,6 +1520,9 @@ onBeforeUnmount(() => {
 .note-item.current {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent-glow);
+}
+.note-item--opening {
+  cursor: progress;
 }
 .note-title {
   display: -webkit-box;

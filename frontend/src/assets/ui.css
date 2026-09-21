@@ -358,10 +358,13 @@
   justify-content: flex-end;
   gap: 0.45rem;
   margin-left: auto;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
 }
 .header-end .header-user {
   margin-left: 0;
+  flex-shrink: 0;
 }
 .header-end .user {
   font-family: inherit;
@@ -381,6 +384,43 @@
   line-height: var(--lh-tight);
 }
 
+.header-load {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.header-load--on {
+  opacity: 1;
+}
+.header-load-bar {
+  display: block;
+  height: 100%;
+  width: 34%;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translateX(-120%);
+}
+.header-load--on .header-load-bar {
+  animation: header-load-slide 1.05s ease infinite;
+}
+@keyframes header-load-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  60% {
+    transform: translateX(180%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
 .u-visually-hidden {
   position: absolute;
   width: 1px;
@@ -395,8 +435,37 @@
 
 /* На тач-устройствах цели нажатия не меньше 40×40 px. */
 @media (max-width: 768px) {
+  .note-fit-toggle {
+    display: none;
+  }
+
   .note-fit-toggle-text {
     display: none;
+  }
+
+  .header-end {
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 0.28rem;
+    margin-left: 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .header-end .header-user {
+    border-left: none;
+    padding-left: 0;
+    margin-left: auto;
+    gap: 0.2rem;
+  }
+
+  .header-end .header-user .btn.ghost {
+    padding: 0.28rem 0.45rem;
+    min-width: unset;
+    font-size: var(--fs-2xs);
   }
 
   .btn,
@@ -404,6 +473,12 @@
   .theme-toggle {
     min-height: var(--tap-min);
     min-width: var(--tap-min);
+  }
+
+  .btn.header-tags-btn,
+  .btn.section-nav-on {
+    min-width: unset;
+    min-height: 2rem;
   }
 
   .btn-mini {

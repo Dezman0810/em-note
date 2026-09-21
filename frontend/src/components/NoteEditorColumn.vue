@@ -25,7 +25,12 @@ const props = defineProps<{
   embedded?: boolean
   embeddedBackLabel?: string
 }>()
-const emit = defineEmits<{ refresh: [hint?: NoteListRefreshHint]; close: [] }>()
+const emit = defineEmits<{
+  refresh: [hint?: NoteListRefreshHint]
+  close: []
+  loading: [busy: boolean]
+  displayed: [id: string | null]
+}>()
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -86,7 +91,7 @@ function beginFetchVisual() {
   fetchProgressTimer = setTimeout(() => {
     fetchProgressTimer = null
     showFetchProgress.value = true
-  }, 160)
+  }, 80)
 }
 
 function endFetchVisual() {
@@ -851,7 +856,7 @@ async function flushSave() {
 async function goPrevNote() {
   const ids = noteNavIds.value
   const i = noteNavIndex.value
-  if (i <= 0) return
+  if (i <= 0 || fetching.value) return
   await flushSave()
   await router.push({ name: 'note', params: { id: ids[i - 1]! } })
 }
@@ -859,7 +864,7 @@ async function goPrevNote() {
 async function goNextNote() {
   const ids = noteNavIds.value
   const i = noteNavIndex.value
-  if (i < 0 || i >= ids.length - 1) return
+  if (i < 0 || i >= ids.length - 1 || fetching.value) return
   await flushSave()
   await router.push({ name: 'note', params: { id: ids[i + 1]! } })
 }
@@ -1330,6 +1335,8 @@ onMounted(() => {
 
 onBeforeUnmount(async () => {
   endFetchVisual()
+  emit('loading', false)
+  emit('displayed', null)
   unbindReminderPopoverListeners()
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('keydown', onEditorFocusKeydown)
@@ -1337,9 +1344,24 @@ onBeforeUnmount(async () => {
   await flushSave()
 })
 
+watch(fetching, (busy) => emit('loading', busy), { immediate: true })
+watch(
+  () => note.value?.id ?? null,
+  (id) => {
+    // Не сообщаем «показана» предыдущая, пока в URL уже другая (иначе мобильный экран снова откроет редактор).
+    if (fetching.value && id && props.noteId && id !== props.noteId) return
+    emit('displayed', id)
+  },
+  { immediate: true }
+)
+
 watch(
   () => props.noteId,
   async (newId, oldId) => {
+    if (newId && newId !== oldId) {
+      fetching.value = true
+      beginFetchVisual()
+    }
     if (oldId && note.value?.id === oldId) {
       await flushSave()
     }
@@ -1377,17 +1399,28 @@ watch(
 <template>
   <div
     class="editor-column"
-    :class="{ 'editor-column--focus': editorFocusMode, 'editor-column--fit': innerScroll }"
+    :class="{
+      'editor-column--focus': editorFocusMode,
+      'editor-column--fit': innerScroll,
+      'editor-column--pending': fetching && !!note && note.id !== noteId,
+    }"
     @keydown="onEditorColumnKeydown"
   >
     <div
       class="note-progress"
-      :class="{ 'note-progress--on': showFetchProgress }"
+      :class="{ 'note-progress--on': showFetchProgress || (fetching && !!note) }"
       aria-hidden="true"
     >
       <span class="note-progress-bar" />
     </div>
-    <p v-if="showFetchProgress" class="sr-only" aria-live="polite">Загрузка заметки</p>
+    <p v-if="fetching" class="sr-only" aria-live="polite">Загрузка заметки</p>
+    <p
+      v-if="fetching && note && note.id !== noteId"
+      class="note-pending-hint"
+      aria-hidden="true"
+    >
+      Загрузка…
+    </p>
     <template v-if="!noteId">
       <div class="editor-placeholder">
         <p class="ph-title">Заметка не выбрана</p>
@@ -1415,7 +1448,7 @@ watch(
               <button
                 type="button"
                 class="btn-note-nav"
-                :disabled="!hasPrevNote"
+                :disabled="!hasPrevNote || fetching"
                 title="Предыдущая в списке (↑ или кнопка). Фильтры и сортировка как в средней колонке"
                 aria-label="Предыдущая заметка в списке"
                 @click="goPrevNote"
@@ -1425,7 +1458,7 @@ watch(
               <button
                 type="button"
                 class="btn-note-nav"
-                :disabled="!hasNextNote"
+                :disabled="!hasNextNote || fetching"
                 title="Следующая в списке (↓ или кнопка). Фильтры и сортировка как в средней колонке"
                 aria-label="Следующая заметка в списке"
                 @click="goNextNote"
@@ -1899,6 +1932,28 @@ watch(
     transform: translateX(220%);
   }
 }
+.editor-column--pending .editor-main,
+.editor-column--pending .bar {
+  opacity: 0.48;
+  transition: opacity var(--dur-fast) var(--ease);
+  pointer-events: none;
+  user-select: none;
+}
+.note-pending-hint {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.85rem;
+  z-index: 9;
+  margin: 0;
+  padding: 0.15rem 0.45rem;
+  font-size: var(--fs-2xs);
+  line-height: 1.2;
+  color: var(--text-4);
+  background: color-mix(in srgb, var(--surface-overlay) 88%, transparent);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  pointer-events: none;
+}
 .editor-column--focus {
   position: fixed;
   inset: 0;
@@ -1996,6 +2051,39 @@ watch(
     min-height: 100dvh;
     padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
     padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
+  }
+  .bar {
+    gap: 0.3rem;
+    margin-bottom: 0.45rem;
+    align-items: flex-start;
+  }
+  .bar-tools,
+  .bar-note-nav {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .bar-tools > *,
+  .bar-note-nav > * {
+    flex-shrink: 0;
+  }
+  .bar-tail {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+  .bar :deep(.btn),
+  .bar .back,
+  .btn-note-nav,
+  .btn-editor-focus,
+  .danger,
+  .btn-trash-right {
+    min-width: unset;
+    min-height: 36px;
+    padding: 0.28rem 0.48rem;
   }
 }
 .editor-placeholder {
