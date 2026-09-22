@@ -17,6 +17,7 @@ from app.config import settings
 
 _model_lock = threading.Lock()
 _model = None
+_model_unload_timer: threading.Timer | None = None
 
 _ffmpeg_resolved: str | None = None
 
@@ -25,6 +26,12 @@ def _get_vosk_model():
     global _model
     if _model is not None:
         return _model
+
+    if not settings.vosk_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Распознавание речи отключено на этом сервере (VOSK_ENABLED=0).",
+        )
 
     model_path = (settings.vosk_model_path or "").strip()
     if not model_path:
@@ -55,6 +62,29 @@ def _get_vosk_model():
                     detail=f"Не удалось загрузить модель Vosk: {e!s}",
                 ) from e
     return _model
+
+
+def _unload_model_if_idle() -> None:
+    """Освободить память модели: ссылок больше нет, Vosk отдаёт её ОС."""
+    global _model, _model_unload_timer
+    with _model_lock:
+        _model_unload_timer = None
+        _model = None
+
+
+def _schedule_model_unload() -> None:
+    """Перезапускаемый таймер простоя: на сервере с 2 ГБ модель не должна висеть вечно."""
+    global _model_unload_timer
+    seconds = settings.vosk_model_idle_unload_seconds
+    if seconds <= 0:
+        return
+    with _model_lock:
+        if _model_unload_timer is not None:
+            _model_unload_timer.cancel()
+        timer = threading.Timer(seconds, _unload_model_if_idle)
+        timer.daemon = True
+        _model_unload_timer = timer
+        timer.start()
 
 
 def _clear_ffmpeg_cache() -> None:
@@ -256,6 +286,7 @@ def _transcribe_sync(
     finally:
         if wav_temp is not None:
             wav_temp.unlink(missing_ok=True)
+        _schedule_model_unload()
 
 
 async def transcribe_audio_file(

@@ -39,8 +39,18 @@ class Settings(BaseSettings):
     attachments_dir: str = "/app/data/attachments"
     max_attachment_bytes: int = 25 * 1024 * 1024
 
+    # Ответы API отдаются сжатыми. На VPS перед API стоит Nginx со своим gzip —
+    # там выключаем (GZIP_JSON=0), чтобы не тратить процессорное время дважды.
+    gzip_json: bool = True
+
+    # Распознавание аудио (Vosk). Выключено — модель не скачивается и не грузится
+    # в память, кнопка «В текст» в заметке скрыта. Запись аудио во вложения работает.
+    vosk_enabled: bool = True
     # Распознавание аудио (Vosk): путь к распакованной модели, напр. .../vosk-model-small-ru-0.22
     vosk_model_path: str = ""
+    # Модель держит в памяти сотни мегабайт. Столько секунд простоя — и выгружаем
+    # (следующее распознавание загрузит заново за секунду-две). 0 — держать всегда.
+    vosk_model_idle_unload_seconds: int = 900
     # Пусто — авто-поиск; в Docker задайте /usr/bin/ffmpeg (см. docker-compose) или полный путь на Windows
     ffmpeg_path: str = ""
 

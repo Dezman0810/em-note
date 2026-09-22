@@ -40,10 +40,29 @@ export default defineConfig({
     },
   ],
   optimizeDeps: {
+    /*
+     * Редактор заметки тянет десятки пакетов TipTap/ProseMirror. Если не пре-бандлить
+     * их при старте, первое открытие заметки в dev упирается в оптимизацию на лету
+     * и полную перезагрузку страницы («new dependencies optimized»).
+     */
     include: [
       '@excalidraw/excalidraw',
       'react',
       'react-dom',
+      '@tiptap/core',
+      '@tiptap/vue-3',
+      '@tiptap/starter-kit',
+      '@tiptap/pm/model',
+      '@tiptap/pm/state',
+      '@tiptap/pm/tables',
+      '@tiptap/extension-color',
+      '@tiptap/extension-highlight',
+      '@tiptap/extension-image',
+      '@tiptap/extension-link',
+      '@tiptap/extension-table',
+      '@tiptap/extension-task-item',
+      '@tiptap/extension-task-list',
+      '@tiptap/extension-text-style',
     ],
   },
   build: {
@@ -87,6 +106,17 @@ export default defineConfig({
   server: {
     host: true,
     port: devWebPort,
+    /*
+     * Тяжёлые файлы трансформируются сразу при старте dev-сервера, а не в момент
+     * первого клика: на Windows чтение исходников идёт через bind-mount и заметно медленнее.
+     */
+    warmup: {
+      clientFiles: [
+        './src/views/NotesView.vue',
+        './src/components/NoteEditorColumn.vue',
+        './src/components/NoteEditor.vue',
+      ],
+    },
     watch: dockerDev ? { usePolling: true, interval: 1000 } : undefined,
     proxy: {
       '/api': {

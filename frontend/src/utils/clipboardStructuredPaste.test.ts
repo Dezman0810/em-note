@@ -5,8 +5,12 @@ import {
   clipboardHtmlLooksStructured,
   getNormalizedClipboardHtml,
   plainTextSpreadsheetToTableHtml,
+  buildTableHtml,
+  clipboardTableHtmlFromParts,
+  plainTextSpreadsheetRows,
   resolveStructuredPasteHtml,
   shouldPreferStructuredPasteOverImage,
+  withoutEmptyRows,
   sliceIsSpreadsheetImageFallback,
 } from './clipboardStructuredPaste'
 
@@ -17,6 +21,42 @@ describe('clipboardStructuredPaste', () => {
     const normalized = getNormalizedClipboardHtml(raw)
     expect(normalized).toContain('<table')
     expect(clipboardHtmlLooksStructured(normalized, raw)).toBe(true)
+  })
+
+  it('кнопка «Вставить таблицу»: строк ровно столько, сколько скопировано', () => {
+    // Excel кладёт картинку-превью в HTML и настоящие данные в TSV.
+    const html = clipboardTableHtmlFromParts(
+      '<img src="data:image/png;base64,abc">',
+      ['A\tB', '1\t2', '3\t4', ''].join('\n')
+    )
+    expect(html).toContain('<td>A</td>')
+    expect((html ?? '').match(/<tr>/g)).toHaveLength(3)
+
+    // Обычный текст таблицей не считаем.
+    expect(clipboardTableHtmlFromParts('', 'просто строка')).toBeNull()
+    expect(clipboardTableHtmlFromParts(null, null)).toBeNull()
+  })
+
+  it('служебные пустые строки Excel выбрасываются, данные остаются', () => {
+    const rows = [['A', 'B'], ['', ''], ['1', '2'], ['', '']]
+    expect(withoutEmptyRows(rows)).toEqual([
+      ['A', 'B'],
+      ['1', '2'],
+    ])
+
+    const pasted = clipboardTableHtmlFromParts('', ['A\tB', '\t', '1\t2'].join('\n'))
+    expect((pasted ?? '').match(/<tr>/g)).toHaveLength(2)
+  })
+
+  it('строки TSV и сборка таблицы дополняют короткие строки до прямоугольника', () => {
+    expect(plainTextSpreadsheetRows('A\tB\tC\n1\t2')).toEqual([
+      ['A', 'B', 'C'],
+      ['1', '2'],
+    ])
+    const html = buildTableHtml([['A', 'B', 'C'], ['1', '2']])
+    expect((html ?? '').match(/<td>/g)).toHaveLength(6)
+    expect(html).toContain('<td></td>')
+    expect(buildTableHtml([])).toBeNull()
   })
 
   it('builds table HTML from Excel TSV plain text', () => {

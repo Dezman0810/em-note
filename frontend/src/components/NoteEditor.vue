@@ -45,6 +45,7 @@ import { useNoteLayout } from '../composables/useNoteLayout'
 import { useAuthStore } from '../stores/auth'
 import { encryptText, HTTPS_REQUIRED_MSG, isSecureBrowserContext } from '../utils/cryptoSecret'
 import { normalizePastedRichCodeHtml } from '../utils/normalizePastedRichCodeHtml'
+import { clipboardTableHtmlFromParts } from '../utils/clipboardStructuredPaste'
 import { registerAttachmentBlobResolver } from '../utils/attachmentBlob'
 import { applyTextKeepingMarks } from '../utils/grammarMarks'
 import { rewriteAttachmentImagesInTipTapDoc } from '../utils/tiptapContent'
@@ -79,6 +80,16 @@ const HIGHLIGHT_FILL_PRESETS = [
   '#fce7f3',
 ] as const
 
+/** Заливка ячейки таблицы: спокойнее маркерных цветов, текст поверх остаётся читаемым. */
+const CELL_FILL_PRESETS = [
+  '#e0f2fe',
+  '#dcfce7',
+  '#fef3c7',
+  '#fee2e2',
+  '#ede9fe',
+  '#f1f5f9',
+] as const
+
 const props = withDefaults(
   defineProps<{
     contentJson: string
@@ -87,8 +98,10 @@ const props = withDefaults(
     noteId?: string | null
     /** Публичная ссылка: загрузка/скачивание через /api/public/... */
     publicToken?: string | null
+    /** Инструменты владельца (шифрование, схемы, карты, диаграммы, аудио, грамматика). */
+    ownerTools?: boolean
   }>(),
-  { editable: true, noteId: null, publicToken: null }
+  { editable: true, noteId: null, publicToken: null, ownerTools: true }
 )
 const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
@@ -292,10 +305,9 @@ const editor = useEditor({
     UploadedFileBlock,
   ],
   content: parseDoc(props.contentJson),
-  onUpdate: ({ editor: ed }) => {
+  onUpdate: () => {
     if (applyingExternal) return
-    lastEmittedContentJson = JSON.stringify(ed.getJSON())
-    emit('update:contentJson', lastEmittedContentJson)
+    scheduleEmitContent()
   },
   onSelectionUpdate: () => {
     bumpToolbar()
@@ -304,6 +316,37 @@ const editor = useEditor({
     bumpToolbar()
   },
 })
+
+/**
+ * Сериализация документа (`getJSON` + `JSON.stringify`) на каждое нажатие клавиши
+ * ощутимо тормозит крупные заметки, поэтому наружу отдаём не чаще раза в
+ * EMIT_DEBOUNCE_MS. Перед сохранением и уходом родитель вызывает `flushContent()`.
+ */
+const EMIT_DEBOUNCE_MS = 250
+let emitTimer: ReturnType<typeof setTimeout> | null = null
+
+function emitContentNow() {
+  if (emitTimer) {
+    clearTimeout(emitTimer)
+    emitTimer = null
+  }
+  const ed = editor.value
+  if (!ed || ed.isDestroyed || applyingExternal) return
+  const next = JSON.stringify(ed.getJSON())
+  if (next === lastEmittedContentJson) return
+  lastEmittedContentJson = next
+  emit('update:contentJson', next)
+}
+
+function scheduleEmitContent() {
+  if (emitTimer) clearTimeout(emitTimer)
+  emitTimer = setTimeout(() => {
+    emitTimer = null
+    emitContentNow()
+  }, EMIT_DEBOUNCE_MS)
+}
+
+defineExpose({ flushContent: emitContentNow })
 
 watch(
   () => props.editable,
@@ -358,8 +401,10 @@ watch(
 /** Цвета на кнопках панели: только из палитры / быстрого выбора, не от выделения в тексте. */
 const DEFAULT_TOOLBAR_TEXT_COLOR = '#1e293b'
 const DEFAULT_TOOLBAR_HIGHLIGHT_COLOR = '#fef08a'
+const DEFAULT_TOOLBAR_CELL_FILL = '#e0f2fe'
 const toolbarTextColor = ref(DEFAULT_TOOLBAR_TEXT_COLOR)
 const toolbarHighlightColor = ref(DEFAULT_TOOLBAR_HIGHLIGHT_COLOR)
+const toolbarCellFill = ref(DEFAULT_TOOLBAR_CELL_FILL)
 
 function normalizeToolbarHex(hex: string, fallback: string): string {
   const s = hex.trim()
@@ -381,13 +426,8 @@ const orderedListOn = computed(() => {
 
 const tableDd = ref<HTMLDetailsElement | null>(null)
 
-const TABLE_INSERT_COLS_MIN = 1
-const TABLE_INSERT_COLS_MAX = 30
-const TABLE_INSERT_ROWS_MIN = 1
-const TABLE_INSERT_ROWS_MAX = 100
-const tableCustomCols = ref(4)
-const tableCustomRows = ref(4)
-const tableCustomErr = ref('')
+const tablePasteErr = ref('')
+const tablePasteBusy = ref(false)
 
 /** Якорь ячейки: сохраняем на pointerdown по summary (до ухода фокуса с редактора). */
 const tableMenuSavedAnchor = ref<number | null>(null)
@@ -396,9 +436,25 @@ function onTableSummaryPointerDown() {
   const dd = tableDd.value
   const ed = editor.value
   if (!dd || !ed) return
-  /* Сохраняем якорь при любом открытии меню, пока details ещё закрыт (фокус часто ещё в редакторе). */
+  /*
+   * Якорь нужен только когда курсор реально в ячейке: иначе меню открывалось
+   * панелью изменения таблицы с серыми кнопками, хотя таблицы под курсором нет.
+   */
   if (!dd.open) {
-    tableMenuSavedAnchor.value = ed.state.selection.anchor
+    tableMenuSavedAnchor.value = ed.isActive('table') ? ed.state.selection.anchor : null
+  }
+}
+
+/** Сохранённый якорь всё ещё указывает в ячейку (её могли удалить или уйти из таблицы). */
+function anchorStillInCell(): boolean {
+  const ed = editor.value
+  const anchor = tableMenuSavedAnchor.value
+  if (!ed || anchor == null) return false
+  if (anchor > ed.state.doc.content.size) return false
+  try {
+    return getNoteTableCellMetricsAt(ed.state, anchor) != null
+  } catch {
+    return false
   }
 }
 
@@ -426,7 +482,7 @@ const showTableRowColPanel = computed(() => {
   void toolbarTick.value
   void tableMenuSavedAnchor.value
   if (editor.value?.isActive('table')) return true
-  if (tableDd.value?.open && tableMenuSavedAnchor.value != null) return true
+  if (tableDd.value?.open && anchorStillInCell()) return true
   return false
 })
 
@@ -672,6 +728,7 @@ const boldOn = computed(() => {
 
 const textColorDd = ref<HTMLDetailsElement | null>(null)
 const highlightDd = ref<HTMLDetailsElement | null>(null)
+const cellFillDd = ref<HTMLDetailsElement | null>(null)
 
 function pickTextColor(hex: string) {
   const n = normalizeToolbarHex(hex, toolbarTextColor.value)
@@ -697,6 +754,48 @@ function clearHighlightFromMenu() {
   toolbarHighlightColor.value = DEFAULT_TOOLBAR_HIGHLIGHT_COLOR
   unsetHighlightFill()
   if (highlightDd.value) highlightDd.value.open = false
+}
+
+function pickCellFill(hex: string) {
+  const n = normalizeToolbarHex(hex, toolbarCellFill.value)
+  toolbarCellFill.value = n
+  setCellFill(n)
+  if (cellFillDd.value) cellFillDd.value.open = false
+}
+
+function clearCellFillFromMenu() {
+  toolbarCellFill.value = DEFAULT_TOOLBAR_CELL_FILL
+  unsetCellFill()
+  if (cellFillDd.value) cellFillDd.value.open = false
+}
+
+function onToolbarCellFillPickInput(ev: Event) {
+  const v = (ev.target as HTMLInputElement).value
+  const n = normalizeToolbarHex(v, toolbarCellFill.value)
+  toolbarCellFill.value = n
+  setCellFill(n)
+}
+
+function closeCellFillDd() {
+  if (cellFillDd.value) cellFillDd.value.open = false
+}
+
+/** Стрелка — палитра; левая часть — сразу залить выделенные ячейки. */
+function onCellFillSummaryClick(ev: MouseEvent) {
+  const chev = (ev.currentTarget as HTMLElement).querySelector('.word-dd-chev-wrap')
+  if (chev?.contains(ev.target as Node)) return
+  ev.preventDefault()
+  setCellFill(toolbarCellFill.value)
+  closeCellFillDd()
+}
+
+function isCellFillActive(hex: string) {
+  void toolbarTick.value
+  const ed = editor.value
+  if (!ed) return false
+  const current =
+    ed.getAttributes('tableCell')?.backgroundColor ?? ed.getAttributes('tableHeader')?.backgroundColor
+  return typeof current === 'string' && current.toLowerCase() === hex.toLowerCase()
 }
 
 function onToolbarTextColorPickInput(ev: Event) {
@@ -782,6 +881,15 @@ function unsetHighlightFill() {
   editor.value?.chain().focus().unsetHighlight().run()
 }
 
+/** Заливка ячейки: красит всю ячейку (выделенные — все сразу), а не только буквы. */
+function setCellFill(hex: string) {
+  editor.value?.chain().focus().setCellAttribute('backgroundColor', hex).run()
+}
+
+function unsetCellFill() {
+  editor.value?.chain().focus().setCellAttribute('backgroundColor', null).run()
+}
+
 function insertExcalidraw() {
   editor.value?.chain().focus().insertExcalidraw().run()
 }
@@ -811,19 +919,51 @@ function insertNoteTable(rows: number, cols: number, withHeaderRow: boolean) {
   closeTableDd()
 }
 
-function insertCustomNoteTable() {
-  const cols = Math.round(Number(tableCustomCols.value))
-  const rows = Math.round(Number(tableCustomRows.value))
-  if (!Number.isFinite(cols) || cols < TABLE_INSERT_COLS_MIN || cols > TABLE_INSERT_COLS_MAX) {
-    tableCustomErr.value = `Столбцов: от ${TABLE_INSERT_COLS_MIN} до ${TABLE_INSERT_COLS_MAX}`
-    return
+/**
+ * Куски буфера для разбора в таблицу. Excel кладёт и картинку-превью, и text/html,
+ * и TSV в text/plain — картинку игнорируем, из остального собираем разметку таблицы.
+ */
+async function readClipboardTableHtml(): Promise<string | null> {
+  const clip = navigator.clipboard
+  if (clip?.read) {
+    const items = await clip.read()
+    let html = ''
+    let plain = ''
+    for (const item of items) {
+      if (!html && item.types.includes('text/html')) {
+        html = await (await item.getType('text/html')).text()
+      }
+      if (!plain && item.types.includes('text/plain')) {
+        plain = await (await item.getType('text/plain')).text()
+      }
+    }
+    const fromParts = clipboardTableHtmlFromParts(html, plain)
+    if (fromParts) return fromParts
   }
-  if (!Number.isFinite(rows) || rows < TABLE_INSERT_ROWS_MIN || rows > TABLE_INSERT_ROWS_MAX) {
-    tableCustomErr.value = `Строк: от ${TABLE_INSERT_ROWS_MIN} до ${TABLE_INSERT_ROWS_MAX}`
-    return
+  if (clip?.readText) {
+    return clipboardTableHtmlFromParts('', await clip.readText())
   }
-  tableCustomErr.value = ''
-  insertNoteTable(rows, cols, true)
+  return null
+}
+
+async function insertTableFromClipboard() {
+  const ed = editor.value
+  tablePasteErr.value = ''
+  if (!ed || !props.editable || tablePasteBusy.value) return
+  tablePasteBusy.value = true
+  try {
+    const html = await readClipboardTableHtml()
+    if (!html) {
+      tablePasteErr.value = 'В буфере нет табличных данных — скопируйте ячейки в Excel.'
+      return
+    }
+    ed.chain().focus().insertContent(html).run()
+    closeTableDd()
+  } catch {
+    tablePasteErr.value = 'Браузер не дал доступ к буферу — вставьте таблицу через Ctrl+V.'
+  } finally {
+    tablePasteBusy.value = false
+  }
 }
 
 function triggerFilePick() {
@@ -1289,6 +1429,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // Только незавершённый эмит: при смене заметки в contentJson родителя уже лежит
+  // следующая, и безусловная отдача старого документа затёрла бы её.
+  if (emitTimer) emitContentNow()
   window.removeEventListener('scroll', bumpToolbar, true)
   registerAttachmentBlobResolver(null)
   if (recording.value && mediaRecorder) {
@@ -1396,42 +1539,17 @@ onBeforeUnmount(() => {
                 3×5
               </button>
             </div>
-            <p class="table-dd-hint table-dd-hint--tight">Свой размер (первая строка — заголовок):</p>
-            <div class="table-dd-custom">
-              <label class="table-dd-custom-field">
-                <span class="table-dd-custom-lab">Столбцов</span>
-                <input
-                  v-model.number="tableCustomCols"
-                  type="number"
-                  class="table-dd-inp table-dd-inp--inline"
-                  :min="TABLE_INSERT_COLS_MIN"
-                  :max="TABLE_INSERT_COLS_MAX"
-                  step="1"
-                  inputmode="numeric"
-                  aria-label="Число столбцов"
-                  @keydown.enter.prevent="insertCustomNoteTable"
-                />
-              </label>
-              <span class="table-dd-custom-x" aria-hidden="true">×</span>
-              <label class="table-dd-custom-field">
-                <span class="table-dd-custom-lab">Строк</span>
-                <input
-                  v-model.number="tableCustomRows"
-                  type="number"
-                  class="table-dd-inp table-dd-inp--inline"
-                  :min="TABLE_INSERT_ROWS_MIN"
-                  :max="TABLE_INSERT_ROWS_MAX"
-                  step="1"
-                  inputmode="numeric"
-                  aria-label="Число строк"
-                  @keydown.enter.prevent="insertCustomNoteTable"
-                />
-              </label>
-              <button type="button" class="table-dd-act table-dd-act--insert" @click="insertCustomNoteTable">
-                Вставить
-              </button>
-            </div>
-            <p v-if="tableCustomErr" class="table-dd-custom-err">{{ tableCustomErr }}</p>
+            <p class="table-dd-hint table-dd-hint--tight">Из буфера обмена (Excel, Таблицы):</p>
+            <button
+              type="button"
+              class="table-dd-act table-dd-act--insert"
+              title="Скопируйте ячейки в Excel и нажмите — вставим таблицей, а не картинкой"
+              :disabled="tablePasteBusy"
+              @click="insertTableFromClipboard"
+            >
+              {{ tablePasteBusy ? 'Вставляем…' : 'Вставить таблицу' }}
+            </button>
+            <p v-if="tablePasteErr" class="table-dd-custom-err">{{ tablePasteErr }}</p>
             <p class="table-dd-note">
               Ширина таблицы по колонкам (не на всю строку): граница между ячейками — потянуть мышью. Tab —
               следующая ячейка.
@@ -1661,7 +1779,62 @@ onBeforeUnmount(() => {
           <button type="button" class="word-dd-clear" @click="clearHighlightFromMenu">Без заливки</button>
         </div>
       </details>
+      <details ref="cellFillDd" class="word-dd" :class="{ 'word-dd--muted': !tableMenuInTable }">
+        <summary class="word-dd-summary" @click="onCellFillSummaryClick($event)">
+          <span
+            class="word-dd-left"
+            :title="
+              tableMenuInTable
+                ? 'Залить выделенные ячейки цветом полоски'
+                : 'Заливка ячейки: поставьте курсор в таблицу'
+            "
+            aria-label="Залить выделенные ячейки таблицы"
+          >
+            <span class="word-dd-icon word-dd-icon--cell" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="4" width="18" height="16" rx="1.5" stroke="currentColor" stroke-width="1.75" />
+                <path d="M3 10h18M3 15h18M9 4v16M15 4v16" stroke="currentColor" stroke-width="1.25" />
+                <rect x="9.9" y="10.9" width="4.2" height="3.2" fill="currentColor" />
+              </svg>
+            </span>
+            <span class="word-dd-bar" :style="{ background: toolbarCellFill }" aria-hidden="true" />
+          </span>
+          <span
+            class="word-dd-chev-wrap"
+            title="Палитра: выбрать другой цвет заливки ячейки"
+            aria-label="Открыть палитру заливки ячейки"
+          >
+            <span class="word-dd-chev" aria-hidden="true">▼</span>
+          </span>
+        </summary>
+        <div class="word-dd-panel" @click.stop>
+          <div class="word-dd-presets word-dd-presets--sq" role="group" aria-label="Заливка ячейки">
+            <button
+              v-for="hex in CELL_FILL_PRESETS"
+              :key="'c-' + hex"
+              type="button"
+              class="word-dd-sq"
+              :title="hex"
+              :style="{ backgroundColor: hex }"
+              :class="{ on: isCellFillActive(hex) }"
+              @click="pickCellFill(hex)"
+            />
+          </div>
+          <label class="word-dd-custom">
+            <span class="word-dd-custom-lab">Другой цвет…</span>
+            <input
+              class="word-dd-color-input"
+              type="color"
+              :value="toolbarCellFill"
+              @input="onToolbarCellFillPickInput($event)"
+              @change="closeCellFillDd"
+            />
+          </label>
+          <button type="button" class="word-dd-clear" @click="clearCellFillFromMenu">Без заливки</button>
+        </div>
+      </details>
       <button
+        v-if="ownerTools"
         type="button"
         class="tb"
         :disabled="!canEncryptSelection"
@@ -1675,7 +1848,7 @@ onBeforeUnmount(() => {
         Зашифровать
       </button>
       <button
-        v-if="canUseGrammar"
+        v-if="canUseGrammar && ownerTools"
         type="button"
         class="tb"
         title="Проверить выделенный текст: орфография, пунктуация, грамматика"
@@ -1685,11 +1858,25 @@ onBeforeUnmount(() => {
       >
         ГР
       </button>
-      <button type="button" class="tb" @click="insertExcalidraw">Схема</button>
-      <button type="button" class="tb" title="Интеллект-карта, как в редакторе на localhost:8200" @click="insertMindmap">
+      <button v-if="ownerTools" type="button" class="tb" @click="insertExcalidraw">Схема</button>
+      <button
+        v-if="ownerTools"
+        type="button"
+        class="tb"
+        title="Интеллект-карта, как в редакторе на localhost:8200"
+        @click="insertMindmap"
+      >
         Карта
       </button>
-      <button type="button" class="tb" title="Диаграмма draw.io (diagrams.net, русский интерфейс)" @click="insertC4">Диаграмма</button>
+      <button
+        v-if="ownerTools"
+        type="button"
+        class="tb"
+        title="Диаграмма draw.io (diagrams.net, русский интерфейс)"
+        @click="insertC4"
+      >
+        Диаграмма
+      </button>
       <button
         type="button"
         class="tb"
@@ -1715,7 +1902,7 @@ onBeforeUnmount(() => {
         Файл
       </button>
       <button
-        v-if="editable"
+        v-if="editable && ownerTools"
         type="button"
         class="tb tb-mic"
         :class="{ tbOn: recording }"
@@ -2231,8 +2418,13 @@ onBeforeUnmount(() => {
   font-size: var(--fs-sm);
   font-family: system-ui, 'Segoe UI', sans-serif;
 }
-.word-dd-icon--hi svg {
+.word-dd-icon--hi svg,
+.word-dd-icon--cell svg {
   display: block;
+}
+/* Курсор вне таблицы: меню доступно, но видно, что красить нечего. */
+.word-dd--muted > .word-dd-summary {
+  opacity: 0.55;
 }
 .word-dd-bar {
   display: block;
@@ -2530,34 +2722,9 @@ onBeforeUnmount(() => {
 .table-dd-hint--tight {
   margin-top: 0.55rem;
 }
-.table-dd-custom {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.35rem 0.45rem;
-  margin-bottom: 0.15rem;
-}
-.table-dd-custom-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-}
-.table-dd-custom-lab {
-  font-size: var(--fs-2xs);
-  color: var(--text-4);
-}
-.table-dd-custom-x {
-  align-self: center;
-  padding-bottom: 0.28rem;
-  font-size: var(--fs-sm);
-  color: var(--text-3);
-  line-height: 1;
-}
 .table-dd-act--insert {
-  flex: 0 0 auto;
+  width: 100%;
   min-width: 5.5rem;
-  align-self: flex-end;
 }
 .table-dd-custom-err {
   margin: 0.15rem 0 0;
@@ -2733,6 +2900,11 @@ onBeforeUnmount(() => {
   background: var(--surface-wash);
   font-weight: 600;
   text-align: left;
+}
+/* Заливка ячейки приходит инлайном и всегда пастельная — текст в ней держим тёмным. */
+.editor-content :deep(.ProseMirror table td[data-background-color]),
+.editor-content :deep(.ProseMirror table th[data-background-color]) {
+  color: var(--text-on-highlight);
 }
 .editor-content :deep(.tableWrapper .selectedCell:after) {
   z-index: 2;

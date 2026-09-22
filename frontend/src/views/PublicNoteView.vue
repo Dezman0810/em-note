@@ -238,6 +238,7 @@ onBeforeUnmount(async () => {
           :editable="canEdit"
           :note-id="note?.id ?? null"
           :public-token="token"
+          :owner-tools="false"
         />
       </div>
     </template>

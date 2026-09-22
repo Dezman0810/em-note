@@ -50,80 +50,61 @@ export function rewriteAttachmentImagesInTipTapDoc(doc: unknown): unknown {
 
 /** Обход TipTap JSON. */
 
-export function contentHasMindmap(contentJson: string): boolean {
-  let doc: unknown
+/**
+ * Разбор тела заметки кешируется на одно значение: проверки ниже вызываются
+ * пачкой (схема, карта, аудио) после каждого автосохранения, а документ со
+ * встроенными картинками бывает мегабайтным — три лишних JSON.parse заметны.
+ */
+let parsedRaw: string | null = null
+let parsedDoc: unknown = null
+
+function parseDoc(contentJson: string): unknown {
+  const raw = contentJson || '{}'
+  if (parsedRaw === raw) return parsedDoc
+  let doc: unknown = null
   try {
-    doc = JSON.parse(contentJson || '{}')
+    doc = JSON.parse(raw)
   } catch {
-    return false
+    doc = null
   }
+  parsedRaw = raw
+  parsedDoc = doc
+  return doc
+}
+
+/** Есть ли в документе узел, удовлетворяющий условию. */
+function hasNode(doc: unknown, match: (node: Record<string, unknown>) => boolean): boolean {
   function walk(node: unknown): boolean {
     if (!node || typeof node !== 'object') return false
     const o = node as Record<string, unknown>
-    if (o.type === 'mindmapBlock') return true
+    if (match(o)) return true
     const c = o.content
     if (Array.isArray(c)) return c.some(walk)
     return false
   }
   return walk(doc)
+}
+
+export function contentHasMindmap(contentJson: string): boolean {
+  return hasNode(parseDoc(contentJson), (o) => o.type === 'mindmapBlock')
 }
 
 export function contentHasExcalidraw(contentJson: string): boolean {
-  let doc: unknown
-  try {
-    doc = JSON.parse(contentJson || '{}')
-  } catch {
-    return false
-  }
-  function walk(node: unknown): boolean {
-    if (!node || typeof node !== 'object') return false
-    const o = node as Record<string, unknown>
-    if (o.type === 'excalidrawBlock') return true
-    const c = o.content
-    if (Array.isArray(c)) return c.some(walk)
-    return false
-  }
-  return walk(doc)
+  return hasNode(parseDoc(contentJson), (o) => o.type === 'excalidrawBlock')
 }
 
 export function contentHasC4(contentJson: string): boolean {
-  let doc: unknown
-  try {
-    doc = JSON.parse(contentJson || '{}')
-  } catch {
-    return false
-  }
-  function walk(node: unknown): boolean {
-    if (!node || typeof node !== 'object') return false
-    const o = node as Record<string, unknown>
-    if (o.type === 'c4Block') return true
-    const c = o.content
-    if (Array.isArray(c)) return c.some(walk)
-    return false
-  }
-  return walk(doc)
+  return hasNode(parseDoc(contentJson), (o) => o.type === 'c4Block')
 }
 
 /** Есть ли в документе аудио (вложение audio/* или legacy audioNote). */
 export function contentHasAudio(contentJson: string): boolean {
-  let doc: unknown
-  try {
-    doc = JSON.parse(contentJson || '{}')
-  } catch {
-    return false
-  }
-  function walk(node: unknown): boolean {
-    if (!node || typeof node !== 'object') return false
-    const o = node as Record<string, unknown>
+  return hasNode(parseDoc(contentJson), (o) => {
     if (o.type === 'audioNote') return true
     if (o.type === 'uploadedFile') {
       const attrs = o.attrs as Record<string, unknown> | undefined
-      const mt = String(attrs?.mimeType ?? '').toLowerCase()
-      if (mt.startsWith('audio/')) return true
+      return String(attrs?.mimeType ?? '').toLowerCase().startsWith('audio/')
     }
-    const c = o.content
-    if (Array.isArray(c)) return c.some(walk)
     return false
-  }
-  return walk(doc)
+  })
 }

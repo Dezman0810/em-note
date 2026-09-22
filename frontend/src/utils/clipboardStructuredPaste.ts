@@ -18,8 +18,8 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** Excel / Sheets / LibreOffice: text/plain с табами и переводами строк. */
-export function plainTextSpreadsheetToTableHtml(plain: string | null | undefined): string | null {
+/** Строки TSV из Excel / Sheets / LibreOffice; null — в тексте нет таблицы. */
+export function plainTextSpreadsheetRows(plain: string | null | undefined): string[][] | null {
   const text = (plain ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
   if (!text.includes('\t')) return null
 
@@ -30,7 +30,13 @@ export function plainTextSpreadsheetToTableHtml(plain: string | null | undefined
   const rows = lines.map((line) => line.split('\t'))
   const maxCols = Math.max(...rows.map((row) => row.length), 1)
   if (maxCols < 2 && lines.length < 2) return null
+  return rows
+}
 
+/** Таблица из строк: прямоугольная, все ячейки — обычный текст. */
+export function buildTableHtml(rows: string[][]): string | null {
+  if (rows.length === 0) return null
+  const maxCols = Math.max(...rows.map((row) => row.length), 1)
   const parts = ['<table><tbody>']
   for (const row of rows) {
     parts.push('<tr>')
@@ -41,6 +47,78 @@ export function plainTextSpreadsheetToTableHtml(plain: string | null | undefined
   }
   parts.push('</tbody></table>')
   return parts.join('')
+}
+
+/** Excel / Sheets / LibreOffice: text/plain с табами и переводами строк. */
+export function plainTextSpreadsheetToTableHtml(plain: string | null | undefined): string | null {
+  const rows = plainTextSpreadsheetRows(plain)
+  return rows ? buildTableHtml(rows) : null
+}
+
+/** Ячейка Excel: неразрывные пробелы и переносы внутри — обычный текст. */
+function cellText(cell: Element): string {
+  return (cell.textContent ?? '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Строки одной таблицы: только её собственные `tr` и `td`. Excel и Sheets кладут
+ * вложенные таблицы и служебные строки — из-за них при прямом разборе между
+ * строками появлялись пустые.
+ */
+export function spreadsheetTableRows(table: Element): string[][] {
+  const rows: string[][] = []
+  for (const row of Array.from(table.querySelectorAll('tr'))) {
+    if (row.closest('table') !== table) continue
+    const cells = Array.from(row.querySelectorAll('td, th')).filter(
+      (cell) => cell.parentElement === row && cell.closest('table') === table
+    )
+    if (cells.length === 0) continue
+    rows.push(cells.map(cellText))
+  }
+  return rows
+}
+
+/** Строки без единого непустого значения — разметочный мусор, не данные. */
+export function withoutEmptyRows(rows: string[][]): string[][] {
+  return rows.filter((row) => row.some((cell) => cell !== ''))
+}
+
+function spreadsheetHtmlRows(normalizedHtml: string): string[][] | null {
+  if (!normalizedHtml || !/<table\b/i.test(normalizedHtml)) return null
+  try {
+    const doc = new DOMParser().parseFromString(normalizedHtml, 'text/html')
+    let best: string[][] = []
+    let bestFilled = 0
+    for (const table of Array.from(doc.body.querySelectorAll('table'))) {
+      const rows = spreadsheetTableRows(table)
+      const filled = rows.reduce((n, row) => n + row.filter(Boolean).length, 0)
+      if (filled > bestFilled) {
+        best = rows
+        bestFilled = filled
+      }
+    }
+    return best.length > 0 ? best : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Таблица для кнопки «Вставить таблицу»: из буфера берём только данные.
+ * Стили и служебная разметка Excel отбрасываются — строк вставляется ровно
+ * столько, сколько скопировано.
+ */
+export function clipboardTableHtmlFromParts(
+  rawHtml: string | null | undefined,
+  plain: string | null | undefined
+): string | null {
+  const fromHtml = spreadsheetHtmlRows(getNormalizedClipboardHtml(rawHtml))
+  if (fromHtml) {
+    const html = buildTableHtml(withoutEmptyRows(fromHtml))
+    if (html) return html
+  }
+  const fromPlain = plainTextSpreadsheetRows(plain)
+  return fromPlain ? buildTableHtml(withoutEmptyRows(fromPlain)) : null
 }
 
 function htmlIsSpreadsheetImagePreview(normalizedHtml: string): boolean {
@@ -73,22 +151,33 @@ export function clipboardHtmlLooksStructured(normalizedHtml: string, rawHtml: st
   return cfHtml || hasBlocks || hasInlineRich
 }
 
-/** Лучший HTML для вставки: CF_HTML / Office или TSV из Excel. */
-export function resolveStructuredPasteHtml(cd: DataTransfer | null): string | null {
-  if (!cd) return null
-
-  const rawHtml = cd.getData('text/html')
-  const normalized = getNormalizedClipboardHtml(rawHtml)
-  if (normalized && clipboardHtmlLooksStructured(normalized, rawHtml)) {
+/**
+ * Лучший HTML для вставки по сырым кускам буфера.
+ * Отдельно от DataTransfer: кнопка «Вставить таблицу» читает буфер через
+ * navigator.clipboard, где событие paste недоступно.
+ */
+export function resolveStructuredPasteHtmlFromParts(
+  rawHtml: string | null | undefined,
+  plain: string | null | undefined
+): string | null {
+  const raw = rawHtml ?? ''
+  const normalized = getNormalizedClipboardHtml(raw)
+  if (normalized && clipboardHtmlLooksStructured(normalized, raw)) {
     return normalized
   }
 
   if (normalized && htmlIsSpreadsheetImagePreview(normalized)) {
-    const fromPlain = plainTextSpreadsheetToTableHtml(cd.getData('text/plain'))
+    const fromPlain = plainTextSpreadsheetToTableHtml(plain)
     if (fromPlain) return fromPlain
   }
 
-  return plainTextSpreadsheetToTableHtml(cd.getData('text/plain'))
+  return plainTextSpreadsheetToTableHtml(plain)
+}
+
+/** Лучший HTML для вставки: CF_HTML / Office или TSV из Excel. */
+export function resolveStructuredPasteHtml(cd: DataTransfer | null): string | null {
+  if (!cd) return null
+  return resolveStructuredPasteHtmlFromParts(cd.getData('text/html'), cd.getData('text/plain'))
 }
 
 export function shouldPreferStructuredPasteOverImage(cd: DataTransfer | null): boolean {

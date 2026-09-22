@@ -36,6 +36,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const { innerScroll } = useNoteLayout()
 
+const editorRef = ref<{ flushContent: () => void } | null>(null)
 const note = ref<Note | null>(null)
 const title = ref('')
 const contentJson = ref('{}')
@@ -300,16 +301,32 @@ let titleSkipSaveOnce = false
 const lastSavedTitle = ref('')
 const lastSavedContentJson = ref('')
 
+/**
+ * Нормализация тела заметки — это JSON.parse + stringify всего документа, а он
+ * бывает мегабайтным. Одно и то же значение нормализуем один раз.
+ */
+let normalizedCacheRaw: string | null = null
+let normalizedCacheValue = '{}'
+function normalizedContent(): string {
+  const raw = contentJson.value
+  if (normalizedCacheRaw === raw) return normalizedCacheValue
+  normalizedCacheRaw = raw
+  normalizedCacheValue = normalizeContentJson(raw)
+  return normalizedCacheValue
+}
+
+/** Редактор отдаёт тело с задержкой — перед сравнением/сохранением забираем актуальное. */
+function flushEditorContent() {
+  editorRef.value?.flushContent()
+}
+
 function syncLastSavedFromEditor() {
   lastSavedTitle.value = title.value
-  lastSavedContentJson.value = normalizeContentJson(contentJson.value)
+  lastSavedContentJson.value = normalizedContent()
 }
 
 function editorTextUnchanged(): boolean {
-  return (
-    title.value === lastSavedTitle.value &&
-    normalizeContentJson(contentJson.value) === lastSavedContentJson.value
-  )
+  return title.value === lastSavedTitle.value && normalizedContent() === lastSavedContentJson.value
 }
 
 function emitRefresh(hint?: NoteListRefreshHint) {
@@ -319,7 +336,9 @@ function emitRefresh(hint?: NoteListRefreshHint) {
 async function loadFoldersOnly() {
   if (!note.value) return
   try {
-    folders.value = await foldersApi.list(note.value.id)
+    // Без for_note_id: сервер всё равно отдаёт папки пользователя, а общий ключ
+    // кеша переиспользуется между заметками вместо запроса на каждое открытие.
+    folders.value = await foldersApi.list()
   } catch {
     /* */
   }
@@ -716,6 +735,62 @@ async function sendMailFromModal() {
   }
 }
 
+/**
+ * Заметка на экране и доступна для правки. Вызывается сразу после текста,
+ * до второстепенных запросов: пока `fetching` = true, список не даёт открыть
+ * следующую заметку (см. openNote в NotesView).
+ */
+let primaryDoneGen = -1
+async function finishPrimaryLoad(gen: number) {
+  if (gen !== loadGen || primaryDoneGen === gen) return
+  primaryDoneGen = gen
+  fetching.value = false
+  endFetchVisual()
+  await nextTick()
+  syncLastSavedFromEditor()
+  autoSaveOk.value = true
+}
+
+/**
+ * Доступы, публичная ссылка, папки и история писем не нужны для чтения и правки
+ * текста, поэтому идут одним параллельным пакетом уже после показа заметки.
+ * Их ошибки не гасят саму заметку.
+ */
+async function loadSecondary(gen: number, n: Note) {
+  const amOwner = !!(auth.user && n.owner_id === auth.user.id)
+  publicLink.value = null
+  publicShareExpanded.value = false
+  const jobs: Promise<unknown>[] = [loadFoldersOnly(), refreshMailSendHistory()]
+  if (amOwner) {
+    jobs.push(
+      sharesApi.list(n.id).then((rows) => {
+        if (gen === loadGen) shares.value = rows
+      })
+    )
+    jobs.push(
+      notesApi
+        .getPublicLink(n.id)
+        .then((pl) => {
+          if (gen !== loadGen) return
+          publicLink.value = pl
+          publicRole.value = pl.role === 'editor' ? 'editor' : 'viewer'
+        })
+        .catch((e) => {
+          if (!isAxiosError(e) || e.response?.status !== 404) {
+            /* ignore optional feature */
+          }
+        })
+    )
+  } else {
+    shares.value = []
+  }
+  await Promise.allSettled(jobs)
+  if (gen !== loadGen || props.noteId !== n.id) return
+  folderSelect.value = n.folder_id ?? ''
+  reminderPanelOpen.value = false
+  await syncAutoTags()
+}
+
 async function load() {
   if (!props.noteId) return
   const gen = ++loadGen
@@ -741,27 +816,8 @@ async function load() {
       tagQuery.value = ''
     })
     if (gen !== loadGen || requestedId !== props.noteId) return
-    const amOwner = !!(auth.user && n.owner_id === auth.user.id)
-    shares.value = amOwner ? await sharesApi.list(n.id) : []
-    publicLink.value = null
-    if (amOwner) {
-      try {
-        const pl = await notesApi.getPublicLink(n.id)
-        publicLink.value = pl
-        publicRole.value = pl.role === 'editor' ? 'editor' : 'viewer'
-      } catch (e) {
-        if (!isAxiosError(e) || e.response?.status !== 404) {
-          /* ignore optional feature */
-        }
-      }
-    }
-    if (gen !== loadGen || requestedId !== props.noteId) return
-    publicShareExpanded.value = false
-    await loadFoldersOnly()
-    folderSelect.value = n.folder_id ?? ''
-    reminderPanelOpen.value = false
-    await syncAutoTags()
-    await refreshMailSendHistory()
+    await finishPrimaryLoad(gen)
+    await loadSecondary(gen, n)
   } catch (e) {
     if (gen !== loadGen || requestedId !== props.noteId) return
     error.value = errMessage(e)
@@ -770,13 +826,7 @@ async function load() {
     mailHistoryFetchError.value = ''
     bodySwap.value = 'in'
   } finally {
-    if (gen === loadGen) {
-      fetching.value = false
-      endFetchVisual()
-      await nextTick()
-      syncLastSavedFromEditor()
-      autoSaveOk.value = true
-    }
+    await finishPrimaryLoad(gen)
   }
 }
 
@@ -809,6 +859,7 @@ async function refetchNoteIfRemoteNewer() {
 
 async function save() {
   if (!note.value || !noteBodyEditable.value) return
+  flushEditorContent()
   if (editorTextUnchanged()) return
   saving.value = true
   error.value = ''
@@ -834,6 +885,10 @@ async function flushSave() {
     clearTimeout(saveTimer)
     saveTimer = null
   }
+  // Сохранять нечего — не тянем заметку целиком ради сравнения версий:
+  // при переходе к соседней заметке это был лишний мегабайтный запрос.
+  flushEditorContent()
+  if (editorTextUnchanged()) return
   try {
     const remote = await notesApi.get(note.value.id)
     if (parseUpdatedAt(remote.updated_at) > parseUpdatedAt(note.value.updated_at)) {
@@ -871,7 +926,8 @@ async function goNextNote() {
 
 function scheduleSave() {
   if (!autoSaveOk.value || isTrashed.value || !noteBodyEditable.value) return
-  if (editorTextUnchanged()) return
+  // Сравнение с последним сохранённым делает уже `save()`: на каждое нажатие
+  // клавиши нормализовать всё тело заметки слишком дорого.
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => void save(), 700)
 }
@@ -1668,9 +1724,11 @@ watch(
         <div class="note-body">
         <NoteEditor
           :key="note?.id ?? 'empty'"
+          ref="editorRef"
           v-model:contentJson="contentJson"
           :editable="noteBodyEditable"
           :note-id="note?.id ?? null"
+          :owner-tools="isOwner"
         />
         </div>
 

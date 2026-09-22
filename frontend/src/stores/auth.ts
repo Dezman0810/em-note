@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { authApi, clearRequestCache, setAuthToken } from '../api/client'
+import { authApi, clearRequestCache, featuresApi, setAuthToken } from '../api/client'
+import { clearAttachmentBlobCache } from '../utils/attachmentBlob'
 import type { User } from '../api/types'
 import { scheduleMindmapWarmup } from '../utils/mindmapWarmup'
 
@@ -17,6 +18,8 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem(TOKEN_KEY))
   const user = ref<User | null>(null)
   const loaded = ref(false)
+  /** Распознавание речи включено на сервере (модель Vosk есть и не отключена). */
+  const audioTranscribeEnabled = ref(false)
 
   if (token.value) setAuthToken(token.value)
 
@@ -32,6 +35,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email: string, password: string) {
     authEpoch++
     clearRequestCache()
+    clearAttachmentBlobCache()
     const data = await authApi.login({ email: normalizeEmail(email), password })
     persistToken(data.access_token)
     user.value = await authApi.me()
@@ -44,8 +48,19 @@ export const useAuthStore = defineStore('auth', () => {
     await login(email, password)
   }
 
+  /** Доступно и анонимно: публичная заметка тоже прячет кнопки выключенных функций. */
+  async function loadFeatures() {
+    try {
+      const f = await featuresApi.get()
+      audioTranscribeEnabled.value = f.audio_transcribe
+    } catch {
+      audioTranscribeEnabled.value = false
+    }
+  }
+
   async function fetchMe() {
     const epoch = authEpoch
+    void loadFeatures()
     if (!token.value) {
       loaded.value = true
       return
@@ -74,9 +89,22 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     authEpoch++
     clearRequestCache()
+    clearAttachmentBlobCache()
     persistToken(null)
     user.value = null
   }
 
-  return { token, user, loaded, isAuthenticated, login, register, fetchMe, changePassword, logout }
+  return {
+    token,
+    user,
+    loaded,
+    isAuthenticated,
+    audioTranscribeEnabled,
+    login,
+    register,
+    fetchMe,
+    loadFeatures,
+    changePassword,
+    logout,
+  }
 })

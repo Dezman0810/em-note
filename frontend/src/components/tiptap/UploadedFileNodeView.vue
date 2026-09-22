@@ -4,10 +4,13 @@ import type { ComputedRef } from 'vue'
 import { computed, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { attachmentsApi, errMessage, publicNoteApi } from '../../api/client'
 import { fetchAttachmentBlob } from '../../utils/attachmentBlob'
+import { useAuthStore } from '../../stores/auth'
 
 type NoteAttachmentCtx = { publicToken: string | null }
 
 const props = defineProps(nodeViewProps)
+
+const auth = useAuthStore()
 
 const noteAttachmentContext = inject<ComputedRef<NoteAttachmentCtx> | undefined>('noteAttachmentContext', undefined)
 
@@ -152,7 +155,7 @@ async function runTranscribe() {
       <template v-else-if="isAudio && blobUrl">
         <div v-show="audioExpanded" class="audio-expanded-block">
           <audio class="uploaded-file-audio" controls preload="metadata" :src="blobUrl" />
-          <div v-if="editor.isEditable" class="transcribe-row">
+          <div v-if="editor.isEditable && auth.audioTranscribeEnabled" class="transcribe-row">
             <button
               type="button"
               class="uploaded-file-btn"

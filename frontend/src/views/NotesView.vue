@@ -1369,7 +1369,8 @@ async function load(opts: LoadOptions = {}) {
         for (const id of apply.newIds) flashNoteId(id)
         for (const id of apply.updatedIds) flashNoteId(id)
       }
-      await refreshSidebarTagCounts()
+      // Счётчики меток/папок дорисовываются сами — список не ждёт их.
+      void refreshSidebarTagCounts()
       void loadFolderCounts()
       if (opts.reminders) {
         reminderRefreshSignal.value++
@@ -1391,7 +1392,7 @@ async function load(opts: LoadOptions = {}) {
       for (const id of apply.updatedIds) flashNoteId(id)
     }
 
-    await refreshSidebarTagCounts()
+    void refreshSidebarTagCounts()
   } catch (e) {
     error.value = errMessage(e)
     if (folderViewTrash.value) {
@@ -1808,9 +1809,9 @@ onMounted(async () => {
   mobileMq = window.matchMedia(MOBILE_LAYOUT_MQ)
   mobileMq.addEventListener('change', syncNarrowLayout)
 
-  await loadFolders()
-  await loadFilterPresets()
-  await load()
+  // Папки, пресеты и сам список независимы друг от друга: последовательные
+  // await складывали три сетевых круга в один длинный старт.
+  await Promise.all([loadFolders(), loadFilterPresets(), load()])
   await nextTick()
   clampTagsPanelHeight()
   window.addEventListener('resize', clampTagsPanelHeight)

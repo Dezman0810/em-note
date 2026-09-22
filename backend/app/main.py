@@ -26,6 +26,7 @@ from app.api.routers import (
 )
 from app.alembic_startup import alembic_upgrade_head_at_startup
 from app.config import settings
+from app.utils.gzip_json import JsonGZipMiddleware
 
 
 @asynccontextmanager
@@ -38,6 +39,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+# Тело заметки бывает мегабайтным (картинки внутри content_json) — отдаём сжатым.
+# За Nginx (прод) сжатие делает он, и флаг выключают: на одном ядре лишний gzip заметен.
+if settings.gzip_json:
+    app.add_middleware(JsonGZipMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,3 +77,11 @@ app.include_router(user_settings.router, prefix="/api")
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/features")
+async def features() -> dict[str, bool]:
+    """Что включено на этом сервере: фронт прячет кнопки недоступных функций."""
+    return {
+        "audio_transcribe": bool(settings.vosk_enabled and settings.vosk_model_path.strip()),
+    }

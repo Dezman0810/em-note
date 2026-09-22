@@ -3,6 +3,13 @@ set -e
 cd /app
 
 ensure_vosk_model() {
+  # Распознавание выключено — не тратим ни диск (~50 МБ), ни время старта.
+  case "${VOSK_ENABLED:-1}" in
+    0|false|False|FALSE|no|off)
+      echo "[em-note] VOSK_ENABLED=0 — распознавание речи отключено, модель не нужна."
+      return 0
+      ;;
+  esac
   dest="${VOSK_MODEL_PATH:-/opt/vosk-model/vosk-model-small-ru-0.22}"
   if [ -d "$dest/am" ] || [ -d "$dest/conf" ]; then
     return 0

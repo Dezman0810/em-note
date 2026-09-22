@@ -1,5 +1,9 @@
 # Airflow: бэкап и восстановление em-note в Dropbox
 
+> **Устарело.** На VPS бэкап делает сервис `backup` (см. [../backup/README.md](../backup/README.md)):
+> те же `pg_dump`, архив вложений и Dropbox, но ~15 МБ памяти вместо ~500 МБ и без
+> доступа к `docker.sock`. Эти DAG оставлены на случай, если Airflow нужен для другого.
+
 - **DAG `em_note_db_backup`** — ежедневно: `pg_dump` + архив тома вложений → Dropbox.
 - **DAG `em_note_restore_from_dropbox`** — ручной запуск: скачать из Dropbox → `psql` + распаковка в том вложений.
 

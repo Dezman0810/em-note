@@ -36,7 +36,24 @@ services:
       - em_note_prod
     volumes:
       - em_note_attachments_for_airflow:/mnt/em_note_attachments
+    # На VPS с 2 ГБ Airflow — самый прожорливый сосед em-note: держим его в рамках.
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   airflow-webserver:
     networks:
       - default
       - em_note_prod
+    environment:
+      # Один gunicorn-воркер: интерфейс Airflow открывают изредка, а каждый воркер — сотня мегабайт.
+      AIRFLOW__WEBSERVER__WORKERS: "1"
+      AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL: "1800"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

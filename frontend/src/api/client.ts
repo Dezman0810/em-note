@@ -450,6 +450,18 @@ export const sharesApi = {
   },
 }
 
+/** Что включено на сервере: распознавание речи можно выключить ради экономии памяти. */
+export type ServerFeatures = { audio_transcribe: boolean }
+
+export const featuresApi = {
+  async get(): Promise<ServerFeatures> {
+    return cachedGet('features', 60_000, async () => {
+      const { data } = await api.get<ServerFeatures>('/api/features')
+      return { audio_transcribe: !!data?.audio_transcribe }
+    })
+  },
+}
+
 export const attachmentsApi = {
   async upload(noteId: string, file: File): Promise<AttachmentMeta> {
     const form = new FormData()
