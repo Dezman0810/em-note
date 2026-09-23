@@ -278,6 +278,98 @@
 
     window.__emNoteApplyReadonlyState = applyReadonlyState
 
+    function collectOutlineOrder(root) {
+      var order = []
+      function walk(node) {
+        order.push(node)
+        var children = node.children || []
+        for (var i = 0; i < children.length; i++) walk(children[i])
+      }
+      if (root) walk(root)
+      return order
+    }
+
+    function isEditableFocus() {
+      var el = document.activeElement
+      if (!el) return false
+      var tag = el.tagName
+      return tag === 'INPUT' || tag === 'TEXTAREA' || !!el.isContentEditable
+    }
+
+    function setupCtrlJumpNavigation(mindMap) {
+      if (mindMap.__emNoteCtrlJumpSetup) return
+      mindMap.__emNoteCtrlJumpSetup = true
+      var ctrlDown = false
+      var ctrlComboUsed = false
+
+      function isTextEditingNode() {
+        return !!(
+          (mindMap.textEdit && mindMap.textEdit.showTextEdit) ||
+          (mindMap.richText && mindMap.richText.showTextEdit)
+        )
+      }
+
+      function jumpToNextNode() {
+        var renderer = mindMap.renderer
+        if (!renderer || !renderer.root || typeof renderer.goTargetNode !== 'function') return
+        var order = collectOutlineOrder(renderer.root)
+        if (!order.length) return
+        var activeList = renderer.activeNodeList || []
+        var current = activeList[0]
+        var nextNode
+        if (!current) {
+          nextNode = order[0]
+        } else {
+          var curUid = current.getData('uid')
+          var idx = order.findIndex(function (n) {
+            return n.getData('uid') === curUid
+          })
+          nextNode = order[(idx + 1 + order.length) % order.length]
+        }
+        if (nextNode) renderer.goTargetNode(nextNode)
+      }
+
+      function markComboUsed() {
+        if (ctrlDown) ctrlComboUsed = true
+      }
+
+      document.addEventListener(
+        'keydown',
+        function (ev) {
+          if (ev.key === 'Control') {
+            if (!ctrlDown) {
+              ctrlDown = true
+              ctrlComboUsed = false
+            }
+            return
+          }
+          markComboUsed()
+        },
+        true
+      )
+
+      document.addEventListener(
+        'keyup',
+        function (ev) {
+          if (ev.key !== 'Control') return
+          var shouldJump = ctrlDown && !ctrlComboUsed
+          ctrlDown = false
+          ctrlComboUsed = false
+          if (!shouldJump) return
+          if (isEditableFocus() || isTextEditingNode()) return
+          jumpToNextNode()
+        },
+        true
+      )
+
+      document.addEventListener('mousedown', markComboUsed, true)
+      document.addEventListener('wheel', markComboUsed, true)
+      window.addEventListener('blur', function () {
+        ctrlDown = false
+        ctrlComboUsed = false
+      })
+    }
+
     function bootApp() {
       if (window.__emNoteMindmap.booted) return
       if (typeof window.initApp !== 'function') return
@@ -322,6 +414,9 @@
             if (theme && theme.config && typeof mindMap.setThemeConfig === 'function') {
               mindMap.setThemeConfig(theme.config, true)
             }
+          } catch (e) {}
+          try {
+            setupCtrlJumpNavigation(mindMap)
           } catch (e) {}
         })
       }

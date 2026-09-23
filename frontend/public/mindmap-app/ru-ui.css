@@ -107,6 +107,15 @@ html:not(.smm-toolbar-open) .toolbar {
   pointer-events: none;
 }
 
+/* Текст узла карты (rich-text режим) переносится по словам, а не по буквам,
+   независимо от inline-стиля/темы, которые могли задавать word-break. */
+.smm-richtext-node-wrap,
+.smm-richtext-node-wrap * {
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+  white-space: normal !important;
+}
+
 .smm-toolbar-toggle {
   position: fixed;
   left: 50%;
