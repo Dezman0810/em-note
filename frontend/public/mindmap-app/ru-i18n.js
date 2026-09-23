@@ -509,6 +509,8 @@ window.SIMPLE_MIND_MAP_RU = {
       '.navigatorContainer .smm-hide-nav-more{display:none!important}' +
       '.navigatorContainer .smm-shortcut-item{margin-right:0!important}' +
       '.navigatorContainer .smm-shortcut-item .btn{cursor:pointer;font-size:18px}' +
+      '.navigatorContainer .smm-next-node-item{margin-left:32px!important;margin-right:0!important}' +
+      '.navigatorContainer .smm-next-node-btn{cursor:pointer;font-size:18px;font-weight:700;display:flex;align-items:center;justify-content:center}' +
       '.toolbar{transition:top .3s ease}' +
       'html:not(.smm-toolbar-open) .toolbar{top:-120px!important;pointer-events:none}' +
       '.smm-toolbar-toggle{position:fixed;left:50%;top:0;width:56px;height:6px;margin-left:-28px;background:#409eff;border-radius:0 0 8px 8px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:20;overflow:hidden;padding:0;box-sizing:border-box;transition:height .18s ease,top .3s ease}' +
@@ -517,7 +519,7 @@ window.SIMPLE_MIND_MAP_RU = {
       'html.smm-toolbar-open .smm-toolbar-toggle .smm-chrome-arrow{border-top:0;border-bottom:6px solid #fff}' +
       '.smm-toolbar-toggle:hover{height:22px}' +
       '.smm-toolbar-toggle:hover .smm-chrome-arrow{opacity:1}' +
-      'html.smm-embed-readonly .contextmenuContainer,html.smm-embed-readonly .richTextToolbar,html.smm-embed-readonly .nodeIconToolbar,html.smm-embed-readonly .nodeImgPlacementToolbar,html.smm-embed-readonly .formulaInputBox,html.smm-embed-readonly .navigatorContainer,html.smm-embed-readonly .smm-shortcut-item,html.smm-embed-readonly .searchContainer,html.smm-embed-readonly .outlineEditContainer,html.smm-embed-readonly .toolbar,html.smm-embed-readonly .smm-toolbar-toggle,html.smm-embed-readonly .sidebarTriggerContainer{display:none!important}';
+      'html.smm-embed-readonly .contextmenuContainer,html.smm-embed-readonly .richTextToolbar,html.smm-embed-readonly .nodeIconToolbar,html.smm-embed-readonly .nodeImgPlacementToolbar,html.smm-embed-readonly .formulaInputBox,html.smm-embed-readonly .navigatorContainer,html.smm-embed-readonly .smm-shortcut-item,html.smm-embed-readonly .smm-next-node-item,html.smm-embed-readonly .searchContainer,html.smm-embed-readonly .outlineEditContainer,html.smm-embed-readonly .toolbar,html.smm-embed-readonly .smm-toolbar-toggle,html.smm-embed-readonly .sidebarTriggerContainer{display:none!important}';
     document.head.appendChild(style);
   }
 
@@ -1371,6 +1373,34 @@ window.SIMPLE_MIND_MAP_RU = {
     demoItem.insertAdjacentElement('afterend', item);
   }
 
+  function patchNavigatorNextNode(lang) {
+    if (isEmbedReadonly()) return;
+    var nav = document.querySelector('.navigatorContainer');
+    if (!nav) return;
+    var label = lang === 'ru' ? 'Следующий узел (или Ctrl)' : 'Next node (or Ctrl)';
+    var existing = nav.querySelector('.smm-next-node-item');
+    if (existing) {
+      existing.setAttribute('title', label);
+      var oldBtn = existing.querySelector('.btn');
+      if (oldBtn) oldBtn.setAttribute('title', label);
+      return;
+    }
+    var shortcutItem = nav.querySelector('.smm-shortcut-item');
+    if (!shortcutItem) return;
+    var item = document.createElement('div');
+    item.className = 'item smm-next-node-item';
+    var btn = document.createElement('div');
+    btn.className = 'btn smm-next-node-btn';
+    btn.setAttribute('title', label);
+    btn.setAttribute('role', 'button');
+    btn.textContent = '→';
+    btn.addEventListener('click', function () {
+      if (typeof window.__emNoteJumpToNextNode === 'function') window.__emNoteJumpToNextNode();
+    });
+    item.appendChild(btn);
+    shortcutItem.insertAdjacentElement('afterend', item);
+  }
+
   function startDomWatch(root) {
     if (window.__smmDomWatch || !document.body) return;
     window.__smmDomWatch = true;
@@ -1385,6 +1415,7 @@ window.SIMPLE_MIND_MAP_RU = {
       closeSidePanelsOnce(root);
       patchSidebarToggleTitle(lang);
       patchNavigatorShortcuts(root, lang);
+      patchNavigatorNextNode(lang);
       if (root) {
         walkAll(root, function (vm) {
           if (vm.mindMap && vm.mindMap.opt) {

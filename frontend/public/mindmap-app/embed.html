@@ -296,6 +296,31 @@
       return tag === 'INPUT' || tag === 'TEXTAREA' || !!el.isContentEditable
     }
 
+    function jumpToNextNode(mindMap) {
+      if (!mindMap) return
+      var renderer = mindMap.renderer
+      if (!renderer || !renderer.root || typeof renderer.goTargetNode !== 'function') return
+      var order = collectOutlineOrder(renderer.root)
+      if (!order.length) return
+      var activeList = renderer.activeNodeList || []
+      var current = activeList[0]
+      var nextNode
+      if (!current) {
+        nextNode = order[0]
+      } else {
+        var curUid = current.getData('uid')
+        var idx = order.findIndex(function (n) {
+          return n.getData('uid') === curUid
+        })
+        nextNode = order[(idx + 1 + order.length) % order.length]
+      }
+      if (nextNode) renderer.goTargetNode(nextNode)
+    }
+
+    window.__emNoteJumpToNextNode = function () {
+      jumpToNextNode(window.__emNoteMindmap && window.__emNoteMindmap.api)
+    }
+
     function setupCtrlJumpNavigation(mindMap) {
       if (mindMap.__emNoteCtrlJumpSetup) return
       mindMap.__emNoteCtrlJumpSetup = true
@@ -307,26 +332,6 @@
           (mindMap.textEdit && mindMap.textEdit.showTextEdit) ||
           (mindMap.richText && mindMap.richText.showTextEdit)
         )
-      }
-
-      function jumpToNextNode() {
-        var renderer = mindMap.renderer
-        if (!renderer || !renderer.root || typeof renderer.goTargetNode !== 'function') return
-        var order = collectOutlineOrder(renderer.root)
-        if (!order.length) return
-        var activeList = renderer.activeNodeList || []
-        var current = activeList[0]
-        var nextNode
-        if (!current) {
-          nextNode = order[0]
-        } else {
-          var curUid = current.getData('uid')
-          var idx = order.findIndex(function (n) {
-            return n.getData('uid') === curUid
-          })
-          nextNode = order[(idx + 1 + order.length) % order.length]
-        }
-        if (nextNode) renderer.goTargetNode(nextNode)
       }
 
       function markComboUsed() {
@@ -357,7 +362,7 @@
           ctrlComboUsed = false
           if (!shouldJump) return
           if (isEditableFocus() || isTextEditingNode()) return
-          jumpToNextNode()
+          jumpToNextNode(mindMap)
         },
         true
       )
