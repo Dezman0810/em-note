@@ -86,6 +86,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Редактор draw.io для блока «Диаграмма»: страница /drawio-app/embed.html грузит его
+  # с /drawio/ (проксирует web). Без этого сервиса /drawio/ отдавал SPA, и вместо
+  # редактора в блоке открывался сам Em-Note.
+  drawio:
+    image: jgraph/drawio:latest
+    environment:
+      DRAWIO_BASE_URL: /
+      DRAWIO_SERVER_URL: /
+      # Tomcat без ограничения берёт кучу от всей памяти хоста; на 2 ГБ хватает ~200 МБ.
+      CATALINA_OPTS: -Xms64m -Xmx192m
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+    expose:
+      - "8080"
+
   # Ежедневный бэкап базы и вложений в Dropbox (вместо Airflow, ~15 МБ вместо ~500 МБ).
   # Настройки и восстановление — deploy/backup/README.md.
   backup:

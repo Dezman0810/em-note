@@ -61,6 +61,18 @@ services:
       - api
     restart: unless-stopped
 
+  # Редактор draw.io для блока «Диаграмма»: страница /drawio-app/embed.html грузит его
+  # с /drawio/ (проксирует web). Без этого сервиса /drawio/ отдавал SPA, и вместо
+  # редактора в блоке открывался сам Em-Note.
+  drawio:
+    image: jgraph/drawio:latest
+    environment:
+      DRAWIO_BASE_URL: /
+      DRAWIO_SERVER_URL: /
+    restart: unless-stopped
+    expose:
+      - "8080"
+
 volumes:
   em_note_pg_data:
   em_note_attachments:
