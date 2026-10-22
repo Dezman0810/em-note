@@ -7,6 +7,7 @@ from app.models.note_tag import note_tag
 from app.models.note_user_personal_tag import note_user_personal_tag
 from app.models.note_user_placement import NoteUserPlacement
 from app.models.note_public_link import NotePublicLink
+from app.models.note_checklist_link import NoteChecklistLink
 from app.models.share import NoteShare, ShareRole
 from app.models.smtp import UserSmtpSettings
 from app.models.tag import Tag
@@ -37,6 +38,7 @@ __all__ = [
     "NoteUserPlacement",
     "NoteShare",
     "NotePublicLink",
+    "NoteChecklistLink",
     "ShareRole",
     "UserSmtpSettings",
     "UserNoteFilterPreset",

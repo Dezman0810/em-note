@@ -22,3 +22,23 @@ class PublicNotePayload(BaseModel):
     note: NoteRead
     can_edit: bool
     role: str
+
+
+class NoteChecklistLinkRead(BaseModel):
+    token: str
+    created_at: UtcDatetime
+
+    model_config = {"from_attributes": True}
+
+
+class PublicChecklistPayload(BaseModel):
+    note: NoteRead
+
+
+class ChecklistToggle(BaseModel):
+    """Единственная операция по ссылке «чек-лист»: поставить или снять галочку у пункта."""
+
+    index: int = Field(ge=0, le=100_000)
+    checked: bool
+    # Текст пункта, который видит клиент: если владелец успел поменять список — 409.
+    text: str = Field(max_length=20_000)

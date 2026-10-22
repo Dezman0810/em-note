@@ -40,3 +40,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Local Claude Code secrets (never commit)
+.secrets/

@@ -3,7 +3,15 @@ import { isAxiosError } from 'axios'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { errMessage, foldersApi, mailApi, notesApi, sharesApi, tagsApi } from '../api/client'
-import type { Folder, Note, NoteMailSendHistoryRow, NotePublicLink, NoteShare, Tag } from '../api/types'
+import type {
+  Folder,
+  Note,
+  NoteChecklistLink,
+  NoteMailSendHistoryRow,
+  NotePublicLink,
+  NoteShare,
+  Tag,
+} from '../api/types'
 import NoteEditor from './NoteEditor.vue'
 import ContactBookPanel from './ContactBookPanel.vue'
 import { useAuthStore } from '../stores/auth'
@@ -48,6 +56,10 @@ const publicCopyOk = ref(false)
 const publicAccessBusy = ref(false)
 /** Раскрытые настройки общей ссылки (URL, режим, новый токен) */
 const publicShareExpanded = ref(false)
+/** Ссылка «чек-бокс»: отдельный адрес, по которому можно только отмечать пункты. */
+const checklistLink = ref<NoteChecklistLink | null>(null)
+const checklistCopyOk = ref(false)
+const checklistBusy = ref(false)
 
 const EMAIL_SHARES_EXPANDED_KEY = 'note-editor-email-shares-expanded'
 
@@ -198,6 +210,14 @@ const noteNavCounter = computed(() => {
 const publicUrl = computed(() => {
   if (!publicLink.value || typeof window === 'undefined') return ''
   const path = router.resolve({ name: 'public-note', params: { token: publicLink.value.token } }).href
+  return `${window.location.origin}${path}`
+})
+const checklistUrl = computed(() => {
+  if (!checklistLink.value || typeof window === 'undefined') return ''
+  const path = router.resolve({
+    name: 'public-checklist',
+    params: { token: checklistLink.value.token },
+  }).href
   return `${window.location.origin}${path}`
 })
 const isTrashed = computed(() => !!note.value?.deleted_at)
@@ -760,6 +780,7 @@ async function loadSecondary(gen: number, n: Note) {
   const amOwner = !!(auth.user && n.owner_id === auth.user.id)
   publicLink.value = null
   publicShareExpanded.value = false
+  checklistLink.value = null
   const jobs: Promise<unknown>[] = [loadFoldersOnly(), refreshMailSendHistory()]
   if (amOwner) {
     jobs.push(
@@ -779,6 +800,16 @@ async function loadSecondary(gen: number, n: Note) {
           if (!isAxiosError(e) || e.response?.status !== 404) {
             /* ignore optional feature */
           }
+        })
+    )
+    jobs.push(
+      notesApi
+        .getChecklistLink(n.id)
+        .then((cl) => {
+          if (gen === loadGen) checklistLink.value = cl
+        })
+        .catch(() => {
+          /* 404 — ссылка «чек-бокс» не включена */
         })
     )
   } else {
@@ -1268,7 +1299,8 @@ async function onPublicAccessToggle(e: Event) {
     } else {
       await notesApi.deletePublicLink(note.value.id)
       publicLink.value = null
-      publicShareExpanded.value = false
+      // Панель общая со ссылкой «чек-бокс»: сворачиваем, только если выключены обе.
+      if (!checklistLink.value) publicShareExpanded.value = false
     }
     publicCopyOk.value = false
     await syncAutoTags()
@@ -1309,6 +1341,60 @@ async function regenPublicLink() {
     error.value = errMessage(e)
   } finally {
     publicAccessBusy.value = false
+  }
+}
+
+async function onChecklistLinkToggle(e: Event) {
+  const el = e.target as HTMLInputElement
+  const wantOn = el.checked
+  if (!note.value) return
+  checklistBusy.value = true
+  error.value = ''
+  try {
+    if (wantOn) {
+      checklistLink.value = await notesApi.enableChecklistLink(note.value.id)
+      publicShareExpanded.value = true
+    } else {
+      await notesApi.deleteChecklistLink(note.value.id)
+      checklistLink.value = null
+      // Панель общая с обычной ссылкой: сворачиваем, только если выключены обе.
+      if (!publicLink.value) publicShareExpanded.value = false
+    }
+    checklistCopyOk.value = false
+  } catch (err) {
+    error.value = errMessage(err)
+    el.checked = !wantOn
+  } finally {
+    checklistBusy.value = false
+  }
+}
+
+async function regenChecklistLink() {
+  if (!note.value || !checklistLink.value) return
+  if (!confirm('Старая ссылка «чек-бокс» перестанет работать. Продолжить?')) return
+  checklistBusy.value = true
+  error.value = ''
+  try {
+    checklistLink.value = await notesApi.regenerateChecklistLink(note.value.id)
+    checklistCopyOk.value = false
+  } catch (e) {
+    error.value = errMessage(e)
+  } finally {
+    checklistBusy.value = false
+  }
+}
+
+async function copyChecklistUrl() {
+  const u = checklistUrl.value
+  if (!u) return
+  try {
+    await navigator.clipboard.writeText(u)
+    checklistCopyOk.value = true
+    setTimeout(() => {
+      checklistCopyOk.value = false
+    }, 2000)
+  } catch {
+    error.value = 'Не удалось скопировать ссылку'
   }
 }
 
@@ -1752,7 +1838,20 @@ watch(
                   type="checkbox"
                   :checked="!!publicLink"
                   :disabled="publicAccessBusy"
+                  aria-label="Общая ссылка на заметку"
                   @change="onPublicAccessToggle"
+                />
+                <span class="public-switch-ui" aria-hidden="true" />
+              </label>
+              <div class="share-hub-divider" aria-hidden="true" />
+              <span class="share-hub-tile-label">Ссылка (чек-бокс)</span>
+              <label class="public-switch public-switch--compact">
+                <input
+                  type="checkbox"
+                  :checked="!!checklistLink"
+                  :disabled="checklistBusy"
+                  aria-label="Ссылка, по которой можно только отмечать чек-боксы"
+                  @change="onChecklistLinkToggle"
                 />
                 <span class="public-switch-ui" aria-hidden="true" />
               </label>
@@ -1760,6 +1859,7 @@ watch(
                 type="button"
                 class="share-hub-expand"
                 :aria-expanded="publicShareExpanded"
+                title="Настройки обеих ссылок"
                 @click="publicShareExpanded = !publicShareExpanded"
               >
                 <span class="share-hub-chevron" :class="{ open: publicShareExpanded }" aria-hidden="true" />
@@ -1767,7 +1867,9 @@ watch(
               </button>
             </div>
           </div>
+          <!-- Одна кнопка «Настроить» раскрывает настройки обеих ссылок друг под другом. -->
           <div v-show="publicShareExpanded" class="share-hub-drop">
+            <h4 class="share-hub-drop-title">Ссылка</h4>
             <template v-if="publicLink">
               <div class="public-mode-row">
                 <span class="mode-label">Доступ по ссылке</span>
@@ -1805,6 +1907,30 @@ watch(
                 <span class="muted small"> — прежний перестанет работать</span>
               </p>
             </template>
+            <p v-else class="share-hub-off-hint muted small">Выключена — включите переключатель «Ссылка» выше.</p>
+
+            <h4 class="share-hub-drop-title share-hub-drop-title--next">Ссылка (чек-бокс)</h4>
+            <p class="checklist-link-hint muted small">
+              По этой ссылке можно только ставить и снимать галочки у чек-боксов. Текст, заголовок,
+              картинки и всё остальное — только для чтения.
+            </p>
+            <template v-if="checklistLink">
+              <div class="public-url-row">
+                <input class="public-url-input" type="text" readonly :value="checklistUrl" />
+                <button type="button" class="share-hub-btn-secondary" :disabled="checklistBusy" @click="copyChecklistUrl">
+                  {{ checklistCopyOk ? 'Скопировано' : 'Копировать' }}
+                </button>
+              </div>
+              <p class="public-regen-hint">
+                <button type="button" class="linkish" :disabled="checklistBusy" @click="regenChecklistLink">
+                  Новый адрес ссылки
+                </button>
+                <span class="muted small"> — прежний перестанет работать</span>
+              </p>
+            </template>
+            <p v-else class="share-hub-off-hint muted small">
+              Выключена — включите переключатель «Ссылка (чек-бокс)» выше.
+            </p>
           </div>
 
           <button
@@ -2796,6 +2922,24 @@ watch(
   padding: 0 0.75rem 0.65rem;
   border-top: 1px solid var(--border-solid);
   background: var(--surface-veil);
+}
+.share-hub-drop-title {
+  margin: 0.6rem 0 0;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+/* Вторая ссылка — отделяем чертой от настроек первой */
+.share-hub-drop-title--next {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border-solid);
+}
+.checklist-link-hint,
+.share-hub-off-hint {
+  margin: 0.4rem 0 0.5rem;
 }
 .share-hub-subtoggle {
   display: flex;

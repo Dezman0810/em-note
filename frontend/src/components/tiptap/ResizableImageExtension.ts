@@ -4,6 +4,7 @@ import type { EditorView } from '@tiptap/pm/view'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import ResizableImageNodeView from './ResizableImageNodeView.vue'
 import { shouldPreferStructuredPasteOverImage } from '../../utils/clipboardStructuredPaste'
+import { editorContentWidthPx, IMAGE_MIN_WIDTH_PX } from './imageSizing'
 
 function parseNum(v: string | null, fallback: number | null): number | null {
   if (v == null || v === '') return fallback
@@ -11,23 +12,52 @@ function parseNum(v: string | null, fallback: number | null): number | null {
   return Number.isFinite(n) ? n : fallback
 }
 
-function parseWrap(v: string | null): 'none' | 'left' | 'right' {
-  if (v === 'left' || v === 'right') return v
+/** none — у левого края без обтекания; center — по центру без обтекания; left/right — обтекание. */
+function parseWrap(v: string | null): 'none' | 'center' | 'left' | 'right' {
+  if (v === 'left' || v === 'right' || v === 'center') return v
   return 'none'
+}
+
+/** Натуральная ширина картинки в CSS-пикселях; null, если браузер не смог её прочитать. */
+function naturalCssWidth(src: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    // window.Image: имя Image в этом модуле занято расширением TipTap.
+    const img = new window.Image()
+    img.onload = () => {
+      // Скриншот на экране с масштабом 150–200% хранит физические пиксели — делим,
+      // чтобы картинка в заметке была того же размера, что и на экране при копировании.
+      const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1
+      resolve(img.naturalWidth > 0 ? img.naturalWidth / dpr : null)
+    }
+    img.onerror = () => resolve(null)
+    img.src = src
+  })
+}
+
+/**
+ * Постоянная ширина в px по исходному размеру: маленькую не растягиваем, а слишком
+ * широкую при вставке ужимаем до ширины текста. Дальше размер от окна не зависит.
+ */
+function initialWidthPx(view: EditorView, cssWidth: number | null): number {
+  const editorW = editorContentWidthPx(view)
+  const w = cssWidth ?? editorW
+  return Math.round(Math.min(editorW, Math.max(IMAGE_MIN_WIDTH_PX, w)))
 }
 
 function insertImageFromFile(view: EditorView, file: File, wrap: 'left' | 'right' | 'none') {
   const reader = new FileReader()
-  reader.onload = () => {
+  reader.onload = async () => {
     const src = String(reader.result || '')
     if (!src) return
     const type = view.state.schema.nodes.image
     if (!type) return
-    const node = type.create({
-      src,
-      wrap,
-      widthPercent: wrap === 'none' ? 100 : 48,
-    })
+    const natural = await naturalCssWidth(src)
+    if (view.isDestroyed) return
+    const widthPx =
+      wrap === 'none'
+        ? initialWidthPx(view, natural)
+        : Math.round(editorContentWidthPx(view) * 0.48)
+    const node = type.create({ src, wrap, widthPx })
     view.dispatch(view.state.tr.replaceSelectionWith(node).scrollIntoView())
   }
   reader.readAsDataURL(file)
@@ -61,6 +91,16 @@ export const ResizableImage = Image.extend({
           const n = Number(attrs.widthPercent)
           if (!Number.isFinite(n) || n === 100) return {}
           return { 'data-width-percent': String(n) }
+        },
+      },
+      /** Постоянная ширина в px. Если задана — главнее widthPercent (тот остался у старых картинок). */
+      widthPx: {
+        default: null,
+        parseHTML: (el) => parseNum(el.getAttribute('data-width-px'), null),
+        renderHTML: (attrs) => {
+          const n = Number(attrs.widthPx)
+          if (!Number.isFinite(n) || n <= 0) return {}
+          return { 'data-width-px': String(n) }
         },
       },
       heightPx: {
@@ -98,7 +138,8 @@ export const ResizableImage = Image.extend({
             const file = firstClipboardImage(event.clipboardData)
             if (!file) return false
             event.preventDefault()
-            insertImageFromFile(view, file, 'left')
+            // По умолчанию без обтекания: текст пишется под картинкой, а не справа.
+            insertImageFromFile(view, file, 'none')
             return true
           },
           handleDrop: (view, event) => {
@@ -106,7 +147,7 @@ export const ResizableImage = Image.extend({
             const file = firstClipboardImage(dt)
             if (!file) return false
             event.preventDefault()
-            insertImageFromFile(view, file, 'left')
+            insertImageFromFile(view, file, 'none')
             return true
           },
         },

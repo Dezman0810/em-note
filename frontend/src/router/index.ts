@@ -181,6 +181,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/c/:token',
+      name: 'public-checklist',
+      component: () => import('../views/PublicChecklistView.vue'),
+      beforeEnter: (to) => {
+        const t = String(to.params.token || '').trim()
+        if (!t) return { path: '/' }
+        return true
+      },
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { editorContentWidthPx, IMAGE_MIN_WIDTH_PX } from './imageSizing'
 
 const props = defineProps(nodeViewProps)
 
@@ -9,16 +10,27 @@ type Handle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 const HANDLES: Handle[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 
 const boxRef = ref<HTMLElement | null>(null)
-const liveWidthPercent = ref<number | null>(null)
+const liveWidthPx = ref<number | null>(null)
 const liveHeightPx = ref<number | null>(null)
 const resizing = ref(false)
 const resizeKind = ref<'prop' | 'free' | null>(null)
 
-const widthPercent = computed(() => {
-  if (liveWidthPercent.value != null) return liveWidthPercent.value
+/** Постоянная ширина в px; null — старая картинка, у которой есть только widthPercent. */
+const widthPx = computed(() => {
+  if (liveWidthPx.value != null) return liveWidthPx.value
+  const n = Number(props.node.attrs.widthPx)
+  return Number.isFinite(n) && n > 0 ? n : null
+})
+
+/** Ширина старых картинок в % от заметки — пока их не изменили кнопкой или ресайзом. */
+const legacyWidthPercent = computed(() => {
   const n = Number(props.node.attrs.widthPercent)
   return Number.isFinite(n) ? Math.min(100, Math.max(8, n)) : 100
 })
+
+const widthCss = computed(() =>
+  widthPx.value != null ? `${Math.round(widthPx.value)}px` : `${legacyWidthPercent.value}%`
+)
 
 const heightPx = computed(() => {
   if (liveHeightPx.value != null) return liveHeightPx.value
@@ -28,19 +40,23 @@ const heightPx = computed(() => {
 
 const wrap = computed(() => {
   const w = String(props.node.attrs.wrap || 'none')
-  return w === 'left' || w === 'right' ? w : 'none'
+  return w === 'left' || w === 'right' || w === 'center' ? w : 'none'
 })
 
-const wrapping = computed(() => wrap.value !== 'none')
+/** Обтекание текстом — только слева/справа; «по центру» и «▭» стоят отдельным блоком. */
+const wrapping = computed(() => wrap.value === 'left' || wrap.value === 'right')
 
-const rootStyle = computed(() => {
-  const w = wrapping.value ? `${widthPercent.value}%` : '100%'
-  return {
-    width: w,
-    maxWidth: wrapping.value ? 'calc(100% - 0.5rem)' : '100%',
-    whiteSpace: 'normal' as const,
-  }
+/** Старые картинки в % не шире заметки; у картинок в px размер постоянный. */
+const rootMaxWidth = computed(() => {
+  if (widthPx.value != null) return 'none'
+  return wrapping.value ? 'calc(100% - 0.5rem)' : '100%'
 })
+
+const rootStyle = computed(() => ({
+  width: wrapping.value ? widthCss.value : '100%',
+  maxWidth: rootMaxWidth.value,
+  whiteSpace: 'normal' as const,
+}))
 
 function wrapperEl(): HTMLElement | null {
   return (boxRef.value?.closest('[data-node-view-wrapper]') as HTMLElement | null) ?? null
@@ -49,12 +65,11 @@ function wrapperEl(): HTMLElement | null {
 function applyWrapperWidth() {
   const el = wrapperEl()
   if (!el) return
-  const w = wrapping.value ? `${widthPercent.value}%` : '100%'
-  el.style.setProperty('width', w, 'important')
-  el.style.setProperty('max-width', wrapping.value ? 'calc(100% - 0.5rem)' : '100%', 'important')
+  el.style.setProperty('width', rootStyle.value.width, 'important')
+  el.style.setProperty('max-width', rootMaxWidth.value, 'important')
 }
 
-watch([widthPercent, wrapping], () => {
+watch([widthCss, wrapping, rootMaxWidth], () => {
   void nextTick(applyWrapperWidth)
 })
 
@@ -63,39 +78,58 @@ onMounted(() => {
 })
 
 const boxStyle = computed(() => {
-  const style: Record<string, string> = wrapping.value
-    ? { width: '100%' }
-    : { width: `${widthPercent.value}%` }
+  const style: Record<string, string> = { width: wrapping.value ? '100%' : widthCss.value }
+  if (widthPx.value != null) style.maxWidth = 'none'
   if (heightPx.value != null) style.height = `${Math.round(heightPx.value)}px`
   return style
 })
 
 const imgStyle = computed(() => {
+  const base = widthPx.value != null ? { maxWidth: 'none' } : {}
   if (heightPx.value != null) {
-    return { width: '100%', height: '100%', objectFit: 'fill' as const }
+    return { ...base, width: '100%', height: '100%', objectFit: 'fill' as const }
   }
-  return { width: '100%', height: 'auto', objectFit: 'contain' as const }
+  return { ...base, width: '100%', height: 'auto', objectFit: 'contain' as const }
 })
 
 const badge = computed(() => {
-  const w = `${Math.round(widthPercent.value)}%`
+  const w =
+    widthPx.value != null
+      ? `${Math.round(widthPx.value)}px`
+      : `${Math.round(legacyWidthPercent.value)}%`
   if (heightPx.value != null) return `${w} × ${Math.round(heightPx.value)}px`
   return w
 })
 
 let unbind: (() => void) | null = null
 
-function setWrap(next: 'none' | 'left' | 'right') {
+/** Ширина картинки на экране в px — так старые картинки в % переходят на постоянный размер. */
+function currentWidthPx(): number {
+  if (widthPx.value != null) return widthPx.value
+  const w = boxRef.value?.getBoundingClientRect().width
+  return Math.round(w && w > 0 ? w : editorContentWidthPx(props.editor.view))
+}
+
+function setWrap(next: 'none' | 'center' | 'left' | 'right') {
   if (!props.editor.isEditable) return
-  const patch: Record<string, unknown> = { wrap: next }
-  const cur = Number(props.node.attrs.widthPercent)
-  if (next !== 'none' && (!Number.isFinite(cur) || cur >= 92)) {
-    patch.widthPercent = 48
+  const editorW = editorContentWidthPx(props.editor.view)
+  let w = currentWidthPx()
+  // Почти во всю ширину текст обтекать негде — для обтекания уменьшаем до половины.
+  if ((next === 'left' || next === 'right') && w >= editorW * 0.92) {
+    w = Math.round(editorW * 0.48)
   }
-  if (next === 'none' && Number.isFinite(cur) && cur <= 55) {
-    patch.widthPercent = 100
-    patch.heightPx = null
+  // «▭» и «по центру» сохраняют текущий размер: сами ничего не растягиваем.
+  props.updateAttributes({ wrap: next, widthPx: Math.round(w) })
+}
+
+/** Явное «растянуть»: ширина текста заметки на момент нажатия, дальше размер постоянный. */
+function stretchFullWidth() {
+  if (!props.editor.isEditable) return
+  const patch: Record<string, unknown> = {
+    widthPx: Math.round(editorContentWidthPx(props.editor.view)),
+    heightPx: null,
   }
+  if (wrapping.value) patch.wrap = 'none'
   props.updateAttributes(patch)
 }
 
@@ -113,15 +147,15 @@ function onResizeStart(e: PointerEvent, handle: Handle) {
   const startX = e.clientX
   const startY = e.clientY
   const startRect = box.getBoundingClientRect()
-  const editorW = Math.max(1, props.editor.view.dom.clientWidth)
+  // Ресайзом не выходим за ширину текста: иначе картинка уедет под горизонтальную прокрутку.
+  const maxW = Math.max(IMAGE_MIN_WIDTH_PX, editorContentWidthPx(props.editor.view))
   const startW = startRect.width
   const startH = startRect.height
-  const startPct = widthPercent.value
   const startHpx = heightPx.value ?? startH
   const proportional = handle.length === 2
   resizing.value = true
   resizeKind.value = proportional ? 'prop' : 'free'
-  liveWidthPercent.value = startPct
+  liveWidthPx.value = Math.round(startW)
   liveHeightPx.value = proportional ? null : startHpx
 
   const onMove = (ev: PointerEvent) => {
@@ -129,13 +163,13 @@ function onResizeStart(e: PointerEvent, handle: Handle) {
     let dy = ev.clientY - startY
     if (handle.includes('w')) dx = -dx
     if (handle.includes('n')) dy = -dy
+    // По центру ширина растёт в обе стороны — иначе ручка отставала бы от курсора вдвое.
+    if (wrap.value === 'center') dx *= 2
     if (proportional) {
-      const nextW = clamp(startW + dx, editorW * 0.08, editorW)
-      liveWidthPercent.value = Math.round((nextW / editorW) * 1000) / 10
+      liveWidthPx.value = Math.round(clamp(startW + dx, IMAGE_MIN_WIDTH_PX, maxW))
       liveHeightPx.value = null
     } else if (handle === 'e' || handle === 'w') {
-      const nextW = clamp(startW + dx, editorW * 0.08, editorW)
-      liveWidthPercent.value = Math.round((nextW / editorW) * 1000) / 10
+      liveWidthPx.value = Math.round(clamp(startW + dx, IMAGE_MIN_WIDTH_PX, maxW))
       liveHeightPx.value = Math.round(startHpx)
     } else {
       liveHeightPx.value = Math.round(clamp(startH + dy, 24, 4000))
@@ -147,15 +181,15 @@ function onResizeStart(e: PointerEvent, handle: Handle) {
     window.removeEventListener('pointerup', onUp)
     window.removeEventListener('pointercancel', onUp)
     unbind = null
-    const pct = liveWidthPercent.value
+    const w = liveWidthPx.value
     const h = liveHeightPx.value
     resizing.value = false
     resizeKind.value = null
-    liveWidthPercent.value = null
+    liveWidthPx.value = null
     liveHeightPx.value = null
-    if (pct == null) return
+    if (w == null) return
     props.updateAttributes({
-      widthPercent: clamp(Math.round(pct * 10) / 10, 8, 100),
+      widthPx: Math.round(w),
       heightPx: h != null && h > 0 ? Math.round(h) : null,
     })
   }
@@ -177,6 +211,7 @@ onBeforeUnmount(() => {
     :class="{
       'rz-img-root--left': wrap === 'left',
       'rz-img-root--right': wrap === 'right',
+      'rz-img-root--center': wrap === 'center',
       'rz-img-root--resizing': resizing,
     }"
     :style="rootStyle"
@@ -212,6 +247,25 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="rz-img-align-btn"
+          :class="{ on: wrap === 'center' }"
+          aria-label="По центру, без обтекания"
+          title="По центру, без обтекания"
+          @click.prevent="setWrap('center')"
+        >
+          ⊡
+        </button>
+        <button
+          type="button"
+          class="rz-img-align-btn"
+          aria-label="Растянуть на всю ширину"
+          title="Растянуть на всю ширину заметки"
+          @click.prevent="stretchFullWidth"
+        >
+          ↔
+        </button>
+        <button
+          type="button"
+          class="rz-img-align-btn"
           :class="{ on: wrap === 'right' }"
           aria-label="Картинка справа, текст слева"
           title="Картинка справа, текст слева"
@@ -228,7 +282,7 @@ onBeforeUnmount(() => {
         :alt="String(node.attrs.alt || '')"
         :title="
           editor.isEditable
-            ? 'Перетащите в тексте. Уголки — пропорции (%). Кнопки сверху — слева/справа от текста.'
+            ? 'Перетащите в тексте. Уголки — размер с пропорциями (px). Кнопки сверху — положение.'
             : String(node.attrs.alt || '')
         "
         :style="imgStyle"
@@ -268,6 +322,12 @@ onBeforeUnmount(() => {
 .rz-img-root--right:hover,
 .rz-img-root--resizing {
   z-index: 5;
+}
+/* По центру: отдельным блоком под плавающими картинками, пустота слева и справа поровну */
+.rz-img-root--center {
+  display: flex;
+  justify-content: center;
+  clear: both;
 }
 .rz-img-root--left {
   float: left;

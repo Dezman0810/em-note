@@ -39,7 +39,13 @@ import type { EditorState, Transaction } from '@tiptap/pm/state'
 import { TableMap } from '@tiptap/pm/tables'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
-import { attachmentsApi, errMessage, grammarApi, publicNoteApi } from '../api/client'
+import {
+  attachmentsApi,
+  errMessage,
+  grammarApi,
+  publicChecklistApi,
+  publicNoteApi,
+} from '../api/client'
 import type { GrammarAdvice, GrammarCheckResult } from '../api/types'
 import { useNoteLayout } from '../composables/useNoteLayout'
 import { useAuthStore } from '../stores/auth'
@@ -100,8 +106,22 @@ const props = withDefaults(
     publicToken?: string | null
     /** Инструменты владельца (шифрование, схемы, карты, диаграммы, аудио, грамматика). */
     ownerTools?: boolean
+    /** Ссылка «чек-бокс»: вложения читаются через /api/public/checklists/... */
+    checklistToken?: string | null
+    /**
+     * Режим чтения, где можно только отмечать чек-боксы: номер пункта в документе,
+     * новое состояние и текст пункта. false — сервер отказал, галочку возвращаем.
+     */
+    taskToggle?: ((index: number, checked: boolean, text: string) => Promise<boolean>) | null
   }>(),
-  { editable: true, noteId: null, publicToken: null, ownerTools: true }
+  {
+    editable: true,
+    noteId: null,
+    publicToken: null,
+    ownerTools: true,
+    checklistToken: null,
+    taskToggle: null,
+  }
 )
 const emit = defineEmits<{ (e: 'update:contentJson', value: string): void }>()
 
@@ -122,11 +142,16 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 const fileUploadErr = ref('')
 
 watch(
-  () => [props.noteId, props.publicToken] as const,
+  () => [props.noteId, props.publicToken, props.checklistToken] as const,
   () => {
     const tok = props.publicToken?.trim()
+    const checklistTok = props.checklistToken?.trim()
     if (tok) {
       registerAttachmentBlobResolver((id) => publicNoteApi.downloadAttachmentBlob(tok, id))
+    } else if (checklistTok) {
+      registerAttachmentBlobResolver((id) =>
+        publicChecklistApi.downloadAttachmentBlob(checklistTok, id)
+      )
     } else if (props.noteId) {
       registerAttachmentBlobResolver((id) => attachmentsApi.downloadBlob(id))
     } else {
@@ -289,7 +314,12 @@ const editor = useEditor({
     NoteTableCell,
     NoteTableHeader,
     TaskList,
-    TaskItemNote.configure({ nested: false }),
+    TaskItemNote.configure({
+      nested: false,
+      // Без этого TipTap в режиме чтения сразу возвращает галочку; саму отметку
+      // отправляет onReadOnlyTaskChange (ему нужен DOM пункта, а не устаревший node).
+      onReadOnlyChecked: props.taskToggle ? () => true : undefined,
+    }),
     TaskListEnterKeymap,
     TextStyle,
     FontFamily.configure({ types: ['textStyle'] }),
@@ -347,6 +377,65 @@ function scheduleEmitContent() {
 }
 
 defineExpose({ flushContent: emitContentNow })
+
+/** Текст пункта из JSON — тем же способом, что task_item_text на сервере (сверка от гонок). */
+function taskItemPlainText(json: unknown): string {
+  const parts: string[] = []
+  const walk = (n: unknown) => {
+    if (!n || typeof n !== 'object') return
+    const o = n as { type?: unknown; text?: unknown; content?: unknown }
+    if (o.type === 'text' && typeof o.text === 'string') parts.push(o.text)
+    if (Array.isArray(o.content)) o.content.forEach(walk)
+  }
+  walk(json)
+  return parts.join('')
+}
+
+/**
+ * Ссылка «чек-бокс»: номер пункта ищем по DOM. TipTap держит в замыкании node,
+ * который после обновления документа устаревает, поэтому сравнение по ссылке ненадёжно.
+ */
+function onReadOnlyTaskChange(e: Event) {
+  const toggle = props.taskToggle
+  const ed = editor.value
+  const box = e.target
+  if (!toggle || !ed || ed.isEditable) return
+  if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox') return
+  const li = box.closest('li')
+  if (!li) return
+  let index = -1
+  let seen = 0
+  let text = ''
+  ed.state.doc.descendants((n, pos) => {
+    if (index >= 0) return false
+    if (n.type.name !== 'taskItem') return true
+    if (ed.view.nodeDOM(pos) === li) {
+      index = seen
+      text = taskItemPlainText(n.toJSON())
+    }
+    seen++
+    return true
+  })
+  if (index < 0) return
+  const checked = box.checked
+  void toggle(index, checked, text).then((ok) => {
+    if (ok) return
+    // Документ не менялся — возвращаем только сам чек-бокс.
+    box.checked = !checked
+    li.dataset.checked = String(!checked)
+  })
+}
+
+watch(
+  editor,
+  (ed, _prev, onCleanup) => {
+    if (!ed || !props.taskToggle) return
+    const dom = ed.view.dom
+    dom.addEventListener('change', onReadOnlyTaskChange, true)
+    onCleanup(() => dom.removeEventListener('change', onReadOnlyTaskChange, true))
+  },
+  { immediate: true }
+)
 
 watch(
   () => props.editable,
@@ -1420,8 +1509,59 @@ async function confirmEncrypt() {
   }
 }
 
+/*
+ * Панель инструментов прокручивается вбок, и меню с position: absolute обрезались бы
+ * её overflow. Поэтому меню в панели — position: fixed, а координаты считаем от кнопки
+ * при открытии и при любой прокрутке/ресайзе, пока меню открыто.
+ */
+let openToolbarDd: HTMLDetailsElement | null = null
+
+function toolbarDdPanel(d: HTMLDetailsElement): HTMLElement | null {
+  return d.querySelector<HTMLElement>(':scope > .table-dd-panel, :scope > .word-dd-panel')
+}
+
+function placeToolbarDdPanel(d: HTMLDetailsElement) {
+  const panel = toolbarDdPanel(d)
+  const summary = d.querySelector(':scope > summary')
+  if (!panel || !summary) return
+  const r = summary.getBoundingClientRect()
+  const margin = 8
+  const left = Math.min(r.left, window.innerWidth - panel.offsetWidth - margin)
+  panel.style.top = `${Math.round(r.bottom + 4)}px`
+  panel.style.left = `${Math.round(Math.max(margin, left))}px`
+}
+
+/** toggle у <details> не всплывает, поэтому слушаем его на панели в фазе захвата. */
+function onToolbarDdToggle(ev: Event) {
+  const d = ev.target
+  if (!(d instanceof HTMLDetailsElement) || !toolbarDdPanel(d)) return
+  if (d.open) {
+    openToolbarDd = d
+    placeToolbarDdPanel(d)
+  } else if (openToolbarDd === d) {
+    openToolbarDd = null
+  }
+}
+
+/** Колесо мыши над панелью, которая не помещается, листает её вбок, а не страницу. */
+function onToolbarWheel(ev: WheelEvent) {
+  const bar = ev.currentTarget as HTMLElement
+  if (bar.scrollWidth <= bar.clientWidth) return
+  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return
+  if ((ev.target as HTMLElement | null)?.closest('.word-dd-panel, .table-dd-panel')) return
+  ev.preventDefault()
+  bar.scrollLeft += ev.deltaY
+}
+
+function repositionOpenToolbarDd() {
+  if (openToolbarDd?.open) placeToolbarDdPanel(openToolbarDd)
+}
+
 onMounted(() => {
   window.addEventListener('scroll', bumpToolbar, true)
+  // В фазе захвата на window приходит и прокрутка самой панели, и страницы.
+  window.addEventListener('scroll', repositionOpenToolbarDd, true)
+  window.addEventListener('resize', repositionOpenToolbarDd)
   nextTick(() => {
     const root = editorContentHostRef.value?.querySelector('.ProseMirror')
     if (root) cleanupLegacyTableFilterStyles(root)
@@ -1433,6 +1573,8 @@ onBeforeUnmount(() => {
   // следующая, и безусловная отдача старого документа затёрла бы её.
   if (emitTimer) emitContentNow()
   window.removeEventListener('scroll', bumpToolbar, true)
+  window.removeEventListener('scroll', repositionOpenToolbarDd, true)
+  window.removeEventListener('resize', repositionOpenToolbarDd)
   registerAttachmentBlobResolver(null)
   if (recording.value && mediaRecorder) {
     try {
@@ -1448,7 +1590,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="editor-wrap" :class="{ 'editor-wrap--fit': innerScroll }" v-if="editor">
-    <div class="toolbar" v-if="editable" @mousedown="onToolbarMouseDown">
+    <div
+      class="toolbar"
+      v-if="editable"
+      @mousedown="onToolbarMouseDown"
+      @toggle.capture="onToolbarDdToggle"
+      @wheel="onToolbarWheel"
+    >
       <button
         type="button"
         class="tb tb-letter"
@@ -2096,12 +2244,23 @@ onBeforeUnmount(() => {
 .editor-wrap--fit :deep(.ProseMirror) {
   min-height: 100%;
 }
+/*
+ * Одна строка без переноса: в узком окне панель прокручивается вбок (колёсико с Shift,
+ * тачпад или полоса снизу). Выпадающие меню выносятся из прокрутки — см. onToolbarDdToggle.
+ */
 .toolbar {
   position: sticky;
   top: 0;
   z-index: 25;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   gap: 0.45rem 0.55rem;
   align-items: center;
   padding: 0.5rem 0.75rem;
@@ -2341,22 +2500,14 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   cursor: pointer;
 }
+.toolbar > * {
+  flex-shrink: 0;
+}
 @media (max-width: 768px) {
   .toolbar {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
     gap: 0.28rem 0.32rem;
     padding: 0.32rem 0.5rem;
-    max-width: 100%;
-    min-width: 0;
     width: 100%;
-    box-sizing: border-box;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
-  }
-  .toolbar > * {
-    flex-shrink: 0;
   }
   .tb {
     min-width: unset;
@@ -2458,6 +2609,13 @@ onBeforeUnmount(() => {
   top: calc(100% + 4px);
   left: 0;
   z-index: 50;
+}
+/* В прокручиваемой панели — вне её overflow; top/left выставляет placeToolbarDdPanel. */
+.toolbar .word-dd-panel,
+.toolbar .table-dd-panel {
+  position: fixed;
+}
+.word-dd-panel {
   min-width: 11.5rem;
   padding: 0.5rem 0.55rem;
   border-radius: 8px;

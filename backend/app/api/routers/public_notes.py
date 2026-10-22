@@ -24,6 +24,7 @@ from app.models.habit_public_link import HabitPublicLink
 from app.models.user import User
 from app.models.note import Note
 from app.models.note_attachment import NoteAttachment
+from app.models.note_checklist_link import NoteChecklistLink
 from app.models.note_public_link import NotePublicLink
 from app.models.share import ShareRole
 from app.schemas.attachment import AttachmentRead, TranscriptionRead
@@ -35,7 +36,8 @@ from app.services.attachment_ops import (
 )
 from app.schemas.habit import PublicHabitsPayload
 from app.schemas.note import NoteRead, NoteUpdate
-from app.schemas.public_link import PublicNotePayload
+from app.schemas.public_link import ChecklistToggle, PublicChecklistPayload, PublicNotePayload
+from app.services.checklist_toggle import ChecklistConflict, apply_checklist_toggle
 from app.utils.http_cache import REVALIDATE_CACHE_CONTROL, etag_matches, make_etag
 from app.utils.json_compare import json_doc_equal
 from app.utils.text import plain_text_from_tiptap_json
@@ -175,6 +177,78 @@ async def public_download_attachment(
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
 ):
     note, _link = await _note_by_public_token(db, token)
+    row = await db.get(NoteAttachment, attachment_id)
+    if row is None or row.note_id != note.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    path = Path(settings.attachments_dir) / row.storage_key
+    if not await attachment_file_exists(path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
+    return attachment_file_response(row, path, if_none_match)
+
+
+async def _note_by_checklist_token(
+    db: AsyncSession, token: str, *, for_update: bool = False
+) -> Note:
+    link = (
+        await db.execute(select(NoteChecklistLink).where(NoteChecklistLink.token == token))
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found or revoked")
+    q = select(Note).where(Note.id == link.note_id).options(selectinload(Note.tags))
+    if for_update:
+        # Двое отмечают разные пункты одновременно — без блокировки вторая запись
+        # перетёрла бы первую (каждый правит свою копию content_json).
+        q = q.with_for_update(of=Note)
+    n = (await db.execute(q)).scalar_one_or_none()
+    if n is None or n.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    return n
+
+
+@router.get("/checklists/{token}", response_model=PublicChecklistPayload)
+async def get_public_checklist(
+    token: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    response: Response,
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
+) -> PublicChecklistPayload | Response:
+    note = await _note_by_checklist_token(db, token)
+    etag = make_etag(note.id, note.updated_at, "checklist")
+    headers = {"Cache-Control": REVALIDATE_CACHE_CONTROL, "ETag": etag}
+    if etag_matches(if_none_match, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    response.headers.update(headers)
+    return PublicChecklistPayload(note=NoteRead.from_note_public(note))
+
+
+@router.post("/checklists/{token}/toggle", response_model=PublicChecklistPayload)
+async def toggle_public_checklist_item(
+    token: str,
+    body: ChecklistToggle,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> PublicChecklistPayload:
+    """Единственная запись по ссылке «чек-лист»: attrs.checked одного пункта, больше ничего."""
+    note = await _note_by_checklist_token(db, token, for_update=True)
+    try:
+        new_json = apply_checklist_toggle(note.content_json, body.index, body.checked, body.text)
+    except ChecklistConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    if new_json is not None:
+        note.content_json = new_json
+        note.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+    return PublicChecklistPayload(note=NoteRead.from_note_public(note))
+
+
+@router.get("/checklists/{token}/attachments/{attachment_id}/file")
+async def public_checklist_download_attachment(
+    token: str,
+    attachment_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,
+):
+    """Картинки и файлы внутри заметки — только чтение, как у обычной ссылки."""
+    note = await _note_by_checklist_token(db, token)
     row = await db.get(NoteAttachment, attachment_id)
     if row is None or row.note_id != note.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")

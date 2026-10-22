@@ -11,16 +11,30 @@ function parseApiInstant(iso: string): Date {
   return new Date(normalized)
 }
 
+/*
+ * Форматтеры создаются один раз: toLocaleString с timeZone каждый раз строит новый
+ * Intl.DateTimeFormat (~40 мкс), а список заметок форматирует по две даты на строку.
+ */
+const mskFull = new Intl.DateTimeFormat('ru-RU', {
+  timeZone: 'Europe/Moscow',
+  dateStyle: 'short',
+  timeStyle: 'short',
+})
+const mskCompact = new Intl.DateTimeFormat('ru-RU', {
+  timeZone: 'Europe/Moscow',
+  day: '2-digit',
+  month: '2-digit',
+  year: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
 export function fmtMsk(iso: string | undefined | null): string {
   if (!iso) return '—'
   try {
     const d = parseApiInstant(iso)
     if (Number.isNaN(d.getTime())) return String(iso).slice(0, 19)
-    return d.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      dateStyle: 'short',
-      timeStyle: 'short',
-    })
+    return mskFull.format(d)
   } catch {
     return String(iso).slice(0, 19)
   }
@@ -32,14 +46,7 @@ export function fmtCompactMsk(iso: string | undefined | null): string {
   try {
     const d = parseApiInstant(iso)
     if (Number.isNaN(d.getTime())) return String(iso).slice(0, 16)
-    return d.toLocaleString('ru-RU', {
-      timeZone: 'Europe/Moscow',
-      day: '2-digit',
-      month: '2-digit',
-      year: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
+    return mskCompact.format(d)
   } catch {
     return String(iso).slice(0, 16)
   }

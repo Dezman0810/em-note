@@ -7,8 +7,10 @@ import type {
   Note,
   NoteMailSendHistoryRow,
   NoteFilterPreset,
+  NoteChecklistLink,
   NotePublicLink,
   NoteShare,
+  PublicChecklistPayload,
   PublicNotePayload,
   Tag,
   TagNoteCount,
@@ -286,6 +288,21 @@ export const notesApi = {
   async deletePublicLink(noteId: string): Promise<void> {
     await api.delete(`/api/notes/${noteId}/public-link`)
   },
+  async getChecklistLink(noteId: string): Promise<NoteChecklistLink> {
+    const { data } = await api.get<NoteChecklistLink>(`/api/notes/${noteId}/checklist-link`)
+    return data
+  },
+  async enableChecklistLink(noteId: string): Promise<NoteChecklistLink> {
+    const { data } = await api.put<NoteChecklistLink>(`/api/notes/${noteId}/checklist-link`)
+    return data
+  },
+  async regenerateChecklistLink(noteId: string): Promise<NoteChecklistLink> {
+    const { data } = await api.post<NoteChecklistLink>(`/api/notes/${noteId}/checklist-link/regenerate`)
+    return data
+  },
+  async deleteChecklistLink(noteId: string): Promise<void> {
+    await api.delete(`/api/notes/${noteId}/checklist-link`)
+  },
 }
 
 export type NoteFilterPresetWriteBody = {
@@ -517,6 +534,33 @@ export const publicNoteApi = {
     const { data } = await api.post<{ text: string }>(
       `/api/public/notes/${encodeURIComponent(token)}/attachments/${encodeURIComponent(attachmentId)}/transcribe`,
       {}
+    )
+    return data
+  },
+}
+
+/** Ссылка «чек-бокс»: чтение заметки и единственная запись — отметка пункта. */
+export const publicChecklistApi = {
+  async get(token: string): Promise<PublicChecklistPayload> {
+    const { data } = await api.get<PublicChecklistPayload>(
+      `/api/public/checklists/${encodeURIComponent(token)}`
+    )
+    return data
+  },
+  async toggle(
+    token: string,
+    body: { index: number; checked: boolean; text: string }
+  ): Promise<PublicChecklistPayload> {
+    const { data } = await api.post<PublicChecklistPayload>(
+      `/api/public/checklists/${encodeURIComponent(token)}/toggle`,
+      body
+    )
+    return data
+  },
+  async downloadAttachmentBlob(token: string, attachmentId: string): Promise<Blob> {
+    const { data } = await api.get(
+      `/api/public/checklists/${encodeURIComponent(token)}/attachments/${attachmentId}/file`,
+      { responseType: 'blob' }
     )
     return data
   },

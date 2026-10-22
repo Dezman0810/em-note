@@ -326,19 +326,41 @@ const loading = ref(true)
 const flashNoteIds = ref<Record<string, true>>({})
 const flashTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-function flashNoteId(id: string) {
-  flashNoteIds.value = { ...flashNoteIds.value, [id]: true }
-  const prev = flashTimers.get(id)
-  if (prev) clearTimeout(prev)
-  flashTimers.set(
-    id,
-    setTimeout(() => {
-      const next = { ...flashNoteIds.value }
-      delete next[id]
-      flashNoteIds.value = next
+/** Больше изменений за раз — это уже новый список (поиск, фильтр, первая загрузка), а не правка. */
+const FLASH_MAX_IDS = 12
+
+/**
+ * Подсветка пачкой: одно обновление состояния и один таймер на всю пачку.
+ * Раньше каждый id снимался своим setTimeout — на первой загрузке 300 заметок
+ * давали 300 отдельных перерисовок всего экрана, и интерфейс замирал на секунды.
+ */
+function flashNotes(ids: readonly string[]) {
+  if (!ids.length) return
+  const next = { ...flashNoteIds.value }
+  for (const id of ids) {
+    next[id] = true
+    const prev = flashTimers.get(id)
+    if (prev) clearTimeout(prev)
+  }
+  flashNoteIds.value = next
+  const timer = setTimeout(() => {
+    const rest = { ...flashNoteIds.value }
+    for (const id of ids) {
+      if (flashTimers.get(id) !== timer) continue
+      delete rest[id]
       flashTimers.delete(id)
-    }, 1400)
-  )
+    }
+    flashNoteIds.value = rest
+  }, 1400)
+  for (const id of ids) flashTimers.set(id, timer)
+}
+
+/** Подсветить новые/изменённые строки, только если это точечное обновление уже показанного списка. */
+function flashListChanges(hadNotes: boolean, apply: { newIds: string[]; updatedIds: string[] }) {
+  if (!hadNotes) return
+  const ids = [...apply.newIds, ...apply.updatedIds]
+  if (ids.length > FLASH_MAX_IDS) return
+  flashNotes(ids)
 }
 
 function patchNoteInList(updated: Note): boolean {
@@ -349,7 +371,7 @@ function patchNoteInList(updated: Note): boolean {
   const next = notes.value.slice()
   next[idx] = updated
   notes.value = next
-  flashNoteId(updated.id)
+  flashNotes([updated.id])
   return true
 }
 
@@ -773,6 +795,24 @@ function toggleTagNavCollapse(tagId: string, e: Event) {
 }
 
 const tagNavHasCollapsed = computed(() => Object.values(collapsedTagIds.value).some(Boolean))
+
+/** Все ветки с вложенными метками уже свёрнуты — кнопке «свернуть всё» делать нечего. */
+const tagNavAllCollapsed = computed(() => {
+  for (const id of tagsWithKids.value) {
+    if (!collapsedTagIds.value[id]) return false
+  }
+  return true
+})
+
+/** Свернуть все уровни: остаются видны только корневые метки. */
+function collapseAllTagNavLevels(e: Event) {
+  e.preventDefault()
+  e.stopPropagation()
+  const next: Record<string, boolean> = {}
+  for (const id of tagsWithKids.value) next[id] = true
+  collapsedTagIds.value = next
+  persistTagNavCollapsed()
+}
 
 function expandAllTagNavLevels(e: Event) {
   e.preventDefault()
@@ -1365,9 +1405,9 @@ async function load(opts: LoadOptions = {}) {
       const noteList = await notesApi.listTrash()
       const apply = diffNotesList(notes.value, noteList)
       if (apply.changed) {
+        const hadNotes = notes.value.length > 0
         notes.value = noteList
-        for (const id of apply.newIds) flashNoteId(id)
-        for (const id of apply.updatedIds) flashNoteId(id)
+        flashListChanges(hadNotes, apply)
       }
       // Счётчики меток/папок дорисовываются сами — список не ждёт их.
       void refreshSidebarTagCounts()
@@ -1387,9 +1427,9 @@ async function load(opts: LoadOptions = {}) {
       : await notesApi.list({ ...fParams, ...tParams })
     const apply = diffNotesList(notes.value, noteList)
     if (apply.changed) {
+      const hadNotes = notes.value.length > 0
       notes.value = noteList
-      for (const id of apply.newIds) flashNoteId(id)
-      for (const id of apply.updatedIds) flashNoteId(id)
+      flashListChanges(hadNotes, apply)
     }
 
     void refreshSidebarTagCounts()
@@ -2369,12 +2409,10 @@ onBeforeUnmount(() => {
                       }"
                       @click="clearTagFilter"
                     >
-                      <span class="nav-scope-tags-heading nowrap-scope-heading">
-                        <template v-if="folderNoteCounts">
-                          Все метки<span class="nav-scope-tags-count">&nbsp;({{ scopeTagsAllRowParenText }})</span>
-                        </template>
-                        <template v-else>Все метки</template>
-                      </span>
+                      <span class="nav-scope-tags-heading nowrap-scope-heading">Все метки</span>
+                      <span v-if="folderNoteCounts" class="nav-scope-tags-count"
+                        >&nbsp;({{ scopeTagsAllRowParenText }})</span
+                      >
                     </button>
                     <input
                       v-model="tagsSidebarSearch"
@@ -2408,6 +2446,33 @@ onBeforeUnmount(() => {
                           />
                           <path
                             d="M3.5 8.6 L8 12.6 L12.5 8.6"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-tags-expand-all"
+                        :disabled="tagNavAllCollapsed"
+                        title="Свернуть все уровни меток"
+                        aria-label="Свернуть все уровни меток"
+                        @click.stop="collapseAllTagNavLevels"
+                      >
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <path
+                            d="M3.5 7.4 L8 3.4 L12.5 7.4"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                          <path
+                            d="M3.5 11.8 L8 7.8 L12.5 11.8"
                             fill="none"
                             stroke="currentColor"
                             stroke-width="1.6"
@@ -2832,21 +2897,27 @@ onBeforeUnmount(() => {
   font-weight: 600;
   margin: 0 0.02em;
 }
+/*
+ * Шапка при сужении окна: сначала ужимается поиск (до ~10 символов), потом «Выберите
+ * фильтр…», и только когда оба на минимуме — почта/тема/«Выйти» уходят на вторую строку.
+ * Для этого блок с кнопками растёт от нулевой базы, а его минимум — сумма минимумов
+ * детей (min-width: auto); перенос шапки сравнивает именно эти минимумы.
+ */
 .header-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.5rem 0.65rem;
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: auto;
 }
 .header-main-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 0.45rem 0.55rem;
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: auto;
 }
 .header-action-new-note {
   flex-shrink: 0;
@@ -2867,11 +2938,12 @@ onBeforeUnmount(() => {
 .admin-top-btn:hover {
   background: var(--accent-subtle-hover);
 }
+/* Огромный flex-shrink: при нехватке места ужимается поиск, фильтр почти не трогается. */
 .header-search-inner {
   display: flex;
   align-items: center;
-  flex: 1 1 min(320px, 100%);
-  min-width: min(220px, 100%);
+  flex: 1 1000 min(320px, 100%);
+  min-width: auto;
 }
 .search-shell {
   display: flex;
@@ -2895,9 +2967,11 @@ onBeforeUnmount(() => {
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
+/* width: 0 — без собственной ширины поля (~20 символов); минимум — 10 символов. */
 .search--in-shell {
   flex: 1 1 auto;
-  min-width: 0;
+  width: 0;
+  min-width: 10ch;
   padding: 0.32rem 0.35rem;
   margin: 0;
   border: none;
@@ -2934,11 +3008,12 @@ onBeforeUnmount(() => {
   background: var(--accent-subtle-hover);
   border-color: var(--accent-border);
 }
+/* Ужимается после поиска; название набора обрезается многоточием («Выберите фил…»). */
 .preset-strip {
   display: flex;
   align-items: center;
   flex: 0 1 min(17rem, 100%);
-  min-width: min(11rem, 100%);
+  min-width: 6.5rem;
   max-width: min(360px, 100%);
 }
 .preset-combo {
@@ -2985,8 +3060,10 @@ onBeforeUnmount(() => {
   border-color: var(--accent-border-strong);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
+/* width: 0 — длина названия не раздувает минимальную ширину шапки. */
 .preset-trigger-label {
   flex: 1 1 auto;
+  width: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3569,12 +3646,14 @@ onBeforeUnmount(() => {
 .folder-filter-all.on .nav-scope-label {
   color: var(--text-1);
 }
+/* Счётчик целиком и в одну строку: при сужении режется название («Все зам…»), а не цифры */
 .nav-scope-count {
   font-weight: 500;
   font-size: var(--fs-2xs);
   color: var(--text-4);
   opacity: 1;
   flex-shrink: 0;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .folder-filter-all.on .nav-scope-count {
@@ -3599,8 +3678,9 @@ onBeforeUnmount(() => {
   flex-wrap: nowrap;
   justify-content: flex-start;
 }
+/* Не растягиваем заголовок: счётчик остаётся сразу за текстом, а не у правого края */
 .folder-nav-tags-panel .nav-scope-tags-all-btn .nav-scope-tags-heading {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   text-align: left;
 }
@@ -3627,6 +3707,8 @@ onBeforeUnmount(() => {
   font-size: var(--fs-2xs);
   color: var(--text-4);
   opacity: 1;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3749,7 +3831,7 @@ onBeforeUnmount(() => {
 .folder-scope-notes-parent.tags-all-row-scope:focus-within .tags-scope-checkboxes,
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus-visible) .tags-scope-checkboxes,
 .folder-scope-notes-parent.tags-all-row-scope:has(.nav-scope-tags-all-btn:focus) .tags-scope-checkboxes {
-  max-width: 3.1rem;
+  max-width: 4.4rem;
   opacity: 1;
   visibility: visible;
   padding-right: 1px;
@@ -3758,7 +3840,7 @@ onBeforeUnmount(() => {
 /* Сенсор: без :hover галочку оставляем доступной */
 @media (hover: none) {
   .folder-scope-notes-parent.tags-all-row-scope .tags-scope-checkboxes {
-    max-width: 3.1rem;
+    max-width: 4.4rem;
     opacity: 1;
     visibility: visible;
     padding-right: 1px;
@@ -3918,11 +4000,13 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 0.35rem;
 }
+/* Одной строкой с многоточием, как .tag-sidebar-name: «Все заметки» и длинные папки не переносятся */
 .folder-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: left;
 }
 .folder-nav-v-gutter {

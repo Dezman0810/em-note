@@ -207,6 +207,16 @@ export interface PublicNotePayload {
   role: string
 }
 
+/** Ссылка «чек-бокс»: по ней можно только отмечать пункты чек-боксов. */
+export interface NoteChecklistLink {
+  token: string
+  created_at: string
+}
+
+export interface PublicChecklistPayload {
+  note: Note
+}
+
 /** GET/POST/PATCH /api/users/me/contacts — личная книга email-контактов. */
 export interface UserContact {
   id: string

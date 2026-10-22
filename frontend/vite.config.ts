@@ -79,6 +79,17 @@ export default defineConfig({
          */
         manualChunks(id) {
           const normalized = id.replace(/\\/g, '/')
+          /*
+           * Ядро — своим чанком и первым. Иначе Rollup кладёт общие зависимости в первый
+           * же ручной чанк, который их импортирует: Vue оказывался внутри «tiptap»,
+           * хелпер предзагрузки — внутри «excalidraw», и даже страница входа тянула ~5 МБ JS.
+           */
+          if (
+            (normalized.startsWith('\0') && !normalized.includes('/node_modules/'))
+            || /\/node_modules\/(@vue|vue|vue-router|pinia|axios)\//.test(normalized)
+          ) {
+            return 'vendor'
+          }
           if (
             normalized.includes('/node_modules/@excalidraw/')
             || normalized.includes('/node_modules/react/')

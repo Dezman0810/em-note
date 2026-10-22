@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.models.note import Note
+from app.models.note_checklist_link import NoteChecklistLink
 from app.models.note_public_link import NotePublicLink
 from app.models.user import User
-from app.schemas.public_link import NotePublicLinkRead, NotePublicLinkUpsert
+from app.schemas.public_link import NoteChecklistLinkRead, NotePublicLinkRead, NotePublicLinkUpsert
 from app.services.note_access import require_note_owner
 
 router = APIRouter(tags=["note-public-links"])
@@ -82,4 +83,67 @@ async def delete_public_link(
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Public link not enabled")
+    await db.delete(row)
+
+
+async def _checklist_link(db: AsyncSession, note_id: uuid.UUID) -> NoteChecklistLink | None:
+    result = await db.execute(select(NoteChecklistLink).where(NoteChecklistLink.note_id == note_id))
+    return result.scalar_one_or_none()
+
+
+@router.get("/notes/{note_id}/checklist-link", response_model=NoteChecklistLinkRead)
+async def get_checklist_link(
+    note_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> NoteChecklistLink:
+    await require_note_owner(db, note_id, user.id)
+    row = await _checklist_link(db, note_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Checklist link not enabled")
+    return row
+
+
+@router.put("/notes/{note_id}/checklist-link", response_model=NoteChecklistLinkRead)
+async def enable_checklist_link(
+    note_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> NoteChecklistLink:
+    await require_note_owner(db, note_id, user.id)
+    row = await _checklist_link(db, note_id)
+    if row is None:
+        row = NoteChecklistLink(note_id=note_id, token=_new_token())
+        db.add(row)
+        await db.flush()
+        await db.refresh(row)
+    return row
+
+
+@router.post("/notes/{note_id}/checklist-link/regenerate", response_model=NoteChecklistLinkRead)
+async def regenerate_checklist_link_token(
+    note_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> NoteChecklistLink:
+    await require_note_owner(db, note_id, user.id)
+    row = await _checklist_link(db, note_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Checklist link not enabled")
+    row.token = _new_token()
+    await db.flush()
+    await db.refresh(row)
+    return row
+
+
+@router.delete("/notes/{note_id}/checklist-link", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_checklist_link(
+    note_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> None:
+    await require_note_owner(db, note_id, user.id)
+    row = await _checklist_link(db, note_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Checklist link not enabled")
     await db.delete(row)
